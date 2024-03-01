@@ -2,6 +2,9 @@
 
 #include <cassert>
 #include <cmath>
+#include <iomanip>
+#include <iostream>
+#include <sstream>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -258,10 +261,12 @@ DevicePanel::DevicePanel(SettingsWindow *parent) : ListWidget(parent) {
   auto deleteFootageBtn = new ButtonControl(tr("Delete Driving Data"), tr("DELETE"), tr("This button provides a swift and secure way to permanently delete all "
     "stored driving footage and data from your device. Ideal for maintaining privacy or freeing up space.")
   );
-  connect(deleteFootageBtn, &ButtonControl::clicked, [this]() {
+  connect(deleteFootageBtn, &ButtonControl::clicked, [=]() {
     if (!ConfirmationDialog::confirm(tr("Are you sure you want to permanently delete all of your driving footage and data?"), tr("Delete"), this)) return;
     std::thread([&] {
+      deleteFootageBtn->setValue("Deleting footage...");
       std::system("rm -rf /data/media/0/realdata");
+      deleteFootageBtn->setValue("");
     }).detach();
   });
   addItem(deleteFootageBtn);
@@ -270,13 +275,110 @@ DevicePanel::DevicePanel(SettingsWindow *parent) : ListWidget(parent) {
   auto deleteStorageParamsBtn = new ButtonControl(tr("Delete Toggle Storage Data"), tr("DELETE"), tr("This button provides a swift and secure way to permanently delete all "
     "long term stored toggle settings. Ideal for maintaining privacy or freeing up space.")
   );
-  connect(deleteStorageParamsBtn, &ButtonControl::clicked, [this]() {
+  connect(deleteStorageParamsBtn, &ButtonControl::clicked, [=]() {
     if (!ConfirmationDialog::confirm(tr("Are you sure you want to permanently delete all of your long term toggle settings storage?"), tr("Delete"), this)) return;
     std::thread([&] {
+      deleteStorageParamsBtn->setValue("Deleting params...");
       std::system("rm -rf /persist/comma/params");
+      deleteStorageParamsBtn->setValue("");
     }).detach();
   });
   addItem(deleteStorageParamsBtn);
+
+  // Backup FrogPilot button
+  auto backupFrogPilotBtn = new ButtonControl(tr("Backup FrogPilot"), tr("BACKUP"),
+    tr("This button provides a swift and secure way to backup the "
+       "current state of FrogPilot for future restorations."));
+  connect(backupFrogPilotBtn, &ButtonControl::clicked, [=]() {
+    QString nameSelection = InputDialog::getText(tr("Name your backup"), this, "", false, 1);
+    if (!nameSelection.isEmpty()) {
+      std::thread([=] {
+        backupFrogPilotBtn->setValue("Backing up FrogPilot...");
+
+        std::string basePath = "/data/backups/";
+        std::string fullBackupPath = basePath + nameSelection.toStdString();
+
+        std::ostringstream commandStream;
+        commandStream << "[ ! -d " << std::quoted(fullBackupPath) << " ] && mkdir -p " << std::quoted(fullBackupPath)
+                      << " && rsync -av --exclude '/.*' /data/openpilot/ " << std::quoted(fullBackupPath + "/")
+                      << " || echo 'Backup directory already exists. Skipping backup.'";
+        std::string command = commandStream.str();
+
+        int result = std::system(command.c_str());
+        if (result == 0) std::cout << "Backup successful to " << fullBackupPath << std::endl;
+        else if (result == 256) std::cout << "Backup directory already exists. Skipping backup." << std::endl;
+        else std::cerr << "Backup failed with error code: " << result << std::endl;
+
+        backupFrogPilotBtn->setValue("");
+      }).detach();
+    }
+  });
+  addItem(backupFrogPilotBtn);
+
+  // Restore FrogPilot button
+  auto restoreFrogPilotBtn = new ButtonControl(tr("Restore FrogPilot Backup"), tr("SELECT"));
+  connect(restoreFrogPilotBtn, &ButtonControl::clicked, [=]() {
+    QDir backupDir("/data/backups");
+    QStringList backupNames = backupDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+
+    QString selection = MultiOptionDialog::getSelection(tr("Select a restore point"), backupNames, "", this);
+    if (!selection.isEmpty()) {
+      if (!ConfirmationDialog::confirm(tr("Are you sure you want to restore this version of FrogPilot?"), tr("Restore"), this)) return;
+      std::thread([=]() {
+        restoreFrogPilotBtn->setValue("Restoring backup...");
+
+        QString sourcePath = backupDir.absoluteFilePath(selection);
+        QString targetPath = "/data/openpilot";
+
+        QProcess process;
+        process.start("rm", QStringList() << "-rf" << targetPath);
+        process.waitForFinished();
+
+        QDir().mkpath(targetPath);
+
+        std::cout << "Executing rsync command: " << process.program() << " " << process.arguments().join(' ').toStdString() << std::endl;
+        std::cout << "Current working directory: " << QDir::currentPath().toStdString() << std::endl;
+
+        process.start("rsync", QStringList() << "-avh" << sourcePath + "/" << targetPath + "/");
+        process.waitForFinished();
+
+        if (process.exitStatus() == QProcess::NormalExit && process.exitCode() == 0) {
+          std::cout << "Restore successful" << std::endl;
+          QThread::sleep(5);
+          Hardware::reboot();
+        } else {
+          std::cerr << "Restore failed with error code: " << process.exitCode() << std::endl;
+          restoreFrogPilotBtn->setValue("Restore failed");
+        }
+      }).detach();
+    }
+  });
+  addItem(restoreFrogPilotBtn);
+
+  // Delete backup button
+  auto deleteBackupBtn = new ButtonControl(tr("Delete FrogPilot Backup"), tr("SELECT"));
+  connect(deleteBackupBtn, &ButtonControl::clicked, [=]() {
+    QDir backupDir("/data/backups");
+    QStringList backupNames = backupDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+
+    QString selection = MultiOptionDialog::getSelection(tr("Select a backup to delete"), backupNames, "", this);
+    if (!selection.isEmpty()) {
+      if (!ConfirmationDialog::confirm(tr("Are you sure you want to delete this backup?"), tr("Delete"), this)) return;
+      std::thread([=]() {
+        deleteBackupBtn->setValue("Deleting backup...");
+
+        QDir dirToDelete(backupDir.absoluteFilePath(selection));
+        if (dirToDelete.exists()) {
+          bool success = dirToDelete.removeRecursively();
+          if (!success) {
+          }
+        }
+
+        deleteBackupBtn->setValue("");
+      }).detach();
+    }
+  });
+  addItem(deleteBackupBtn);
 
   // Panda flashing button
   auto flashPandaBtn = new ButtonControl(tr("Flash Panda"), tr("FLASH"), "Use this button to troubleshoot and update the Panda device's firmware.");
