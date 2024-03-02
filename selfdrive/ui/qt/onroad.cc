@@ -18,6 +18,18 @@
 #include "selfdrive/ui/qt/maps/map_panel.h"
 #endif
 
+static void drawIconGif(QPainter &p, const QPoint &center, const QMovie &img, const QBrush &bg, float opacity) {
+  p.setRenderHint(QPainter::Antialiasing);
+  p.setOpacity(1.0);  // bg dictates opacity of ellipse
+  p.setPen(Qt::NoPen);
+  p.setBrush(bg);
+  p.drawEllipse(center, btn_size / 2, btn_size / 2);
+  p.setOpacity(opacity);
+  QPixmap currentFrame = img.currentPixmap();
+  p.drawPixmap(center - QPoint(currentFrame.width() / 2, currentFrame.height() / 2), currentFrame);
+  p.setOpacity(1.0);
+}
+
 static void drawIcon(QPainter &p, const QPoint &center, const QPixmap &img, const QBrush &bg, float opacity) {
   p.setRenderHint(QPainter::Antialiasing);
   p.setOpacity(1.0);  // bg dictates opacity of ellipse
@@ -388,8 +400,10 @@ ExperimentalButton::ExperimentalButton(QWidget *parent) : experimental_mode(fals
     {4, loadPixmap("../frogpilot/assets/wheel_images/rocket.png", {img_size, img_size})},
     {5, loadPixmap("../frogpilot/assets/wheel_images/hyundai.png", {img_size, img_size})},
     {6, loadPixmap("../frogpilot/assets/wheel_images/stalin.png", {img_size, img_size})},
-    {7, loadPixmap("../frogpilot/assets/random_events/images/firefox.png", {img_size, img_size})}
+    {7, loadPixmap("../frogpilot/assets/random_events/images/firefox.png", {img_size, img_size})},
   };
+
+  wheelImagesGif[1] = new QMovie("../frogpilot/assets/random_events/images/weeb_wheel.gif", QByteArray(), nullptr);
 }
 
 void ExperimentalButton::changeMode() {
@@ -418,6 +432,7 @@ void ExperimentalButton::updateState(const UIState &s, bool leadInfo) {
 
   // FrogPilot variables
   firefoxRandomEventTriggered = scene.current_random_event == 1;
+  weebRandomEventTriggered = scene.current_random_event == 2;
   rotatingWheel = scene.rotating_wheel;
   wheelIcon = scene.wheel_icon;
 
@@ -428,6 +443,18 @@ void ExperimentalButton::updateState(const UIState &s, bool leadInfo) {
     rotationDegree = (rotationDegree + 36) % 360;
     steeringAngleDeg = rotationDegree;
     wheelIcon = 7;
+    update();
+  } else if (weebRandomEventTriggered) {
+    static QLabel *gifLabel = nullptr;
+    if (!gifLabel) {
+      gifLabel = new QLabel(this);
+      QMovie *movie = new QMovie("../frogpilot/assets/random_events/images/weeb_wheel.gif");
+      gifLabel->setMovie(movie);
+      movie->start();
+      gifLabel->resize(img_size, img_size);
+    }
+    gifLabel->show();
+    wheelIconGif = 1;
     update();
   // Update the icon so the steering wheel rotates in real time
   } else if (rotatingWheel && steeringAngleDeg != scene.steering_angle_deg) {
@@ -446,6 +473,8 @@ void ExperimentalButton::paintEvent(QPaintEvent *event) {
   engage_img = wheelImages[wheelIcon];
   QPixmap img = wheelIcon ? engage_img : (experimental_mode ? experimental_img : engage_img);
 
+  QMovie *gif = wheelImagesGif[wheelIconGif];
+
   QColor background_color = wheelIcon != 0 && !isDown() && engageable ?
     (scene.always_on_lateral_active ? QColor(10, 186, 181, 255) :
     (scene.conditional_status == 1 ? QColor(255, 246, 0, 255) :
@@ -454,7 +483,10 @@ void ExperimentalButton::paintEvent(QPaintEvent *event) {
     QColor(0, 0, 0, 166);
 
   if (!(scene.show_driver_camera || scene.map_open && scene.full_map)) {
-    if (rotatingWheel || firefoxRandomEventTriggered) {
+    if (wheelIconGif != 0) {
+      QBrush backgroundBrush(background_color);
+      drawIconGif(p, QPoint(btn_size / 2, btn_size / 2 + y_offset), *gif, backgroundBrush, 1.0);
+    } else if (rotatingWheel || firefoxRandomEventTriggered) {
       drawIconRotate(p, QPoint(btn_size / 2, btn_size / 2 + y_offset), img, background_color, (isDown() || !(engageable || scene.always_on_lateral_active)) ? 0.6 : 1.0, steeringAngleDeg);
     } else {
       drawIcon(p, QPoint(btn_size / 2, btn_size / 2 + y_offset), img, background_color, (isDown() || !(engageable || scene.always_on_lateral_active)) ? 0.6 : 1.0);

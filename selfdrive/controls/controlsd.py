@@ -187,15 +187,14 @@ class Controls:
     self.previously_enabled = False
     self.random_event_triggered = False
     self.stopped_for_light_previously = False
-    self.vCruise69_alert_played = False
 
     self.drive_distance = 0
+    self.max_acceleration = 0
     self.previous_drive_distance = 0
     self.previous_lead_distance = 0
     self.previous_speed_limit = SpeedLimitController.desired_speed_limit
     self.previous_v_cruise_cluster_kph = 0
     self.random_event_timer = 0
-    self.speed_limit_changed_timer = 0
 
     ignore = self.sensor_packets + ['testJoystick']
     if SIMULATION:
@@ -589,6 +588,21 @@ class Controls:
       self.params_memory.put_float("FrogPilotKilometers", self.drive_distance / 1000)
       self.params_memory.put_float("FrogPilotMinutes", self.sm.frame * DT_CTRL / 60)
 
+    # Acceleration Random Event alerts
+    if self.random_events:
+      acceleration = CS.aEgo
+
+      if not CS.gasPressed:
+        self.max_acceleration = max(acceleration, self.max_acceleration)
+      else:
+        self.max_acceleration = 0
+
+      if self.max_acceleration >= 3.0 and acceleration < 1.5:
+        self.events.add(EventName.accel30)
+        self.params_memory.put_int("CurrentRandomEvent", 2)
+        self.random_event_triggered = True
+        self.max_acceleration = 0
+
     # Green light alert
     if self.green_light_alert:
       stopped_for_light = frogpilot_plan.redLight and CS.standstill
@@ -842,10 +856,10 @@ class Controls:
 
       self.previous_v_cruise_cluster_kph = self.v_cruise_helper.v_cruise_cluster_kph
 
-    # Reset the Random Event flag
+    # Reset the Random Event flag after 5 seconds
     if self.random_event_triggered:
       self.random_event_timer += 1
-      if self.random_event_timer >= 500:
+      if self.random_event_timer * DT_CTRL >= 5:
         self.random_event_triggered = False
         self.random_event_timer = 0
         self.params_memory.remove("CurrentRandomEvent")
