@@ -105,15 +105,16 @@ def fill_model_msg(msg: capnp._DynamicStructBuilder, net_output_data: Dict[str, 
       far_lane, near_lane, road_edge = (0, 1, 0) if i == 4 else (3, 2, 1)
 
       y_min = net_output_data['lane_lines'][0, near_lane,:,0]
-      z_min = net_output_data['lane_lines'][0, near_lane,:,1]
-      lane_diff = np.abs(net_output_data['lane_lines'][0,near_lane] - net_output_data['lane_lines'][0,far_lane])
-      road_edge_diff = np.abs(net_output_data['lane_lines'][0,near_lane] - net_output_data['road_edges'][0,road_edge])
+      z_lane_diff = np.abs(net_output_data['lane_lines'][0,near_lane,:,1] - net_output_data['lane_lines'][0,far_lane,:,1])
+      z_road_edge_diff = np.abs(net_output_data['lane_lines'][0,near_lane,:,1] - net_output_data['road_edges'][0,road_edge,:,1])
 
-      y_min += np.where(lane_diff[:,0] < road_edge_diff[:,0], net_output_data['lane_lines'][0,far_lane,:,0], net_output_data['road_edges'][0,road_edge,:,0])
-      z_min += np.where(lane_diff[:,1] < road_edge_diff[:,1], net_output_data['lane_lines'][0,far_lane,:,1], net_output_data['road_edges'][0,road_edge,:,1])
+      y_min += np.where(z_lane_diff < z_road_edge_diff, net_output_data['lane_lines'][0,far_lane,:,0], net_output_data['road_edges'][0,road_edge,:,0])
+
+      z_min_lane = net_output_data['lane_lines'][0, far_lane,:,1]
+      z_min_road_edge = net_output_data['road_edges'][0,road_edge,:,1]
+      z_min = np.maximum(z_min_lane, z_min_road_edge)
 
       y_min /= 2
-      z_min /= 2
 
       fill_xyzt(lane_line, PLAN_T_IDXS, np.array(ModelConstants.X_IDXS), y_min, z_min)
 
