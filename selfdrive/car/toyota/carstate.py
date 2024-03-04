@@ -216,6 +216,7 @@ class CarState(CarStateBase):
       elif self.distance_previously_pressed:
         if self.distance_pressed_counter < CRUISE_LONG_PRESS:
           self.previous_personality_profile = (self.personality_profile + 2) % 3
+          self.fpf.distance_button_function(self.previous_personality_profile)
           self.profile_restored = False
         self.distance_pressed_counter = 0
 
