@@ -435,6 +435,7 @@ void ExperimentalButton::updateState(const UIState &s, bool leadInfo) {
   weebRandomEventTriggered = scene.current_random_event == 2;
   rotatingWheel = scene.rotating_wheel;
   wheelIcon = scene.wheel_icon;
+  wheelIconGif = 0;
 
   y_offset = leadInfo ? 10 : 0;
 
