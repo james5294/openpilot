@@ -18,18 +18,6 @@
 #include "selfdrive/ui/qt/maps/map_panel.h"
 #endif
 
-static void drawIconGif(QPainter &p, const QPoint &center, const QMovie &img, const QBrush &bg, float opacity) {
-  p.setRenderHint(QPainter::Antialiasing);
-  p.setOpacity(1.0);  // bg dictates opacity of ellipse
-  p.setPen(Qt::NoPen);
-  p.setBrush(bg);
-  p.drawEllipse(center, btn_size / 2, btn_size / 2);
-  p.setOpacity(opacity);
-  QPixmap currentFrame = img.currentPixmap();
-  p.drawPixmap(center - QPoint(currentFrame.width() / 2, currentFrame.height() / 2), currentFrame);
-  p.setOpacity(1.0);
-}
-
 static void drawIcon(QPainter &p, const QPoint &center, const QPixmap &img, const QBrush &bg, float opacity) {
   p.setRenderHint(QPainter::Antialiasing);
   p.setOpacity(1.0);  // bg dictates opacity of ellipse
@@ -38,6 +26,18 @@ static void drawIcon(QPainter &p, const QPoint &center, const QPixmap &img, cons
   p.drawEllipse(center, btn_size / 2, btn_size / 2);
   p.setOpacity(opacity);
   p.drawPixmap(center - QPoint(img.width() / 2, img.height() / 2), img);
+  p.setOpacity(1.0);
+}
+
+static void drawIconGif(QPainter &p, const QPoint &center, const QMovie &img, const QBrush &bg, float opacity, int btn_size) {
+  p.setRenderHint(QPainter::Antialiasing);
+  p.setOpacity(1.0);  // bg dictates opacity of ellipse
+  p.setPen(Qt::NoPen);
+  p.setBrush(bg);
+  p.drawEllipse(center.x() - btn_size / 2, center.y() - btn_size / 2, btn_size, btn_size);
+  p.setOpacity(opacity);
+  QPixmap currentFrame = img.currentPixmap();
+  p.drawPixmap(center - QPoint(currentFrame.width() / 2, currentFrame.height() / 2), currentFrame);
   p.setOpacity(1.0);
 }
 
