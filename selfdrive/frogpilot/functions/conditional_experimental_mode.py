@@ -128,7 +128,7 @@ class ConditionalExperimentalMode:
     if self.lead_detected:
       lead_close = lead.dRel <= v_lead * t_follow
       lead_slowing_down = v_lead < self.previous_v_lead
-      lead_stopped = v_lead <= 0
+      lead_stopped = v_lead < 1
 
       self.previous_v_lead = v_lead
 
