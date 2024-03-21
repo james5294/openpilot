@@ -96,6 +96,16 @@ log_debug() {
     fi
 }
 
+# Function to log warning messages
+log_warning() {
+    rotate_logs  # Check if log needs to be rotated
+    if [[ "$DEBUG_MODE" == true ]]; then
+        echo "[WARNING] $(date +"%Y-%m-%d %H:%M:%S") - $1" | tee -a "$LOG_FILE"
+    else
+        echo "[WARNING] $1" | tee -a "$LOG_FILE"
+    fi
+}
+
 # Function to check for updates for the fork_swap.sh script
 check_for_script_updates() {
     UPDATE_AVAILABLE=0
@@ -685,7 +695,27 @@ verify_active_fork() {
         log_info "Active fork: $current_fork_name"
         echo "$current_fork_name" > "$CURRENT_FORK_FILE"
     else
-        log_error "OpenPilot directory is not a symbolic link. Unable to determine the active fork."
+        log_warning "OpenPilot directory is not a symbolic link. Checking if initial setup is needed."
+        
+        # Check if the current fork file exists
+        if [ ! -f "$CURRENT_FORK_FILE" ]; then
+            log_info "Current fork file not found. Performing initial setup."
+            current_fork_name=$(ensure_initial_setup)
+            log_info "Initial setup completed. Active fork: $current_fork_name"
+        else
+            # Read the current fork name from the file
+            current_fork_name=$(cat "$CURRENT_FORK_FILE")
+            log_warning "OpenPilot directory is not a symbolic link, but the current fork file exists."
+            log_info "Active fork: $current_fork_name"
+        fi
+        
+        # Create the symbolic link to the active fork
+        ln -sfn "$FORKS_DIR/$current_fork_name/openpilot" "$OPENPILOT_DIR"
+        if [ $? -eq 0 ]; then
+            log_info "Symbolic link created for the active fork: $current_fork_name"
+        else
+            log_error "Error creating symbolic link for the active fork: $current_fork_name"
+        fi
     fi
 }
 
