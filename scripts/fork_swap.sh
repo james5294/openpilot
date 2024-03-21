@@ -709,12 +709,27 @@ verify_active_fork() {
             log_info "Active fork: $current_fork_name"
         fi
         
+        # Check if the OpenPilot directory exists as a regular directory
+        if [ -d "$OPENPILOT_DIR" ]; then
+            log_info "OpenPilot directory exists as a regular directory. Treating it as the initial fork."
+            
+            # Move the OpenPilot directory to the forks directory
+            mv "$OPENPILOT_DIR" "$FORKS_DIR/$current_fork_name/openpilot"
+            if [ $? -eq 0 ]; then
+                log_info "OpenPilot directory moved to $FORKS_DIR/$current_fork_name/openpilot"
+            else
+                log_error "Error moving the OpenPilot directory to $FORKS_DIR/$current_fork_name/openpilot"
+                return 1
+            fi
+        fi
+        
         # Create the symbolic link to the active fork
         ln -sfn "$FORKS_DIR/$current_fork_name/openpilot" "$OPENPILOT_DIR"
         if [ $? -eq 0 ]; then
             log_info "Symbolic link created for the active fork: $current_fork_name"
         else
             log_error "Error creating symbolic link for the active fork: $current_fork_name"
+            return 1
         fi
     fi
 }
