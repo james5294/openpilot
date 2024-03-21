@@ -713,6 +713,25 @@ verify_active_fork() {
         if [ -d "$OPENPILOT_DIR" ]; then
             log_info "OpenPilot directory exists as a regular directory. Treating it as the initial fork."
             
+            # Check if the target directory already exists
+            if [ -d "$FORKS_DIR/$current_fork_name/openpilot" ]; then
+                log_warning "Target directory $FORKS_DIR/$current_fork_name/openpilot already exists."
+                echo "The target directory $FORKS_DIR/$current_fork_name/openpilot already exists."
+                read -p "Do you want to overwrite it? (y/n): " overwrite_choice
+                
+                case $overwrite_choice in
+                    y|Y)
+                        log_info "User chose to overwrite the existing directory."
+                        rm -rf "$FORKS_DIR/$current_fork_name/openpilot"
+                        ;;
+                    *)
+                        log_warning "User chose not to overwrite the existing directory. Exiting."
+                        echo "Exiting the script. No changes made."
+                        exit 0
+                        ;;
+                esac
+            fi
+            
             # Move the OpenPilot directory to the forks directory
             mv "$OPENPILOT_DIR" "$FORKS_DIR/$current_fork_name/openpilot"
             if [ $? -eq 0 ]; then
