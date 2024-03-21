@@ -108,32 +108,17 @@ check_for_script_updates() {
     log_debug "API URL: $api_url"
 
     # Fetch the latest script content from GitHub API
-    latest_script_content=$(curl -s "$api_url")
+    latest_script_content=$(curl -s "$api_url" | jq -r '.content' | base64 --decode)
     
     # Debugging: Print the latest script content
     log_debug "Latest script content: $latest_script_content"
 
-    latest_script_sha=$(echo "$latest_script_content" | grep -m 1 '"sha"' | cut -d '"' -f 4)
-    if [ -z "$latest_script_sha" ]; then
-        echo "Error: Unable to fetch the latest script SHA. Check your network connection."
-        return 1
-    fi
-
     current_script_content=$(cat "$script_path")
-    current_script_sha=$(echo "$current_script_content" | sha256sum | cut -d ' ' -f 1)
-    if [ -z "$current_script_sha" ]; then
-        echo "Error: Unable to calculate the SHA-256 hash of the current script."
-        log_debug "Script path: $script_path"
-        log_debug "Current script content:"
-        log_debug "$current_script_content"
-        return 1
-    fi
+    
+    # Debugging: Print the current script content
+    log_debug "Current script content: $current_script_content"
 
-    # Debugging: Print the latest and current script SHAs
-    log_debug "Latest script SHA: $latest_script_sha"
-    log_debug "Current script SHA: $current_script_sha"
-
-    if [ "$latest_script_sha" != "$current_script_sha" ]; then
+    if [ "$latest_script_content" != "$current_script_content" ]; then
         echo -e "${RED}Update available for fork_swap.sh.${RESET}"
         UPDATE_AVAILABLE=1
     else
