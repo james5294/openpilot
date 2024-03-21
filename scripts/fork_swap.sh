@@ -705,8 +705,16 @@ verify_active_fork() {
         else
             # Read the current fork name from the file
             current_fork_name=$(cat "$CURRENT_FORK_FILE")
-            log_warning "OpenPilot directory is not a symbolic link, but the current fork file exists."
-            log_info "Active fork: $current_fork_name"
+            
+            # Check if the current fork name is valid
+            if [ -z "$current_fork_name" ] || [ "$current_fork_name" == "/" ]; then
+                log_warning "Invalid current fork name: $current_fork_name. Performing initial setup."
+                current_fork_name=$(ensure_initial_setup)
+                log_info "Initial setup completed. Active fork: $current_fork_name"
+            else
+                log_warning "OpenPilot directory is not a symbolic link, but the current fork file exists."
+                log_info "Active fork: $current_fork_name"
+            fi
         fi
         
         # Check if the OpenPilot directory exists as a regular directory
