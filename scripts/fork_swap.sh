@@ -96,27 +96,29 @@ log_debug() {
     fi
 }
 
-# Function to check for updates for the fork_swap.sh script 
+# Function to check for updates for the fork_swap.sh script
 check_for_script_updates() {
     UPDATE_AVAILABLE=0
     api_url="https://api.github.com/repos/james5294/openpilot/contents/scripts/fork_swap.sh?ref=pal"
     script_path="/data/openpilot/scripts/fork_swap.sh"
 
     echo "Checking for updates to fork_swap.sh..."
-    
+
     # Debugging: Print the API URL
     log_debug "API URL: $api_url"
 
     # Fetch the latest script content from GitHub API
     latest_script_content=$(curl -s "$api_url" | jq -r '.content' | base64 --decode)
-    
+
     # Debugging: Print the latest script content
-    log_debug "Latest script content: $latest_script_content"
+    log_debug "Latest script content:"
+    log_debug "$latest_script_content"
 
     current_script_content=$(cat "$script_path")
-    
+
     # Debugging: Print the current script content
-    log_debug "Current script content: $current_script_content"
+    log_debug "Current script content:"
+    log_debug "$current_script_content"
 
     if [ "$latest_script_content" != "$current_script_content" ]; then
         echo -e "${RED}Update available for fork_swap.sh.${RESET}"
