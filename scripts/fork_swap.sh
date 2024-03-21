@@ -140,16 +140,6 @@ check_for_script_updates() {
 
 # handles the fork setup process on initial run
 ensure_initial_setup() {
-    local current_fork_path=$(readlink "$OPENPILOT_DIR")
-    local current_fork_name=$(basename "$current_fork_path")
-    local info_file="$FORKS_DIR/$current_fork_name/fork_info.json"
-
-    if [ -f "$info_file" ]; then
-        current_fork_name=$(jq -r '.name' "$info_file")
-        echo "$current_fork_name" > "$CURRENT_FORK_FILE"
-        return 0
-    fi
-
     echo "Unknown active fork. Setting up initial fork..."
 
     while true; do
@@ -181,13 +171,23 @@ ensure_initial_setup() {
     # Update the current fork file
     echo "$current_fork_name" > "$CURRENT_FORK_FILE"
 
-    # Create a symbolic link to the initial fork
-    ln -sfn "$OPENPILOT_DIR" "$FORKS_DIR/$current_fork_name/openpilot"
+    # Check if the OpenPilot directory exists as a regular directory
+    if [ -d "$OPENPILOT_DIR" ]; then
+        # Move the OpenPilot directory to the forks directory
+        mv "$OPENPILOT_DIR" "$FORKS_DIR/$current_fork_name/openpilot"
+        if [ $? -eq 0 ]; then
+            log_info "OpenPilot directory moved to $FORKS_DIR/$current_fork_name/openpilot"
+        else
+            log_error "Error moving the OpenPilot directory to $FORKS_DIR/$current_fork_name/openpilot"
+            return 1
+        fi
+    fi
+
+    # Create the symbolic link to the initial fork
+    ln -sfn "$FORKS_DIR/$current_fork_name/openpilot" "$OPENPILOT_DIR"
 
     echo "Initial fork setup complete."
     sleep 2
-
-    echo "$current_fork_name"
 }
 
 # Function to update the fork_swap.sh script to the latest version
@@ -700,63 +700,63 @@ verify_active_fork() {
         # Check if the current fork file exists
         if [ ! -f "$CURRENT_FORK_FILE" ]; then
             log_info "Current fork file not found. Performing initial setup."
-            current_fork_name=$(ensure_initial_setup)
-            log_info "Initial setup completed. Active fork: $current_fork_name"
+            ensure_initial_setup
         else
             # Read the current fork name from the file
             current_fork_name=$(cat "$CURRENT_FORK_FILE")
             
             # Check if the current fork name is valid
-            if [ -z "$current_fork_name" ] || [ "$current_fork_name" == "/" ]; then
+            if [ -z "$current_fork_name" ]; then
                 log_warning "Invalid current fork name: $current_fork_name. Performing initial setup."
-                current_fork_name=$(ensure_initial_setup)
-                log_info "Initial setup completed. Active fork: $current_fork_name"
+                ensure_initial_setup
             else
-                log_warning "OpenPilot directory is not a symbolic link, but the current fork file exists."
                 log_info "Active fork: $current_fork_name"
-            fi
-        fi
-        
-        # Check if the OpenPilot directory exists as a regular directory
-        if [ -d "$OPENPILOT_DIR" ]; then
-            log_info "OpenPilot directory exists as a regular directory. Treating it as the initial fork."
-            
-            # Check if the target directory already exists
-            if [ -d "$FORKS_DIR/$current_fork_name/openpilot" ]; then
-                log_warning "Target directory $FORKS_DIR/$current_fork_name/openpilot already exists."
-                echo "The target directory $FORKS_DIR/$current_fork_name/openpilot already exists."
-                read -p "Do you want to overwrite it? (y/n): " overwrite_choice
                 
-                case $overwrite_choice in
-                    y|Y)
-                        log_info "User chose to overwrite the existing directory."
-                        rm -rf "$FORKS_DIR/$current_fork_name/openpilot"
-                        ;;
-                    *)
-                        log_warning "User chose not to overwrite the existing directory. Exiting."
-                        echo "Exiting the script. No changes made."
-                        exit 0
-                        ;;
-                esac
+                # Check if the OpenPilot directory exists as a regular directory
+                if [ -d "$OPENPILOT_DIR" ]; then
+                    log_info "OpenPilot directory exists as a regular directory. Treating it as the initial fork."
+                    
+                    # Check if the fork info file exists
+                    local info_file="$FORKS_DIR/$current_fork_name/fork_info.json"
+                    if [ ! -f "$info_file" ]; then
+                        log_warning "Fork info file not found for $current_fork_name. Updating fork information."
+                        
+                        # Prompt for the fork URL and branch name
+                        local fork_url=""
+                        echo "Enter the GitHub URL of the fork:"
+                        read fork_url
+                        while ! validate_url "$fork_url"; do
+                            echo "Invalid URL format. Please enter a valid GitHub URL:"
+                            read fork_url
+                        done
+                        
+                        local branch_name=""
+                        echo "Enter the branch name (leave empty for default):"
+                        read branch_name
+                        
+                        # Save the fork info
+                        save_fork_info "$current_fork_name" "$fork_url" "$branch_name"
+                    fi
+                    
+                    # Move the OpenPilot directory to the forks directory
+                    mv "$OPENPILOT_DIR" "$FORKS_DIR/$current_fork_name/openpilot"
+                    if [ $? -eq 0 ]; then
+                        log_info "OpenPilot directory moved to $FORKS_DIR/$current_fork_name/openpilot"
+                    else
+                        log_error "Error moving the OpenPilot directory to $FORKS_DIR/$current_fork_name/openpilot"
+                        return 1
+                    fi
+                fi
+                
+                # Create the symbolic link to the active fork
+                ln -sfn "$FORKS_DIR/$current_fork_name/openpilot" "$OPENPILOT_DIR"
+                if [ $? -eq 0 ]; then
+                    log_info "Symbolic link created for the active fork: $current_fork_name"
+                else
+                    log_error "Error creating symbolic link for the active fork: $current_fork_name"
+                    return 1
+                fi
             fi
-            
-            # Move the OpenPilot directory to the forks directory
-            mv "$OPENPILOT_DIR" "$FORKS_DIR/$current_fork_name/openpilot"
-            if [ $? -eq 0 ]; then
-                log_info "OpenPilot directory moved to $FORKS_DIR/$current_fork_name/openpilot"
-            else
-                log_error "Error moving the OpenPilot directory to $FORKS_DIR/$current_fork_name/openpilot"
-                return 1
-            fi
-        fi
-        
-        # Create the symbolic link to the active fork
-        ln -sfn "$FORKS_DIR/$current_fork_name/openpilot" "$OPENPILOT_DIR"
-        if [ $? -eq 0 ]; then
-            log_info "Symbolic link created for the active fork: $current_fork_name"
-        else
-            log_error "Error creating symbolic link for the active fork: $current_fork_name"
-            return 1
         fi
     fi
 }
