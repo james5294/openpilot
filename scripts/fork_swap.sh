@@ -139,7 +139,7 @@ check_for_script_updates() {
 }
 
 # handles the fork setup process on initial run
-ensure_initial_setup() {
+initial_setup() {
     echo "Setting up initial fork..."
 
     while true; do
@@ -188,6 +188,8 @@ ensure_initial_setup() {
 
     echo "Initial fork setup complete."
     sleep 2
+
+    return 0
 }
 
 # Function to update the fork_swap.sh script to the latest version
@@ -344,7 +346,7 @@ clone_fork() {
     local new_fork_name=""
     echo "Enter a name for the new fork:"
     read new_fork_name
-    while ! validate_input "$new_fork_name"; do
+    while ! validate_general_input "$new_fork_name"; do
         echo "Invalid input. Names can only contain alphanumeric characters, dashes, and underscores."
         echo "Enter a name for the new fork:"
         read new_fork_name
@@ -395,14 +397,9 @@ clone_fork() {
     temp_script_path=$(mktemp)
     cp "$0" "$temp_script_path"
 
-    # Clone the fork
-    if [ -z "$branch_name" ]; then
-        git clone --single-branch --recurse-submodules "$fork_url" "$target_dir"
-        clone_status=$?
-    else
-        git clone -b "$branch_name" --single-branch --recurse-submodules "$fork_url" "$target_dir"
-        clone_status=$?
-    fi
+    # Clone the fork repository
+    clone_fork_repository "$new_fork_name" "$fork_url" "$branch_name" "$target_dir"
+    clone_status=$?
 
     if [ $clone_status -ne 0 ]; then
         log_error "Failed to clone the fork repository. URL: $fork_url, Branch: $branch_name"
@@ -466,7 +463,27 @@ clone_fork() {
     fi
 
     # Verify and correct the active fork after cloning
-    verify_active_fork
+    manage_active_fork
+}
+
+Certainly! Here's the rest of the code from the clone_fork function until the end of the script:
+
+bash
+
+
+Copy code
+# Function to clone the fork repository
+clone_fork_repository() {
+    local new_fork_name="$1"
+    local fork_url="$2"
+    local branch_name="$3"
+    local target_dir="$4"
+
+    if [ -z "$branch_name" ]; then
+        git clone --single-branch --recurse-submodules "$fork_url" "$target_dir"
+    else
+        git clone -b "$branch_name" --single-branch --recurse-submodules "$fork_url" "$target_dir"
+    fi
 }
 
 # Function to switch to a specified cloned fork
@@ -527,14 +544,14 @@ switch_fork() {
     fi
 
     # Verify and correct the active fork after switching
-    verify_active_fork
+    manage_active_fork
 }
 
 #Function to delete a specified fork
 delete_fork() {
     # Prompt the user for the name of the fork to delete and validate the input
     read -p "Enter the name of the fork to delete: " delete_fork_name
-    validate_input "$delete_fork_name" || exit 1  # Exit if input is invalid
+    validate_general_input "$delete_fork_name" || exit 1  # Exit if input is invalid
 
     log_debug "Deleting fork: $delete_fork_name"
 
@@ -568,7 +585,7 @@ delete_fork() {
     fi
 
     # Verify and correct the active fork after deleting
-    verify_active_fork
+    manage_active_fork
 }
 
 # Function to update a specified fork to the latest version
@@ -640,7 +657,6 @@ get_available_disk_space() {
 
 # Function to ensure fork_swap.sh exists in the current fork's directory and is up-to-date
 ensure_fork_swap_script() {
-    local fork_name_lower=$(echo "${CURRENT_FORK_NAME}" | tr '[:upper:]' '[:lower:]') # Convert to lowercase
     local target_script="$OPENPILOT_DIR/scripts/fork_swap.sh"
     local source_script="$FORKS_DIR/james5294/openpilot/scripts/fork_swap.sh"
     
@@ -669,8 +685,8 @@ validate_variable() {
     fi
 }
 
-# Function to validate fork name and avoid special characters
-validate_input() {
+# Function to validate general input and avoid special characters
+validate_general_input() {
     if [[ $1 =~ [^a-zA-Z0-9_-] ]]; then
         echo "Error: Invalid input. Only alphanumeric characters, dashes, and underscores are allowed." | tee -a $LOG_FILE
         return 1
@@ -688,7 +704,7 @@ validate_url() {
 }
 
 # Compares the actual symbolic link target with the stored active fork file
-verify_active_fork() {
+manage_active_fork() {
     if [ -L "$OPENPILOT_DIR" ]; then
         local current_fork_path=$(readlink "$OPENPILOT_DIR")
         local current_fork_name=$(basename "$(dirname "$current_fork_path")")
@@ -700,35 +716,29 @@ verify_active_fork() {
         # Check if the current fork file exists
         if [ ! -f "$CURRENT_FORK_FILE" ]; then
             log_info "Current fork file not found. Performing initial setup."
-            ensure_initial_setup
+            initial_setup
         else
             # Read the current fork name from the file
             current_fork_name=$(cat "$CURRENT_FORK_FILE")
 
-            # Check if the current fork name is valid
-            if [ -z "$current_fork_name" ] || [ "$current_fork_name" == "forks" ]; then
-                log_warning "Invalid current fork name: $current_fork_name. Performing initial setup."
-                ensure_initial_setup
+            # Check if the current fork name is valid and the corresponding fork directory exists
+            if [ -z "$current_fork_name" ] || [ ! -d "$FORKS_DIR/$current_fork_name" ]; then
+                log_warning "Invalid current fork name or missing fork directory: $current_fork_name. Performing initial setup."
+                initial_setup
             else
                 log_info "Active fork: $current_fork_name"
 
                 # Check if the OpenPilot directory exists as a regular directory
                 if [ -d "$OPENPILOT_DIR" ]; then
-                    log_info "OpenPilot directory exists as a regular directory. Treating it as the initial fork."
+                    log_info "OpenPilot directory exists as a regular directory. Moving it to the forks directory."
 
-                    # Check if the fork directory exists
-                    if [ ! -d "$FORKS_DIR/$current_fork_name" ]; then
-                        log_warning "Fork directory not found for $current_fork_name. Performing initial setup."
-                        ensure_initial_setup
+                    # Move the OpenPilot directory to the forks directory
+                    mv "$OPENPILOT_DIR" "$FORKS_DIR/$current_fork_name/openpilot"
+                    if [ $? -eq 0 ]; then
+                        log_info "OpenPilot directory moved to $FORKS_DIR/$current_fork_name/openpilot"
                     else
-                        # Move the OpenPilot directory to the forks directory
-                        mv "$OPENPILOT_DIR" "$FORKS_DIR/$current_fork_name/openpilot"
-                        if [ $? -eq 0 ]; then
-                            log_info "OpenPilot directory moved to $FORKS_DIR/$current_fork_name/openpilot"
-                        else
-                            log_error "Error moving the OpenPilot directory to $FORKS_DIR/$current_fork_name/openpilot"
-                            return 1
-                        fi
+                        log_error "Error moving the OpenPilot directory to $FORKS_DIR/$current_fork_name/openpilot"
+                        return 1
                     fi
                 fi
 
@@ -771,7 +781,7 @@ display_welcome_screen() {
     local current_fork_name=$(cat "$CURRENT_FORK_FILE")
     
     if [ -z "$current_fork_name" ]; then
-        current_fork_name=$(ensure_initial_setup)
+        current_fork_name=$(initial_setup)
     fi
 
     # Clear the screen only if not running in debug mode
@@ -819,30 +829,6 @@ display_welcome_screen() {
         echo -e "               5. Type ${GREEN}'Update script'${RESET} to update fork_swap.sh." | tee -a $LOG_FILE
     fi
     echo -e "${YELLOW}=========================================================================${RESET}"
-}
-
-# Updates what fork is the current fork and logs the result.
-update_current_fork() {
-    if [ -z "$1" ]; then
-        log_error "No fork name provided to update_current_fork function."
-        return
-    fi
-
-    log_info "Attempting to update the current fork to: $1"
-    
-    # Try to write the fork name to the CURRENT_FORK_FILE and capture any error message
-    ERROR_MSG=$(echo "$1" > "$CURRENT_FORK_FILE" 2>&1)
-    
-    # Check if the operation was successful by reading back the file
-    CURRENT_FORK=$(cat "$CURRENT_FORK_FILE")
-    
-    log_info "Retrieved current fork value from file: $CURRENT_FORK"
-    
-    if [ "$CURRENT_FORK" == "$1" ]; then
-        log_info "Current fork updated successfully to: $1"
-    else
-        log_error "Mismatch detected. Expected fork: $1, but found: $CURRENT_FORK. Error during write (if any): $ERROR_MSG"
-    fi
 }
 
 # Ensure necessary directories and files exist
@@ -901,7 +887,7 @@ trap cleanup ERR SIGINT
 display_welcome_screen
 
 # Verify and correct the active fork on script startup
-verify_active_fork
+manage_active_fork
 
 # Main loop for script
 while true; do
