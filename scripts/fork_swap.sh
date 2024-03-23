@@ -89,33 +89,13 @@ check_for_fork_updates() {
         return 1
     fi
 
-    # Check if the branch exists in the remote repository
-    if [ -z "$branch_name" ]; then
-        # Branch name is empty, use the default branch
-        branch_name=$(git rev-parse --abbrev-ref origin/HEAD | sed 's/^origin\///')
-    else
-        # Check if the specified branch exists in the remote repository
-        if ! git ls-remote --exit-code --heads origin "$branch_name" > /dev/null 2>&1; then
-            echo "Error: Branch '$branch_name' not found in the remote repository for '$fork_name'."
-            popd > /dev/null
-            return 1
-        fi
-    fi
+    # Get the latest commit hash on the specified branch from the remote repository
+    local latest_remote_commit=$(git rev-parse "origin/$branch_name")
 
-    # Ensure the local repository is clean (no uncommitted changes)
-    if [ -n "$(git status --porcelain)" ]; then
-        echo "Local changes detected in '$fork_name'. Skipping update check."
-        popd > /dev/null
-        return 0
-    fi
+    # Get the current commit hash of the local repository
+    local current_local_commit=$(git rev-parse HEAD)
 
-    # Reset the local branch to the remote tracking branch
-    git reset --hard "origin/$branch_name"
-
-    # Compare commits
-    local local_commit=$(git rev-parse HEAD)
-    local remote_commit=$(git rev-parse "origin/$branch_name")
-    if [ "$local_commit" != "$remote_commit" ]; then
+    if [ "$current_local_commit" != "$latest_remote_commit" ]; then
         update_status=1  # Update available
     fi
 
