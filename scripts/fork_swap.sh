@@ -58,218 +58,6 @@ else
     DEBUG_MODE=false
 fi
 
-# Function to rotate logs
-rotate_logs() {
-    local log_size=$(stat -c %s "$LOG_FILE")
-    if [ $log_size -ge $MAX_LOG_SIZE ]; then
-        mv "$LOG_FILE" "$LOG_FILE.old"
-        echo "Log rotated on $(date)" > "$LOG_FILE"
-    fi
-}
-
-# Function to log general info messages
-log_info() {
-    rotate_logs  # Check if log needs to be rotated
-    if [[ "$DEBUG_MODE" == true ]]; then
-        echo "[INFO] $(date +"%Y-%m-%d %H:%M:%S") - $1" | tee -a "$LOG_FILE"
-    else
-        echo "$1" | tee -a "$LOG_FILE"
-    fi
-}
-
-# Function to log error messages
-log_error() {
-    rotate_logs  # Check if log needs to be rotated
-    if [[ "$DEBUG_MODE" == true ]]; then
-        echo "[ERROR] $(date +"%Y-%m-%d %H:%M:%S") - $1" | tee -a "$LOG_FILE"
-    else
-        echo "----- Error on $(date) -----"
-        echo "$1" | tee -a "$LOG_FILE"
-    fi
-}
-
-# Function to log debug messages
-log_debug() {
-    rotate_logs  # Check if log needs to be rotated
-    if [[ "$DEBUG_MODE" == true ]]; then
-        echo "[DEBUG] $(date +"%Y-%m-%d %H:%M:%S") - $1" | tee -a "$LOG_FILE"
-    fi
-}
-
-# Function to log warning messages
-log_warning() {
-    rotate_logs  # Check if log needs to be rotated
-    if [[ "$DEBUG_MODE" == true ]]; then
-        echo "[WARNING] $(date +"%Y-%m-%d %H:%M:%S") - $1" | tee -a "$LOG_FILE"
-    else
-        echo "[WARNING] $1" | tee -a "$LOG_FILE"
-    fi
-}
-
-# Function to check for updates for the fork_swap.sh script
-check_for_script_updates() {
-    UPDATE_AVAILABLE=0
-    api_url="https://api.github.com/repos/james5294/openpilot/contents/scripts/fork_swap.sh?ref=pal"
-    script_path="/data/openpilot/scripts/fork_swap.sh"
-
-    echo "Checking for updates to fork_swap.sh..."
-
-    # Debugging: Print the API URL
-    log_debug "API URL: $api_url"
-
-    # Fetch the latest script content from GitHub API
-    latest_script_content=$(curl -s "$api_url" | jq -r '.content' | base64 --decode)
-
-    # Debugging: Print the latest script content
-    log_debug "Latest script content:"
-    log_debug "$latest_script_content"
-
-    current_script_content=$(cat "$script_path")
-
-    # Debugging: Print the current script content
-    log_debug "Current script content:"
-    log_debug "$current_script_content"
-
-    if [ "$latest_script_content" != "$current_script_content" ]; then
-        echo -e "${RED}Update available for fork_swap.sh.${RESET}"
-        UPDATE_AVAILABLE=1
-    else
-        echo -e "${GREEN}fork_swap.sh is up to date.${RESET}"
-    fi
-}
-
-# handles the fork setup process on initial run
-ensure_initial_setup() {
-    echo "Unknown active fork. Setting up initial fork..."
-
-    while true; do
-        read -p "Enter the fork name: " current_fork_name
-        if [ -z "$current_fork_name" ]; then
-            echo "Fork name cannot be empty. Please try again."
-        else
-            break
-        fi
-    done
-
-    while true; do
-        read -p "Enter the fork URL: " fork_url
-        if ! validate_url "$fork_url"; then
-            echo "Invalid URL format. Please enter a valid GitHub URL."
-        else
-            break
-        fi
-    done
-
-    read -p "Enter the branch name (leave empty for default): " branch_name
-
-    # Create the directory structure for the initial fork
-    mkdir -p "$FORKS_DIR/$current_fork_name/openpilot"
-
-    # Save the fork info
-    save_fork_info "$current_fork_name" "$fork_url" "$branch_name"
-
-    # Update the current fork file
-    echo "$current_fork_name" > "$CURRENT_FORK_FILE"
-
-    # Check if the OpenPilot directory exists as a regular directory
-    if [ -d "$OPENPILOT_DIR" ]; then
-        # Move the OpenPilot directory to the forks directory
-        mv "$OPENPILOT_DIR" "$FORKS_DIR/$current_fork_name/openpilot"
-        if [ $? -eq 0 ]; then
-            log_info "OpenPilot directory moved to $FORKS_DIR/$current_fork_name/openpilot"
-        else
-            log_error "Error moving the OpenPilot directory to $FORKS_DIR/$current_fork_name/openpilot"
-            return 1
-        fi
-    fi
-
-    # Create the symbolic link to the initial fork
-    ln -sfn "$FORKS_DIR/$current_fork_name/openpilot" "$OPENPILOT_DIR"
-
-    echo "Initial fork setup complete."
-    sleep 2
-}
-
-# Function to update the fork_swap.sh script to the latest version
-update_script() {
-    # GitHub API URL to get the latest script content
-    api_url="https://api.github.com/repos/james5294/openpilot/contents/scripts/fork_swap.sh?ref=forkswap"
-
-    # Path of the current script
-    script_path="/data/openpilot/scripts/fork_swap.sh"
-
-    # Temporary file path
-    temp_script_path=$(mktemp)
-
-    echo "Checking for the latest script version..."
-
-    # Fetch the latest script content
-    latest_script_content=$(curl -fsSL "$api_url" | jq -r '.content' | base64 --decode)
-
-    if [ -z "$latest_script_content" ]; then
-        echo "Error: Unable to fetch the latest script content."
-        rm -f "$temp_script_path"
-        return 1
-    fi
-
-    # Write the latest script content to the temporary file
-    echo "$latest_script_content" > "$temp_script_path"
-
-    # Compare the temporary script with the current one
-    if cmp -s "$temp_script_path" "$script_path"; then
-        echo "No update needed. The script is already up to date."
-        rm -f "$temp_script_path"
-        return 0
-    fi
-
-    echo "Update found. Applying update..."
-
-    # Replace the old script with the new one
-    if mv "$temp_script_path" "$script_path"; then
-        echo "Script updated successfully. Restarting..."
-
-        # Make the updated script executable
-        chmod +x "$script_path"
-        log_info "Updated script made executable."
-
-        # Execute the updated script
-        exec sudo bash "$script_path"
-    else
-        echo "Error: Failed to update the script. Check file permissions."
-        rm -f "$temp_script_path"
-        return 1
-    fi
-}
-
-# Function to manage and save fork information in JSON format
-save_fork_info() {
-    local fork_name="$1"
-    local fork_url="$2"
-    local branch_name="$3"
-    local info_file="$FORKS_DIR/$fork_name/fork_info.json"
-
-    # Ensure the directory exists
-    mkdir -p "$(dirname "$info_file")"
-
-    # Prepare JSON content
-    local json_content=$(cat <<EOF
-{
-  "name": "$fork_name",
-  "url": "$fork_url",
-  "branch": "$branch_name"
-}
-EOF
-)
-
-    # Save JSON content to the file
-    echo "$json_content" > "$info_file"
-    if [ $? -eq 0 ]; then
-        echo "Fork information for $fork_name saved successfully."
-    else
-        echo "Error saving fork information for $fork_name."
-    fi
-}
-
 # Function to check for updates for all cloned forks
 check_for_fork_updates() {
     local fork_name="$1"
@@ -335,6 +123,73 @@ check_for_fork_updates() {
     return $update_status
 }
 
+# Function to check for updates for the fork_swap.sh script
+check_for_script_updates() {
+    UPDATE_AVAILABLE=0
+    api_url="https://api.github.com/repos/james5294/openpilot/contents/scripts/fork_swap.sh?ref=pal"
+    script_path="/data/openpilot/scripts/fork_swap.sh"
+
+    echo "Checking for updates to fork_swap.sh..."
+
+    # Debugging: Print the API URL
+    log_debug "API URL: $api_url"
+
+    # Fetch the latest script content from GitHub API
+    latest_script_content=$(curl -s "$api_url" | jq -r '.content' | base64 --decode)
+
+    # Debugging: Print the latest script content
+    log_debug "Latest script content:"
+    log_debug "$latest_script_content"
+
+    current_script_content=$(cat "$script_path")
+
+    # Debugging: Print the current script content
+    log_debug "Current script content:"
+    log_debug "$current_script_content"
+
+    if [ "$latest_script_content" != "$current_script_content" ]; then
+        echo -e "${RED}Update available for fork_swap.sh.${RESET}"
+        UPDATE_AVAILABLE=1
+    else
+        echo -e "${GREEN}fork_swap.sh is up to date.${RESET}"
+    fi
+}
+
+# Cleanup function to restore previous state in case of errors
+cleanup() {
+    echo "Cleaning up..." | tee -a $LOG_FILE
+
+    # Restoring the previous OpenPilot instance
+    if [ -L "$OPENPILOT_DIR" ]; then
+        rm -f "$OPENPILOT_DIR"
+        if [[ $? -eq 0 ]]; then
+            log_info "Successfully removed the symbolic link for OpenPilot directory."
+        else
+            log_error "Error while removing the symbolic link for OpenPilot directory."
+        fi
+    fi
+
+    # Restoring original params (assuming a backup was made)
+    if [ -d "$FORKS_DIR/$CURRENT_FORK_NAME/params" ]; then
+        cp -r "$FORKS_DIR/$CURRENT_FORK_NAME/params" "$PARAMS_PATH"
+        if [[ $? -eq 0 ]]; then
+            log_info "Successfully restored params for $CURRENT_FORK_NAME."
+        else
+            log_error "Error while restoring params for $CURRENT_FORK_NAME."
+        fi
+    fi
+
+    # Remove any temporary directories or files if they exist
+    rm -rf "$FORKS_DIR/temp"
+    if [[ $? -eq 0 ]]; then
+        log_info "Temporary directories or files removed successfully."
+    else
+        log_error "Error while removing temporary directories or files."
+    fi
+
+    echo "Cleanup completed." | tee -a $LOG_FILE
+}
+
 # Function to clone a new OpenPilot fork
 clone_fork() {
     # Ensure the forks directory exists
@@ -395,14 +250,9 @@ clone_fork() {
     temp_script_path=$(mktemp)
     cp "$0" "$temp_script_path"
 
-    # Clone the fork
-    if [ -z "$branch_name" ]; then
-        git clone --single-branch --recurse-submodules "$fork_url" "$target_dir"
-        clone_status=$?
-    else
-        git clone -b "$branch_name" --single-branch --recurse-submodules "$fork_url" "$target_dir"
-        clone_status=$?
-    fi
+    # Clone the fork repository
+    clone_fork_repository "$new_fork_name" "$fork_url" "$branch_name" "$target_dir"
+    clone_status=$?
 
     if [ $clone_status -ne 0 ]; then
         log_error "Failed to clone the fork repository. URL: $fork_url, Branch: $branch_name"
@@ -421,12 +271,7 @@ clone_fork() {
 
     # Update current fork only if the cloning process was successful
     if [ $clone_status -eq 0 ]; then
-        echo "$new_fork_name" > "$CURRENT_FORK_FILE"
-        if [ $? -eq 0 ]; then
-            log_info "Current fork updated to $new_fork_name."
-        else
-            log_error "Error updating current fork file after cloning. Please check permissions."
-        fi
+        update_current_fork "$new_fork_name"
     fi
 
     # Remove existing symbolic link and create a new one to the new fork
@@ -469,65 +314,18 @@ clone_fork() {
     verify_active_fork
 }
 
-# Function to switch to a specified cloned fork
-switch_fork() {
-    local fork="$1"
-    local fork_path="$FORKS_DIR/$fork"
+# Function to clone the fork repository
+clone_fork_repository() {
+    local new_fork_name="$1"
+    local fork_url="$2"
+    local branch_name="$3"
+    local target_dir="$4"
 
-    log_debug "Switching to fork: $fork"
-
-    if [ -d "$fork_path/openpilot" ]; then
-        read -p "Switching to $fork. Are you sure? (y/n) " switch_choice
-        if [[ "$switch_choice" == "y" || "$switch_choice" == "Y" ]]; then
-            # Backup current params if they exist
-            if [ -d "$PARAMS_PATH" ]; then
-                mkdir -p "$FORKS_DIR/$CURRENT_FORK_NAME/params"
-                cp -r "$PARAMS_PATH"/* "$FORKS_DIR/$CURRENT_FORK_NAME/params/"
-                log_info "Params for $CURRENT_FORK_NAME backed up."
-            fi
-
-            # Remove existing symbolic link and create a new one to the selected fork
-            rm -f "$OPENPILOT_DIR"
-            ln -sfn "$fork_path/openpilot" "$OPENPILOT_DIR"
-            if [ $? -eq 0 ]; then
-                log_info "Switched to fork: $fork using symbolic link."
-            else
-                log_error "Error creating symbolic link to $fork. Please check permissions."
-                return 1
-            fi
-
-            # Update the current fork file
-            echo "$fork" > "$CURRENT_FORK_FILE"
-            if [ $? -eq 0 ]; then
-                log_info "Current fork updated to $fork."
-            else
-                log_error "Error updating current fork file. Please check permissions."
-                return 1
-            fi
-
-            # Ensure fork_swap.sh script is present and executable
-            ensure_fork_swap_script
-            chmod +x "$OPENPILOT_DIR/scripts/fork_swap.sh"
-            log_info "Permissions for fork_swap.sh adjusted."
-
-            echo "Switched to $fork."
-            read -p "Would you like to reboot now for changes to take effect? (y/n) " reboot_choice
-            if [[ "$reboot_choice" == "y" || "$reboot_choice" == "Y" ]]; then
-                echo "Rebooting..."
-                sudo reboot
-            else
-                echo "Please reboot manually for changes to take effect."
-            fi
-        else
-            echo "Switch aborted. No changes made."
-        fi
+    if [ -z "$branch_name" ]; then
+        git clone --single-branch --recurse-submodules "$fork_url" "$target_dir"
     else
-        log_error "Fork '$fork' does not exist. Cannot switch to it."
-        echo "Error: Fork '$fork' does not exist. Please choose a valid fork."
+        git clone -b "$branch_name" --single-branch --recurse-submodules "$fork_url" "$target_dir"
     fi
-
-    # Verify and correct the active fork after switching
-    verify_active_fork
 }
 
 #Function to delete a specified fork
@@ -569,6 +367,369 @@ delete_fork() {
 
     # Verify and correct the active fork after deleting
     verify_active_fork
+}
+
+# Function to display welcome screen
+display_welcome_screen() {
+    local current_fork_name=$(cat "$CURRENT_FORK_FILE")
+    
+    if [ -z "$current_fork_name" ]; then
+        ensure_initial_setup
+        current_fork_name=$(cat "$CURRENT_FORK_FILE")
+    fi
+
+    # Clear the screen only if not running in debug mode
+    if [[ "$DEBUG_MODE" != true ]]; then
+        clear
+    fi
+
+    # Display the welcome message with dynamic info
+    echo -e "${YELLOW}=========================================================================${RESET}"
+    echo -e "${RED}                            **Fork Swap Utility**                   ${RESET}"
+    echo "                                   v$SCRIPT_VERSION                     "
+    echo -e "${YELLOW}=========================================================================${RESET}"
+    echo "              This utility allows you to switch between different"
+    echo "                        forks of the OpenPilot project."
+    if [ $UPDATE_AVAILABLE -eq 1 ]; then
+        echo -e "${RED}                   *An update is available for fork_swap.sh*${RESET}"
+    else
+        echo -e "${GREEN}                          *This script is up to date*${RESET}"
+    fi
+    echo ""
+    echo ""
+    echo -e "${CYAN}Current Active Fork:${RESET} $current_fork_name" | tee -a $LOG_FILE
+    echo -e "${MAGENTA}Available Disk Space: ${RESET}${YELLOW}$DISK_SPACE${RESET}"
+    echo ""
+
+    # Display available forks with update status
+    echo -e "${GREEN}Available forks:${RESET}"
+    for fork in $(ls "$FORKS_DIR" 2>/dev/null); do
+        if [ -d "$FORKS_DIR/$fork/openpilot" ]; then
+            if check_for_fork_updates "$fork"; then
+                echo "$fork - ${CYAN}(update available)${RESET}"
+            else
+                echo "$fork"
+            fi
+        fi
+    done
+    echo ""
+    echo "Please select an option:"
+    echo ""
+    echo "               1. ${GREEN}Fork name ${RESET}from above you want to switch to."
+    echo "               2. ${MAGENTA}'Clone'${RESET} to clone a new fork." | tee -a $LOG_FILE
+    echo -e "               3. ${RED}'Delete'${RESET} to delete an available fork." | tee -a $LOG_FILE
+    echo -e "               4. ${RED}'Exit'${RESET} to close the script." | tee -a $LOG_FILE
+    if [ $UPDATE_AVAILABLE -eq 1 ]; then
+        echo -e "               5. Type ${GREEN}'Update script'${RESET} to update fork_swap.sh." | tee -a $LOG_FILE
+    fi
+    echo -e "${YELLOW}=========================================================================${RESET}"
+}
+
+# Function to ensure fork_swap.sh exists in the current fork's directory and is up-to-date
+ensure_fork_swap_script() {
+    local target_script="$OPENPILOT_DIR/scripts/fork_swap.sh"
+    local source_script="$FORKS_DIR/james5294/openpilot/scripts/fork_swap.sh"
+    
+    # Dereference the symlink to get the actual fork directory
+    local real_fork_dir=$(realpath "$OPENPILOT_DIR")
+    
+    if [ -f "$source_script" ]; then
+        log_info "Ensuring fork_swap.sh is up-to-date in current fork's scripts directory..."
+        cp "$source_script" "$real_fork_dir/scripts/fork_swap.sh"
+        
+        if [[ $? -eq 0 ]]; then
+            log_info "fork_swap.sh copied/updated successfully in the current fork's scripts directory."
+        else
+            log_error "Error while copying/updating fork_swap.sh in the current fork's scripts directory."
+        fi
+    else
+        log_error "Source script '$source_script' not found. Unable to update fork_swap.sh in the current fork's directory."
+    fi
+}
+
+# handles the fork setup process on initial run
+ensure_initial_setup() {
+    echo "Unknown active fork. Setting up initial fork..."
+
+    while true; do
+        read -p "Enter a valid fork name (alphanumeric, dashes, and underscores allowed): " current_fork_name
+        if ! validate_fork_name "$current_fork_name"; then
+            echo "Invalid fork name. Please try again."
+        else
+            break
+        fi
+    done
+
+    while true; do
+        read -p "Enter the fork URL: " fork_url
+        if ! validate_url "$fork_url"; then
+            echo "Invalid URL format. Please enter a valid GitHub URL."
+        else
+            break
+        fi
+    done
+
+    read -p "Enter the branch name (leave empty for default): " branch_name
+
+    # Create the directory structure for the initial fork
+    mkdir -p "$FORKS_DIR/$current_fork_name/openpilot"
+
+    # Save the fork info
+    save_fork_info "$current_fork_name" "$fork_url" "$branch_name"
+
+    # Update the current fork file
+    echo "$current_fork_name" > "$CURRENT_FORK_FILE"
+
+    # Check if the OpenPilot directory exists as a regular directory
+    if [ -d "$OPENPILOT_DIR" ]; then
+        # Move the OpenPilot directory to the forks directory
+        mv "$OPENPILOT_DIR" "$FORKS_DIR/$current_fork_name/openpilot"
+        if [ $? -eq 0 ]; then
+            log_info "OpenPilot directory moved to $FORKS_DIR/$current_fork_name/openpilot"
+        else
+            log_error "Error moving the OpenPilot directory to $FORKS_DIR/$current_fork_name/openpilot"
+            return 1
+        fi
+    fi
+
+    # Create the symbolic link to the initial fork
+    ln -sfn "$FORKS_DIR/$current_fork_name/openpilot" "$OPENPILOT_DIR"
+
+    echo "Initial fork setup complete."
+    sleep 2
+}
+
+# Function to get available disk space
+get_available_disk_space() {
+    DISK_SPACE_OUTPUT=$(df -h /data)
+    #echo "Debug: df -h /data returns: $DISK_SPACE_OUTPUT"
+
+    DISK_SPACE=$(echo "$DISK_SPACE_OUTPUT" | awk 'NR==2 {print $4}')
+    #echo "Debug: Extracted disk space is: $DISK_SPACE"
+
+    echo -e "${MAGENTA}Available Disk Space: ${RESET}${YELLOW}$DISK_SPACE${RESET}"
+}
+
+# Function to log debug messages
+log_debug() {
+    rotate_logs  # Check if log needs to be rotated
+    if [[ "$DEBUG_MODE" == true ]]; then
+        echo "[DEBUG] $(date +"%Y-%m-%d %H:%M:%S") - $1" | tee -a "$LOG_FILE"
+    fi
+}
+
+# Function to log error messages
+log_error() {
+    rotate_logs  # Check if log needs to be rotated
+    if [[ "$DEBUG_MODE" == true ]]; then
+        echo "[ERROR] $(date +"%Y-%m-%d %H:%M:%S") - $1" | tee -a "$LOG_FILE"
+    else
+        echo "----- Error on $(date) -----"
+        echo "$1" | tee -a "$LOG_FILE"
+    fi
+}
+
+# Function to log general info messages
+log_info() {
+    rotate_logs  # Check if log needs to be rotated
+    if [[ "$DEBUG_MODE" == true ]]; then
+        echo "[INFO] $(date +"%Y-%m-%d %H:%M:%S") - $1" | tee -a "$LOG_FILE"
+    else
+        echo "$1" | tee -a "$LOG_FILE"
+    fi
+}
+
+# Function to log warning messages
+log_warning() {
+    rotate_logs  # Check if log needs to be rotated
+    if [[ "$DEBUG_MODE" == true ]]; then
+        echo "[WARNING] $(date +"%Y-%m-%d %H:%M:%S") - $1" | tee -a "$LOG_FILE"
+    else
+        echo "[WARNING] $1" | tee -a "$LOG_FILE"
+    fi
+}
+
+# Function to rotate logs
+rotate_logs() {
+    local log_size=$(stat -c %s "$LOG_FILE")
+    if [ $log_size -ge $MAX_LOG_SIZE ]; then
+        mv "$LOG_FILE" "$LOG_FILE.old"
+        echo "Log rotated on $(date)" > "$LOG_FILE"
+    fi
+}
+
+# Function to retry operations a specified number of times (for network operations)
+retry_operation() {
+    local retries=$MAX_RETRIES
+    until "$@"; do
+        retries=$((retries - 1))
+        if [ $retries -lt 1 ]; then
+            echo "Operation failed after $MAX_RETRIES attempts. Exiting." | tee -a $LOG_FILE
+            cleanup
+            exit 1
+        fi
+        echo "Operation failed. Retrying... ($retries attempts remaining)" | tee -a $LOG_FILE
+        sleep 2
+    done
+}
+
+# Function to manage and save fork information in JSON format
+save_fork_info() {
+    local fork_name="$1"
+    local fork_url="$2"
+    local branch_name="$3"
+    local info_file="$FORKS_DIR/$fork_name/fork_info.json"
+
+    # Ensure the directory exists
+    mkdir -p "$(dirname "$info_file")"
+
+    # Prepare JSON content
+    local json_content=$(cat <<EOF
+{
+  "name": "$fork_name",
+  "url": "$fork_url",
+  "branch": "$branch_name"
+}
+EOF
+)
+
+    # Save JSON content to the file
+    echo "$json_content" > "$info_file"
+    if [ $? -eq 0 ]; then
+        echo "Fork information for $fork_name saved successfully."
+    else
+        echo "Error saving fork information for $fork_name."
+    fi
+}
+
+# Function to switch to a specified cloned fork
+switch_fork() {
+    local fork="$1"
+    local fork_path="$FORKS_DIR/$fork"
+
+    log_debug "Switching to fork: $fork"
+
+    if [ -d "$fork_path/openpilot" ]; then
+        read -p "Switching to $fork. Are you sure? (y/n) " switch_choice
+        if [[ "$switch_choice" == "y" || "$switch_choice" == "Y" ]]; then
+            # Backup current params if they exist
+            if [ -d "$PARAMS_PATH" ]; then
+                mkdir -p "$FORKS_DIR/$CURRENT_FORK_NAME/params"
+                cp -r "$PARAMS_PATH"/* "$FORKS_DIR/$CURRENT_FORK_NAME/params/"
+                log_info "Params for $CURRENT_FORK_NAME backed up."
+            fi
+
+            # Remove existing symbolic link and create a new one to the selected fork
+            rm -f "$OPENPILOT_DIR"
+            ln -sfn "$fork_path/openpilot" "$OPENPILOT_DIR"
+            if [ $? -eq 0 ]; then
+                log_info "Switched to fork: $fork using symbolic link."
+            else
+                log_error "Error creating symbolic link to $fork. Please check permissions."
+                return 1
+            fi
+
+            # Update the current fork
+            update_current_fork "$fork"
+
+            # Ensure fork_swap.sh script is present and executable
+            ensure_fork_swap_script
+            chmod +x "$OPENPILOT_DIR/scripts/fork_swap.sh"
+            log_info "Permissions for fork_swap.sh adjusted."
+
+            echo "Switched to $fork."
+            read -p "Would you like to reboot now for changes to take effect? (y/n) " reboot_choice
+            if [[ "$reboot_choice" == "y" || "$reboot_choice" == "Y" ]]; then
+                echo "Rebooting..."
+                sudo reboot
+            else
+                echo "Please reboot manually for changes to take effect."
+            fi
+        else
+            echo "Switch aborted. No changes made."
+        fi
+    else
+        log_error "Fork '$fork' does not exist. Cannot switch to it."
+        echo "Error: Fork '$fork' does not exist. Please choose a valid fork."
+    fi
+
+    # Verify and correct the active fork after switching
+    verify_active_fork
+}
+
+# Function to update the fork_swap.sh script to the latest version
+update_script() {
+    # GitHub API URL to get the latest script content
+    api_url="https://api.github.com/repos/james5294/openpilot/contents/scripts/fork_swap.sh?ref=forkswap"
+
+    # Path of the current script
+    script_path="/data/openpilot/scripts/fork_swap.sh"
+
+    # Temporary file path
+    temp_script_path=$(mktemp)
+
+    echo "Checking for the latest script version..."
+
+    # Fetch the latest script content
+    latest_script_content=$(curl -fsSL "$api_url" | jq -r '.content' | base64 --decode)
+
+    if [ -z "$latest_script_content" ]; then
+        echo "Error: Unable to fetch the latest script content."
+        rm -f "$temp_script_path"
+        return 1
+    fi
+
+    # Write the latest script content to the temporary file
+    echo "$latest_script_content" > "$temp_script_path"
+
+    # Compare the temporary script with the current one
+    if cmp -s "$temp_script_path" "$script_path"; then
+        echo "No update needed. The script is already up to date."
+        rm -f "$temp_script_path"
+        return 0
+    fi
+
+    echo "Update found. Applying update..."
+
+    # Replace the old script with the new one
+    if mv "$temp_script_path" "$script_path"; then
+        echo "Script updated successfully. Restarting..."
+
+        # Make the updated script executable
+        chmod +x "$script_path"
+        log_info "Updated script made executable."
+
+        # Execute the updated script
+        exec sudo bash "$script_path"
+    else
+        echo "Error: Failed to update the script. Check file permissions."
+        rm -f "$temp_script_path"
+        return 1
+    fi
+}
+
+# Updates what fork is the current fork and logs the result.
+update_current_fork() {
+    if [ -z "$1" ]; then
+        log_error "No fork name provided to update_current_fork function."
+        return
+    fi
+
+    log_info "Attempting to update the current fork to: $1"
+    
+    # Try to write the fork name to the CURRENT_FORK_FILE and capture any error message
+    ERROR_MSG=$(echo "$1" > "$CURRENT_FORK_FILE" 2>&1)
+    
+    # Check if the operation was successful by reading back the file
+    CURRENT_FORK=$(cat "$CURRENT_FORK_FILE")
+    
+    log_info "Retrieved current fork value from file: $CURRENT_FORK"
+    
+    if [ "$CURRENT_FORK" == "$1" ]; then
+        log_info "Current fork updated successfully to: $1"
+    else
+        log_error "Mismatch detected. Expected fork: $1, but found: $CURRENT_FORK. Error during write (if any): $ERROR_MSG"
+    fi
 }
 
 # Function to update a specified fork to the latest version
@@ -627,49 +788,17 @@ update_fork() {
     echo "Fork '$fork_name' updated successfully."
 }
 
-# Function to get available disk space
-get_available_disk_space() {
-    DISK_SPACE_OUTPUT=$(df -h /data)
-    #echo "Debug: df -h /data returns: $DISK_SPACE_OUTPUT"
-
-    DISK_SPACE=$(echo "$DISK_SPACE_OUTPUT" | awk 'NR==2 {print $4}')
-    #echo "Debug: Extracted disk space is: $DISK_SPACE"
-
-    echo -e "${MAGENTA}Available Disk Space: ${RESET}${YELLOW}$DISK_SPACE${RESET}"
-}
-
-# Function to ensure fork_swap.sh exists in the current fork's directory and is up-to-date
-ensure_fork_swap_script() {
-    local fork_name_lower=$(echo "${CURRENT_FORK_NAME}" | tr '[:upper:]' '[:lower:]') # Convert to lowercase
-    local target_script="$OPENPILOT_DIR/scripts/fork_swap.sh"
-    local source_script="$FORKS_DIR/james5294/openpilot/scripts/fork_swap.sh"
-    
-    # Dereference the symlink to get the actual fork directory
-    local real_fork_dir=$(realpath "$OPENPILOT_DIR")
-    
-    if [ -f "$source_script" ]; then
-        log_info "Ensuring fork_swap.sh is up-to-date in current fork's scripts directory..."
-        cp "$source_script" "$real_fork_dir/scripts/fork_swap.sh"
-        
-        if [[ $? -eq 0 ]]; then
-            log_info "fork_swap.sh copied/updated successfully in the current fork's scripts directory."
-        else
-            log_error "Error while copying/updating fork_swap.sh in the current fork's scripts directory."
-        fi
-    else
-        log_error "Source script '$source_script' not found. Unable to update fork_swap.sh in the current fork's directory."
-    fi
-}
-
-# Function to validate a fork name or other key variables
-validate_variable() {
-    if [ -z "$1" ]; then
-        log_error "Variable is empty. Exiting."
-        exit 1
-    fi
-}
-
 # Function to validate fork name and avoid special characters
+validate_fork_name() {
+    local fork_name=$1
+    if [[ $fork_name =~ ^[a-zA-Z0-9_-]+$ ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Function to validate general input and avoid special characters
 validate_input() {
     if [[ $1 =~ [^a-zA-Z0-9_-] ]]; then
         echo "Error: Invalid input. Only alphanumeric characters, dashes, and underscores are allowed." | tee -a $LOG_FILE
@@ -687,6 +816,14 @@ validate_url() {
     return 0
 }
 
+# Function to validate a fork name or other key variables
+validate_variable() {
+    if [ -z "$1" ]; then
+        log_error "Variable is empty. Exiting."
+        exit 1
+    fi
+}
+
 # Compares the actual symbolic link target with the stored active fork file
 verify_active_fork() {
     if [ -L "$OPENPILOT_DIR" ]; then
@@ -696,7 +833,7 @@ verify_active_fork() {
         echo "$current_fork_name" > "$CURRENT_FORK_FILE"
     else
         log_warning "OpenPilot directory is not a symbolic link. Checking if initial setup is needed."
-        
+
         # Check if the current fork file exists
         if [ ! -f "$CURRENT_FORK_FILE" ]; then
             log_info "Current fork file not found. Performing initial setup."
@@ -704,40 +841,18 @@ verify_active_fork() {
         else
             # Read the current fork name from the file
             current_fork_name=$(cat "$CURRENT_FORK_FILE")
-            
-            # Check if the current fork name is valid
-            if [ -z "$current_fork_name" ]; then
-                log_warning "Invalid current fork name: $current_fork_name. Performing initial setup."
+
+            # Check if the current fork name is valid and the corresponding fork directory exists
+            if [ -z "$current_fork_name" ] || [ ! -d "$FORKS_DIR/$current_fork_name" ]; then
+                log_warning "Invalid current fork name or missing fork directory: $current_fork_name. Performing initial setup."
                 ensure_initial_setup
             else
                 log_info "Active fork: $current_fork_name"
-                
+
                 # Check if the OpenPilot directory exists as a regular directory
                 if [ -d "$OPENPILOT_DIR" ]; then
-                    log_info "OpenPilot directory exists as a regular directory. Treating it as the initial fork."
-                    
-                    # Check if the fork info file exists
-                    local info_file="$FORKS_DIR/$current_fork_name/fork_info.json"
-                    if [ ! -f "$info_file" ]; then
-                        log_warning "Fork info file not found for $current_fork_name. Updating fork information."
-                        
-                        # Prompt for the fork URL and branch name
-                        local fork_url=""
-                        echo "Enter the GitHub URL of the fork:"
-                        read fork_url
-                        while ! validate_url "$fork_url"; do
-                            echo "Invalid URL format. Please enter a valid GitHub URL:"
-                            read fork_url
-                        done
-                        
-                        local branch_name=""
-                        echo "Enter the branch name (leave empty for default):"
-                        read branch_name
-                        
-                        # Save the fork info
-                        save_fork_info "$current_fork_name" "$fork_url" "$branch_name"
-                    fi
-                    
+                    log_info "OpenPilot directory exists as a regular directory. Moving it to the forks directory."
+
                     # Move the OpenPilot directory to the forks directory
                     mv "$OPENPILOT_DIR" "$FORKS_DIR/$current_fork_name/openpilot"
                     if [ $? -eq 0 ]; then
@@ -747,7 +862,7 @@ verify_active_fork() {
                         return 1
                     fi
                 fi
-                
+
                 # Create the symbolic link to the active fork
                 ln -sfn "$FORKS_DIR/$current_fork_name/openpilot" "$OPENPILOT_DIR"
                 if [ $? -eq 0 ]; then
@@ -761,105 +876,11 @@ verify_active_fork() {
     fi
 }
 
-# Function to retry operations a specified number of times (for network operations)
-retry_operation() {
-    local retries=$MAX_RETRIES
-    until "$@"; do
-        retries=$((retries - 1))
-        if [ $retries -lt 1 ]; then
-            echo "Operation failed after $MAX_RETRIES attempts. Exiting." | tee -a $LOG_FILE
-            cleanup
-            exit 1
-        fi
-        echo "Operation failed. Retrying... ($retries attempts remaining)" | tee -a $LOG_FILE
-        sleep 2
-    done
-}
-
 # Call the script update check function at the beginning
 check_for_script_updates
 
 # Update the available disk space first
 get_available_disk_space
-
-# Function to display welcome screen
-display_welcome_screen() {
-    local current_fork_name=$(cat "$CURRENT_FORK_FILE")
-    
-    if [ -z "$current_fork_name" ]; then
-        current_fork_name=$(ensure_initial_setup)
-    fi
-
-    # Clear the screen only if not running in debug mode
-    if [[ "$DEBUG_MODE" != true ]]; then
-        clear
-    fi
-
-    # Display the welcome message with dynamic info
-    echo -e "${YELLOW}=========================================================================${RESET}"
-    echo -e "${RED}                            **Fork Swap Utility**                   ${RESET}"
-    echo "                                   v$SCRIPT_VERSION                     "
-    echo -e "${YELLOW}=========================================================================${RESET}"
-    echo "              This utility allows you to switch between different"
-    echo "                        forks of the OpenPilot project."
-    if [ $UPDATE_AVAILABLE -eq 1 ]; then
-        echo -e "${RED}                   *An update is available for fork_swap.sh*${RESET}"
-    else
-        echo -e "${GREEN}                          *This script is up to date*${RESET}"
-    fi
-    echo ""
-    echo ""
-    echo -e "${CYAN}Current Active Fork:${RESET} $current_fork_name" | tee -a $LOG_FILE
-    echo -e "${MAGENTA}Available Disk Space: ${RESET}${YELLOW}$DISK_SPACE${RESET}"
-    echo ""
-
-    # Display available forks with update status
-    echo -e "${GREEN}Available forks:${RESET}"
-    for fork in $(ls "$FORKS_DIR" 2>/dev/null); do
-        if [ -d "$FORKS_DIR/$fork/openpilot" ]; then
-            if check_for_fork_updates "$fork"; then
-                echo "$fork - ${CYAN}(update available)${RESET}"
-            else
-                echo "$fork"
-            fi
-        fi
-    done
-    echo ""
-    echo "Please select an option:"
-    echo ""
-    echo "               1. ${GREEN}Fork name ${RESET}from above you want to switch to."
-    echo "               2. ${MAGENTA}'Clone'${RESET} to clone a new fork." | tee -a $LOG_FILE
-    echo -e "               3. ${RED}'Delete'${RESET} to delete an available fork." | tee -a $LOG_FILE
-    echo -e "               4. ${RED}'Exit'${RESET} to close the script." | tee -a $LOG_FILE
-    if [ $UPDATE_AVAILABLE -eq 1 ]; then
-        echo -e "               5. Type ${GREEN}'Update script'${RESET} to update fork_swap.sh." | tee -a $LOG_FILE
-    fi
-    echo -e "${YELLOW}=========================================================================${RESET}"
-}
-
-# Updates what fork is the current fork and logs the result.
-update_current_fork() {
-    if [ -z "$1" ]; then
-        log_error "No fork name provided to update_current_fork function."
-        return
-    fi
-
-    log_info "Attempting to update the current fork to: $1"
-    
-    # Try to write the fork name to the CURRENT_FORK_FILE and capture any error message
-    ERROR_MSG=$(echo "$1" > "$CURRENT_FORK_FILE" 2>&1)
-    
-    # Check if the operation was successful by reading back the file
-    CURRENT_FORK=$(cat "$CURRENT_FORK_FILE")
-    
-    log_info "Retrieved current fork value from file: $CURRENT_FORK"
-    
-    if [ "$CURRENT_FORK" == "$1" ]; then
-        log_info "Current fork updated successfully to: $1"
-    else
-        log_error "Mismatch detected. Expected fork: $1, but found: $CURRENT_FORK. Error during write (if any): $ERROR_MSG"
-    fi
-}
 
 # Ensure necessary directories and files exist
 [ ! -d "$FORKS_DIR" ] && mkdir -p "$FORKS_DIR" && echo "Created directory: $FORKS_DIR" | tee -a $LOG_FILE
@@ -871,44 +892,9 @@ echo "----- Log Entry on $(date) -----" >> $LOG_FILE
 
 # Check if script is being run as root
 if [[ $EUID -ne 0 ]]; then
-   echo "This script must be run as root" | tee -a $LOG_FILE
-   exit 1
+    echo "This script must be run as root" | tee -a $LOG_FILE
+    exit 1
 fi
-
-# Cleanup function to restore previous state in case of errors
-cleanup() {
-    echo "Cleaning up..." | tee -a $LOG_FILE
-
-    # Restoring the previous OpenPilot instance
-    if [ -L "$OPENPILOT_DIR" ]; then
-        rm -f "$OPENPILOT_DIR"
-        if [[ $? -eq 0 ]]; then
-            log_info "Successfully removed the symbolic link for OpenPilot directory."
-        else
-            log_error "Error while removing the symbolic link for OpenPilot directory."
-        fi
-    fi
-
-    # Restoring original params (assuming a backup was made)
-    if [ -d "$FORKS_DIR/$CURRENT_FORK_NAME/params" ]; then
-        cp -r "$FORKS_DIR/$CURRENT_FORK_NAME/params" "$PARAMS_PATH"
-        if [[ $? -eq 0 ]]; then
-            log_info "Successfully restored params for $CURRENT_FORK_NAME."
-        else
-            log_error "Error while restoring params for $CURRENT_FORK_NAME."
-        fi
-    fi
-
-    # Remove any temporary directories or files if they exist
-    rm -rf "$FORKS_DIR/temp"
-    if [[ $? -eq 0 ]]; then
-        log_info "Temporary directories or files removed successfully."
-    else
-        log_error "Error while removing temporary directories or files."
-    fi
-
-    echo "Cleanup completed." | tee -a $LOG_FILE
-}
 
 # Trap signals to ensure cleanup happens in case of errors or interruptions
 trap cleanup ERR SIGINT
