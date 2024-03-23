@@ -468,7 +468,7 @@ ensure_initial_setup() {
     save_fork_info "$current_fork_name" "$fork_url" "$branch_name"
 
     # Update the current fork file
-    echo "$current_fork_name" > "$CURRENT_FORK_FILE"
+    update_current_fork "$current_fork_name"
 
     # Remove the existing OpenPilot directory if it exists
     if [ -d "$OPENPILOT_DIR" ] || [ -L "$OPENPILOT_DIR" ]; then
