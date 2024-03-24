@@ -79,15 +79,20 @@ switch_fork() {
         return 1
     fi
 
-    if [ ! -d "$FORKS_DIR/$fork_name" ]; then
+    if [ ! -d "$FORKS_DIR/$fork_name/openpilot" ]; then
         log "Error: Fork '$fork_name' does not exist."
         return 1
     fi
 
     if [ -e "$OPENPILOT_DIR" ]; then
-        rm -f "$OPENPILOT_DIR" >> "$LOG_FILE" 2>&1
-        if [ $? -ne 0 ]; then
-            log "Error removing the existing symlink."
+        if [ -L "$OPENPILOT_DIR" ]; then
+            rm "$OPENPILOT_DIR" >> "$LOG_FILE" 2>&1
+            if [ $? -ne 0 ]; then
+                log "Error removing the existing symlink."
+                return 1
+            fi
+        else
+            log "Error: $OPENPILOT_DIR is not a symlink. Please manually resolve the issue."
             return 1
         fi
     fi
@@ -115,7 +120,7 @@ update_fork() {
         return 1
     fi
 
-    if [ ! -d "$FORKS_DIR/$current_fork" ]; then
+    if [ ! -d "$FORKS_DIR/$current_fork/openpilot" ]; then
         log "Error: Fork '$current_fork' does not exist."
         return 1
     fi
@@ -135,53 +140,66 @@ update_fork() {
     fi
 }
 
-# Function to display the current active fork
-current_fork() {
-    if [ -f "$CURRENT_FORK_FILE" ]; then
-        current_fork=$(cat "$CURRENT_FORK_FILE")
-        if [ -n "$current_fork" ]; then
-            log "Current active fork: $current_fork"
-        else
-            log "No active fork found."
-        fi
-    else
-        log "Current fork file not found."
-    fi
-}
-
 # Function to handle the initial setup
 initial_setup() {
-    if [ -L "$OPENPILOT_DIR" ]; then
-        current_fork=$(basename "$(readlink "$OPENPILOT_DIR")")
+    if [ ! -L "$OPENPILOT_DIR" ]; then
+        if [ -d "$OPENPILOT_DIR" ]; then
+            read -p "Enter a name for the initial fork: " initial_fork_name
+            validate_fork_name "$initial_fork_name"
+            if [ $? -ne 0 ]; then
+                return 1
+            fi
+            log "Initial setup: Moving $OPENPILOT_DIR to $FORKS_DIR/$initial_fork_name/openpilot"
+            mkdir -p "$FORKS_DIR/$initial_fork_name"
+            mv "$OPENPILOT_DIR" "$FORKS_DIR/$initial_fork_name/openpilot" >> "$LOG_FILE" 2>&1
+            if [ $? -ne 0 ]; then
+                log "Error moving $OPENPILOT_DIR to $FORKS_DIR/$initial_fork_name/openpilot"
+                exit 1
+            fi
+            ln -s "$FORKS_DIR/$initial_fork_name/openpilot" "$OPENPILOT_DIR" >> "$LOG_FILE" 2>&1
+            if [ $? -ne 0 ]; then
+                log "Error creating symlink to the initial fork."
+                exit 1
+            fi
+            echo "$initial_fork_name" > "$CURRENT_FORK_FILE"
+            log "Initial setup: Active fork is $initial_fork_name"
+        else
+            log "Initial setup: $OPENPILOT_DIR does not exist."
+            log "Please clone a fork to set up the initial fork."
+        fi
+    else
+        current_fork=$(basename "$(dirname "$(readlink "$OPENPILOT_DIR")")")
         echo "$current_fork" > "$CURRENT_FORK_FILE"
         log "Initial setup: Active fork is $current_fork"
-    elif [ -d "$OPENPILOT_DIR" ]; then
-        log "Initial setup: $OPENPILOT_DIR exists but is not a symlink."
-        log "Please manually manage the initial fork setup."
-    else
-        log "Initial setup: $OPENPILOT_DIR does not exist."
-        log "Please manually set up the initial fork."
     fi
 }
 
 # Function to display the menu
 display_menu() {
+    if [ -f "$CURRENT_FORK_FILE" ]; then
+        current_fork=$(cat "$CURRENT_FORK_FILE")
+        echo "Current active fork: $current_fork"
+    else
+        echo "No active fork found."
+    fi
+
     echo "=== Fork Management Menu ==="
     echo "1. Clone a fork"
     echo "2. Switch to a fork"
     echo "3. Update current fork"
-    echo "4. Display current active fork"
-    echo "5. Exit"
+    echo "4. Exit"
     read -p "Enter your choice: " choice
 }
 
 # Main script
 
-# Create necessary directories if they don't exist
-mkdir -p "$FORKS_DIR" >> "$LOG_FILE" 2>&1
-if [ $? -ne 0 ]; then
-    log "Error creating the forks directory."
-    exit 1
+# Create the forks directory if it doesn't exist
+if [ ! -d "$FORKS_DIR" ]; then
+    mkdir -p "$FORKS_DIR" >> "$LOG_FILE" 2>&1
+    if [ $? -ne 0 ]; then
+        log "Error creating the forks directory."
+        exit 1
+    fi
 fi
 
 # Perform initial setup
@@ -201,9 +219,6 @@ while true; do
             update_fork
             ;;
         4)
-            current_fork
-            ;;
-        5)
             log "Exiting the script."
             exit 0
             ;;
