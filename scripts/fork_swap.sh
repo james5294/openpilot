@@ -31,7 +31,7 @@ SCRIPT_VERSION="3.0.0"
 #   - Ensure you have a backup of your data before running this script.
 #
 # License: 
-#   This script is released under the MIT license.
+#   This script is released under the MIT license. 
 
 
 # Configuration variables for directories, files, and constants
