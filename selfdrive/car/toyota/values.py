@@ -64,6 +64,8 @@ class ToyotaFlags(IntFlag):
   # these cars can utilize 2.0 m/s^2
   RAISED_ACCEL_LIMIT = 1024
 
+  # FrogPilot Toyota flags
+  ZSS = 1024
 
 class Footnote(Enum):
   CAMRY = CarFootnote(
