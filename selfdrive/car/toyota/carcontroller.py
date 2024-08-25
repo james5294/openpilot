@@ -163,7 +163,7 @@ class CarController(CarControllerBase):
     elif CC.longActive and self.frogs_go_moo_tune:
       accel_offset = min(CS.pcm_neutral_force / self.CP.mass, 0.0)
 
-      if CS.out.standstill:
+      if CS.out.cruiseState.standstill or actuators.longControlState == LongCtrlState.stopping:
         self.pcm_accel_comp = 0.0
       else:
         self.pcm_accel_comp = clip(actuators.accel - CS.pcm_accel_net, self.pcm_accel_comp - 0.01, self.pcm_accel_comp + 0.01)

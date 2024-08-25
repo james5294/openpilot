@@ -9,7 +9,7 @@ import urllib.request
 from openpilot.common.basedir import BASEDIR
 from openpilot.common.params import Params, UnknownKeyName
 
-from openpilot.selfdrive.frogpilot.controls.lib.download_functions import GITHUB_URL, GITLAB_URL, download_file, get_repository_url, handle_error, verify_download
+from openpilot.selfdrive.frogpilot.controls.lib.download_functions import GITHUB_URL, GITLAB_URL, download_file, get_repository_url, handle_error, handle_request_error, verify_download
 from openpilot.selfdrive.frogpilot.controls.lib.frogpilot_functions import MODELS_PATH, delete_file
 
 VERSION = "v5"
@@ -67,8 +67,12 @@ class ModelManager:
       self.handle_verification_failure(model_to_download, model_path)
 
   def fetch_models(self, url):
-    with urllib.request.urlopen(url) as response:
-      return json.loads(response.read().decode('utf-8'))['models']
+    try:
+      with urllib.request.urlopen(url, timeout=10) as response:
+        return json.loads(response.read().decode('utf-8'))['models']
+    except Exception as error:
+      handle_request_error(error, None, None, None, None)
+      return []
 
   def update_model_params(self, model_info):
     available_models, available_model_names, experimental_models, navigation_models, radarless_models = [], [], [], [], []
@@ -169,12 +173,18 @@ class ModelManager:
         print(f"Source default model not found at {source_path}. Exiting...")
 
   def update_models(self, boot_run=True):
+    self.repo_url = get_repository_url()
     if boot_run:
       self.copy_default_model()
+      boot_checks = 0
+      while self.repo_url is None and boot_checks < 60:
+        boot_checks += 1
+        if boot_checks > 60:
+          break
+        time.sleep(1)
       self.validate_models()
-
-    self.repo_url = get_repository_url()
-    if not self.repo_url:
+    elif self.repo_url is None:
+      print("GitHub and GitLab are offline...")
       return
 
     model_info = self.fetch_models(f"{self.repo_url}Versions/model_names_{VERSION}.json")
