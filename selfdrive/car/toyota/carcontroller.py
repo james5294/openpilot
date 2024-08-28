@@ -65,8 +65,11 @@ class CarController(CarControllerBase):
     params = Params()
 
     self.cydia_tune = params.get_bool("CydiaTune")
+    self.frogs_go_moo_tune = params.get_bool("FrogsGoMooTune")
 
     self.doors_locked = False
+
+    self.pcm_accel_comp = 0
 
   def update(self, CC, CS, now_nanos, frogpilot_toggles):
     actuators = CC.actuators
@@ -157,8 +160,18 @@ class CarController(CarControllerBase):
     # limit minimum to only positive until first positive is reached after engagement, don't calculate when long isn't active
     if CC.longActive and not self.prohibit_neg_calculation and self.cydia_tune:
       accel_offset = CS.pcm_neutral_force / self.CP.mass
+    elif CC.longActive and self.frogs_go_moo_tune:
+      accel_offset = min(CS.pcm_neutral_force / self.CP.mass, 0.0)
+
+      if CS.out.standstill:
+        self.pcm_accel_comp = 0.0
+      else:
+        self.pcm_accel_comp = clip(actuators.accel - CS.pcm_accel_net, self.pcm_accel_comp - 0.01, self.pcm_accel_comp + 0.01)
+
+      accel_offset += self.pcm_accel_comp
     else:
       accel_offset = 0.
+      self.pcm_accel_comp = 0.0
 
     # For cars where we allow a higher max acceleration of 2.0 m/s^2, compensate for PCM request overshoot and imprecise braking
     # TODO: sometimes when switching from brake to gas quickly, CLUTCH->ACCEL_NET shows a slow unwind. make it go to 0 immediately
@@ -204,7 +217,7 @@ class CarController(CarControllerBase):
     if (self.frame % 3 == 0 and self.CP.openpilotLongitudinalControl) or pcm_cancel_cmd:
       lead = hud_control.leadVisible or CS.out.vEgo < 12.  # at low speed we always assume the lead is present so ACC can be engaged
       # when stopping, send -2.5 raw acceleration immediately to prevent vehicle from creeping, else send actuators.accel
-      accel_raw = -2.5 if stopping and self.cydia_tune else actuators.accel
+      accel_raw = -2.5 if stopping and (self.cydia_tune or self.frogs_go_moo_tune) else actuators.accel
 
       # Press distance button until we are at the correct bar length. Only change while enabled to avoid skipping startup popup
       if self.frame % 6 == 0 and self.CP.openpilotLongitudinalControl:
