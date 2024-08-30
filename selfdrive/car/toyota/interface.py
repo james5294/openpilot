@@ -7,6 +7,8 @@ from openpilot.selfdrive.car import create_button_events, get_safety_config
 from openpilot.selfdrive.car.disable_ecu import disable_ecu
 from openpilot.selfdrive.car.interfaces import CarInterfaceBase
 
+from openpilot.selfdrive.frogpilot.controls.lib.frogpilot_variables import get_max_allowed_accel
+
 ButtonType = car.CarState.ButtonEvent.Type
 FrogPilotButtonType = custom.FrogPilotCarState.ButtonEvent.Type
 EventName = car.CarEvent.EventName
@@ -15,8 +17,11 @@ SteerControlType = car.CarParams.SteerControlType
 
 class CarInterface(CarInterfaceBase):
   @staticmethod
-  def get_pid_accel_limits(CP, current_speed, cruise_speed):
-    return CarControllerParams(CP).ACCEL_MIN, CarControllerParams(CP).ACCEL_MAX
+  def get_pid_accel_limits(CP, current_speed, cruise_speed, frogpilot_toggles):
+    if frogpilot_toggles.sport_plus:
+      return CarControllerParams(CP).ACCEL_MIN, get_max_allowed_accel(current_speed)
+    else:
+      return CarControllerParams(CP).ACCEL_MIN, CarControllerParams(CP).ACCEL_MAX
 
   @staticmethod
   def _get_params(ret, candidate, fingerprint, car_fw, experimental_long, docs, params):

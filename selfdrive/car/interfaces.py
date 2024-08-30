@@ -22,6 +22,8 @@ from openpilot.selfdrive.controls.lib.drive_helpers import CRUISE_LONG_PRESS, V_
 from openpilot.selfdrive.controls.lib.events import Events
 from openpilot.selfdrive.controls.lib.vehicle_model import VehicleModel
 
+from openpilot.selfdrive.frogpilot.controls.lib.frogpilot_variables import get_max_allowed_accel
+
 ButtonType = car.CarState.ButtonEvent.Type
 FrogPilotButtonType = custom.FrogPilotCarState.ButtonEvent.Type
 GearShifter = car.CarState.GearShifter
@@ -261,8 +263,11 @@ class CarInterfaceBase(ABC):
     return self.CC.update(c, self.CS, now_nanos, frogpilot_toggles)
 
   @staticmethod
-  def get_pid_accel_limits(CP, current_speed, cruise_speed):
-    return ACCEL_MIN, ACCEL_MAX
+  def get_pid_accel_limits(CP, current_speed, cruise_speed, frogpilot_toggles):
+    if frogpilot_toggles.sport_plus:
+      return ACCEL_MIN, get_max_allowed_accel(current_speed)
+    else:
+      return ACCEL_MIN, ACCEL_MAX
 
   @classmethod
   def get_non_essential_params(cls, candidate: str):
