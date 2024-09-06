@@ -29,6 +29,9 @@ def get_latest_version():
     except (http.client.IncompleteRead, http.client.RemoteDisconnected, socket.gaierror, socket.timeout, urllib.error.HTTPError, urllib.error.URLError) as e:
       sentry.capture_exception(e)
       print(f"Failed to get latest version from {url}. Error: {e}")
+    except Exception as e:
+      sentry.capture_exception(e)
+      print(f"Unexpected error while fetching version from {url}: {e}")
   print("Failed to get the latest version from both sources.")
   return None
 
