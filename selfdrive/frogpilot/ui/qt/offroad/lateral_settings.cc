@@ -78,10 +78,12 @@ FrogPilotLateralPanel::FrogPilotLateralPanel(FrogPilotSettingsWindow *parent) : 
       lateralToggle = laneChangeToggle;
     } else if (param == "LaneChangeTime") {
       std::map<int, QString> laneChangeTimeLabels;
-      for (int i = 0; i <= 10; ++i) {
-        laneChangeTimeLabels[i] = i == 0 ? "Instant" : QString::number(i / 2.0) + " seconds";
+      laneChangeTimeLabels[0] = "Instant";
+      laneChangeTimeLabels[1] = "0.25 seconds";
+      for (int i = 2; i <= 11; ++i) {
+        laneChangeTimeLabels[i] = QString::number((i - 1) / 2.0) + " seconds";
       }
-      lateralToggle = new FrogPilotParamValueControl(param, title, desc, icon, 0, 10, QString(), laneChangeTimeLabels);
+      lateralToggle = new FrogPilotParamValueControl(param, title, desc, icon, 0, 11, QString(), laneChangeTimeLabels);
     } else if (param == "LaneDetectionWidth") {
       lateralToggle = new FrogPilotParamValueControl(param, title, desc, icon, 0, 15, tr(" feet"), std::map<int, QString>(), 0.1);
     } else if (param == "MinimumLaneChangeSpeed") {
