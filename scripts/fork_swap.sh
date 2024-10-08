@@ -2,7 +2,7 @@
 #
 # Script Name: fork_swap.sh
 # Script version
-SCRIPT_VERSION="3.0.1"
+SCRIPT_VERSION="3.0.2"
 #
 # Author: swish865
 #
@@ -428,7 +428,7 @@ ensure_fork_swap_script() {
         fi
     else
         log_error "Source script '$source_script' not found. Unable to update fork_swap.sh in the current fork's directory."
-    fi
+    }
 }
 
 # Handles the fork setup process on initial run
@@ -910,7 +910,8 @@ verify_active_fork
 
 # Main loop for script
 while true; do
-    display_welcome_screen  # Display updated welcome screen with options
+    # Display updated welcome screen with options
+    display_welcome_screen
     read -p "Your choice: " user_choice
     user_choice_lower=$(echo "$user_choice" | tr '[:upper:]' '[:lower:]')  # Normalize input to lowercase for easier comparison
 
