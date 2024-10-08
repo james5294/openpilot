@@ -90,20 +90,22 @@ check_for_fork_updates() {
     fi
 
     # Fetch updates
-    pushd "$fork_dir" > /dev/null
+    pushd "$fork_dir" > /dev/null || return
     if ! git fetch --quiet origin; then
         echo "Error fetching updates for '$fork_name'."
-        popd > /dev/null
+        popd > /dev/null || return
         return 0
     fi
 
     # Get the latest commit hash on the specified branch from the remote repository
-    local latest_remote_commit=$(git rev-parse "origin/$branch_name")
+    local latest_remote_commit
+    latest_remote_commit=$(git rev-parse "origin/$branch_name")
 
     # Get the current commit hash of the local repository
-    local current_local_commit=$(git rev-parse HEAD)
+    local current_local_commit
+    current_local_commit=$(git rev-parse HEAD)
 
-    popd > /dev/null
+    popd > /dev/null || return
 
     if [ "$current_local_commit" != "$latest_remote_commit" ]; then
         return 1  # Update available
@@ -134,8 +136,7 @@ cleanup() {
 
     # Restoring the previous OpenPilot instance
     if [ -L "$OPENPILOT_DIR" ]; then
-        rm -f "$OPENPILOT_DIR"
-        if [[ $? -eq 0 ]]; then
+        if rm -f "$OPENPILOT_DIR"; then
             log_info "Successfully removed the symbolic link for OpenPilot directory."
         else
             log_error "Error while removing the symbolic link for OpenPilot directory."
@@ -144,8 +145,7 @@ cleanup() {
 
     # Restoring original params (assuming a backup was made)
     if [ -d "$FORKS_DIR/$CURRENT_FORK_NAME/params" ]; then
-        cp -r "$FORKS_DIR/$CURRENT_FORK_NAME/params" "$PARAMS_PATH"
-        if [[ $? -eq 0 ]]; then
+        if cp -r "$FORKS_DIR/$CURRENT_FORK_NAME/params" "$PARAMS_PATH"; then
             log_info "Successfully restored params for $CURRENT_FORK_NAME."
         else
             log_error "Error while restoring params for $CURRENT_FORK_NAME."
@@ -153,8 +153,7 @@ cleanup() {
     fi
 
     # Remove any temporary directories or files if they exist
-    rm -rf "$FORKS_DIR/temp"
-    if [[ $? -eq 0 ]]; then
+    if rm -rf "${FORKS_DIR:?}/temp"; then
         log_info "Temporary directories or files removed successfully."
     else
         log_error "Error while removing temporary directories or files."
@@ -171,7 +170,7 @@ clone_fork() {
     # Prompt for the new fork's name
     local new_fork_name=""
     while true; do
-        read -p "Enter a name for the new fork: " new_fork_name
+        read -r -p "Enter a name for the new fork: " new_fork_name
         log_debug "User entered fork name: $new_fork_name"
         if validate_input "$new_fork_name"; then
             break
@@ -186,15 +185,15 @@ clone_fork() {
         echo "A fork with this name already exists. Choose an option:"
         echo "1. Overwrite"
         echo "2. Rename"
-        read -p "Enter your choice (1 or 2): " choice
+        read -r -p "Enter your choice (1 or 2): " choice
         log_debug "User chose option: $choice"
         case $choice in
             1)
                 echo "Removing existing directory..."
-                rm -rf "$target_dir"
+                rm -rf "${target_dir:?}"
                 ;;
             2)
-                read -p "Enter a new name for the existing fork: " rename_to
+                read -r -p "Enter a new name for the existing fork: " rename_to
                 log_debug "User entered new name for existing fork: $rename_to"
                 mv "$target_dir" "$FORKS_DIR/$rename_to"
                 echo "Fork renamed to $rename_to."
@@ -209,7 +208,7 @@ clone_fork() {
     # Prompt for the fork URL
     local fork_url=""
     while true; do
-        read -p "Enter the GitHub URL of the fork to clone: " fork_url
+        read -r -p "Enter the GitHub URL of the fork to clone: " fork_url
         log_debug "User entered fork URL: $fork_url"
         if validate_url "$fork_url"; then
             break
@@ -220,7 +219,7 @@ clone_fork() {
 
     # Prompt for the branch name
     local branch_name=""
-    read -p "Enter the branch name (leave empty for the default branch): " branch_name
+    read -r -p "Enter the branch name (leave empty for the default branch): " branch_name
     log_debug "User entered branch name: $branch_name"
 
     log_debug "Cloning fork: $new_fork_name from $fork_url, branch: $branch_name"
@@ -230,32 +229,26 @@ clone_fork() {
     cp "$0" "$temp_script_path"
 
     # Clone the fork repository
-    clone_fork_repository "$new_fork_name" "$fork_url" "$branch_name" "$target_dir"
-    clone_status=$?
-
-    if [ $clone_status -ne 0 ]; then
+    if clone_fork_repository "$new_fork_name" "$fork_url" "$branch_name" "$target_dir"; then
+        echo "Fork $new_fork_name cloned successfully."
+    else
         log_error "Failed to clone the fork repository. URL: $fork_url, Branch: $branch_name"
         echo "Error: Failed to clone the fork repository. Please check the URL and try again."
         rm -f "$temp_script_path"  # Clean up the temporary script
         return 1
     fi
 
-    echo "Fork $new_fork_name cloned successfully."
-
     # Save fork information, including the branch name
     save_fork_info "$new_fork_name" "$fork_url" "$branch_name"
 
-    # Update current fork only if the cloning process was successful
-    if [ $clone_status -eq 0 ]; then
-        update_current_fork "$new_fork_name"
-    fi
+    # Update current fork
+    update_current_fork "$new_fork_name"
 
     # Remove existing symbolic link and create a new one to the new fork
     if [ -e "$OPENPILOT_DIR" ]; then
-        rm -rf "$OPENPILOT_DIR"
+        rm -rf "${OPENPILOT_DIR:?}"
     fi
-    ln -sfn "$target_dir/openpilot" "$OPENPILOT_DIR"
-    if [ $? -eq 0 ]; then
+    if ln -sfn "$target_dir/openpilot" "$OPENPILOT_DIR"; then
         echo "Symbolic link updated to point to the new fork."
     else
         echo "Error creating symbolic link to the new fork. Please check permissions."
@@ -266,8 +259,7 @@ clone_fork() {
     mkdir -p "$target_dir/openpilot/scripts"
 
     # Copy the temporary script to the new fork's scripts directory
-    cp "$temp_script_path" "$target_dir/openpilot/scripts/fork_swap.sh"
-    if [ $? -eq 0 ]; then
+    if cp "$temp_script_path" "$target_dir/openpilot/scripts/fork_swap.sh"; then
         chmod +x "$target_dir/openpilot/scripts/fork_swap.sh"
         echo "fork_swap.sh successfully added and made executable in the new fork."
     else
@@ -285,13 +277,11 @@ clone_fork() {
     chmod +x "$OPENPILOT_DIR/scripts/fork_swap.sh"
     log_info "Permissions for fork_swap.sh adjusted."
 
-    # Prompt for reboot only if the cloning process was successful
-    if [ $clone_status -eq 0 ]; then
-        echo "A reboot is required for changes to take effect."
-        read -p "Press Enter to reboot now..."
-        echo "Rebooting..."
-        reboot
-    fi
+    # Prompt for reboot
+    echo "A reboot is required for changes to take effect."
+    read -r -p "Press Enter to reboot now..."
+    echo "Rebooting..."
+    reboot
 
     # Verify and correct the active fork after cloning
     verify_active_fork
@@ -305,21 +295,26 @@ clone_fork_repository() {
     local target_dir="$4"
 
     if [ -z "$branch_name" ]; then
-        git clone --single-branch --recurse-submodules "$fork_url" "$target_dir/openpilot"
+        if git clone --single-branch --recurse-submodules "$fork_url" "$target_dir/openpilot"; then
+            return 0
+        else
+            log_error "Git clone failed for $fork_url."
+            return 1
+        fi
     else
-        git clone -b "$branch_name" --single-branch --recurse-submodules "$fork_url" "$target_dir/openpilot"
-    fi
-
-    if [ $? -ne 0 ]; then
-        log_error "Git clone failed for $fork_url."
-        return 1
+        if git clone -b "$branch_name" --single-branch --recurse-submodules "$fork_url" "$target_dir/openpilot"; then
+            return 0
+        else
+            log_error "Git clone failed for $fork_url."
+            return 1
+        fi
     fi
 }
 
 # Function to delete a specified fork
 delete_fork() {
     # Prompt the user for the name of the fork to delete and validate the input
-    read -p "Enter the name of the fork to delete: " delete_fork_name
+    read -r -p "Enter the name of the fork to delete: " delete_fork_name
     log_debug "User entered fork to delete: $delete_fork_name"
     validate_input "$delete_fork_name" || exit 1  # Exit if input is invalid
 
@@ -328,7 +323,7 @@ delete_fork() {
     # Check if the specified fork actually exists
     if [ -d "$FORKS_DIR/$delete_fork_name" ]; then
         # Confirm with the user that they really want to delete the fork
-        read -p "Are you sure you want to delete $delete_fork_name? This cannot be undone. (y/n) " delete_choice
+        read -r -p "Are you sure you want to delete $delete_fork_name? This cannot be undone. (y/n) " delete_choice
         log_debug "User confirmation to delete fork: $delete_choice"
         if [[ "$delete_choice" == "y" || "$delete_choice" == "Y" ]]; then
             # Check if the fork to be deleted is currently active
@@ -339,8 +334,7 @@ delete_fork() {
             fi
 
             # Attempt to delete the fork and check if the operation was successful
-            rm -rf "$FORKS_DIR/$delete_fork_name"
-            if [ $? -eq 0 ]; then
+            if rm -rf "${FORKS_DIR:?}/${delete_fork_name:?}"; then
                 log_info "Successfully deleted the fork: $delete_fork_name."
                 # Here you could refresh or update the application state as needed
             else
@@ -361,7 +355,8 @@ delete_fork() {
 
 # Function to display welcome screen
 display_welcome_screen() {
-    local current_fork_name=$(cat "$CURRENT_FORK_FILE")
+    local current_fork_name
+    current_fork_name=$(cat "$CURRENT_FORK_FILE")
 
     if [ -z "$current_fork_name" ]; then
         ensure_initial_setup
@@ -393,7 +388,8 @@ display_welcome_screen() {
 
     # Display available forks with update status
     echo -e "${GREEN}Available forks:${RESET}"
-    for fork in $(ls "$FORKS_DIR" 2>/dev/null); do
+    for fork_path in "$FORKS_DIR"/*; do
+        fork=$(basename "$fork_path")
         if [ -d "$FORKS_DIR/$fork/openpilot" ]; then
             if check_for_fork_updates "$fork"; then
                 echo "$fork"
@@ -417,17 +413,15 @@ display_welcome_screen() {
 
 # Function to ensure fork_swap.sh exists in the current fork's directory and is up-to-date
 ensure_fork_swap_script() {
-    local target_script="$OPENPILOT_DIR/scripts/fork_swap.sh"
     local source_script="$FORKS_DIR/$CURRENT_FORK_NAME/openpilot/scripts/fork_swap.sh"
 
     # Dereference the symlink to get the actual fork directory
-    local real_fork_dir=$(readlink -f "$OPENPILOT_DIR")
+    local real_fork_dir
+    real_fork_dir=$(readlink -f "$OPENPILOT_DIR")
 
     if [ -f "$source_script" ]; then
         log_info "Ensuring fork_swap.sh is up-to-date in current fork's scripts directory..."
-        cp "$source_script" "$real_fork_dir/scripts/fork_swap.sh"
-
-        if [[ $? -eq 0 ]]; then
+        if cp "$source_script" "$real_fork_dir/scripts/fork_swap.sh"; then
             log_info "fork_swap.sh copied/updated successfully in the current fork's scripts directory."
         else
             log_error "Error while copying/updating fork_swap.sh in the current fork's scripts directory."
@@ -442,7 +436,7 @@ ensure_initial_setup() {
     echo "Unknown active fork. Setting up initial fork..."
 
     while true; do
-        read -p "Enter a valid fork name (alphanumeric, dashes, and underscores allowed): " current_fork_name
+        read -r -p "Enter a valid fork name (alphanumeric, dashes, and underscores allowed): " current_fork_name
         log_debug "User entered initial fork name: $current_fork_name"
         if validate_fork_name "$current_fork_name"; then
             break
@@ -452,7 +446,7 @@ ensure_initial_setup() {
     done
 
     while true; do
-        read -p "Enter the fork URL: " fork_url
+        read -r -p "Enter the fork URL: " fork_url
         log_debug "User entered initial fork URL: $fork_url"
         if validate_url "$fork_url"; then
             break
@@ -461,17 +455,16 @@ ensure_initial_setup() {
         fi
     done
 
-    read -p "Enter the branch name (leave empty for default): " branch_name
+    read -r -p "Enter the branch name (leave empty for default): " branch_name
     log_debug "User entered initial branch name: $branch_name"
 
     # Create the directory structure for the initial fork
     mkdir -p "$FORKS_DIR/$current_fork_name"
 
     # Clone the fork repository
-    clone_fork_repository "$current_fork_name" "$fork_url" "$branch_name" "$FORKS_DIR/$current_fork_name"
-    clone_status=$?
-
-    if [ $clone_status -ne 0 ]; then
+    if clone_fork_repository "$current_fork_name" "$fork_url" "$branch_name" "$FORKS_DIR/$current_fork_name"; then
+        echo "Initial fork cloned successfully."
+    else
         log_error "Failed to clone the fork repository. URL: $fork_url, Branch: $branch_name"
         echo "Error: Failed to clone the fork repository. Please check the URL and try again."
         exit 1
@@ -488,12 +481,11 @@ ensure_initial_setup() {
 
     # Remove the existing OpenPilot directory if it exists
     if [ -e "$OPENPILOT_DIR" ]; then
-        rm -rf "$OPENPILOT_DIR"
+        rm -rf "${OPENPILOT_DIR:?}"
     fi
 
     # Create the symbolic link to the cloned repository
-    ln -sfn "$FORKS_DIR/$current_fork_name/openpilot" "$OPENPILOT_DIR"
-    if [ $? -eq 0 ]; then
+    if ln -sfn "$FORKS_DIR/$current_fork_name/openpilot" "$OPENPILOT_DIR"; then
         log_info "Symbolic link created for the initial fork: $current_fork_name"
     else
         log_error "Error creating symbolic link for the initial fork: $current_fork_name"
@@ -552,7 +544,8 @@ log_warning() {
 # Function to rotate logs
 rotate_logs() {
     if [ -f "$LOG_FILE" ]; then
-        local log_size=$(stat -c %s "$LOG_FILE")
+        local log_size
+        log_size=$(stat -c %s "$LOG_FILE")
         if [ "$log_size" -ge "$MAX_LOG_SIZE" ]; then
             mv "$LOG_FILE" "$LOG_FILE.old"
             echo "Log rotated on $(date)" > "$LOG_FILE"
@@ -586,7 +579,8 @@ save_fork_info() {
     mkdir -p "$(dirname "$info_file")"
 
     # Prepare JSON content
-    local json_content=$(cat <<EOF
+    local json_content
+    json_content=$(cat <<EOF
 {
   "name": "$fork_name",
   "url": "$fork_url",
@@ -597,7 +591,8 @@ EOF
 
     # Save JSON content to the file
     echo "$json_content" > "$info_file"
-    if [ $? -eq 0 ]; then
+    local exit_status=$?
+    if [ $exit_status -eq 0 ]; then
         echo "Fork information for $fork_name saved successfully."
     else
         echo "Error saving fork information for $fork_name."
@@ -619,14 +614,13 @@ switch_fork() {
     log_debug "Switching to fork: $fork"
 
     if [ -d "$fork_path/openpilot" ]; then
-        read -p "Switching to $fork. Are you sure? (y/n) " switch_choice
+        read -r -p "Switching to $fork. Are you sure? (y/n) " switch_choice
         log_debug "User confirmation to switch fork: $switch_choice"
         if [[ "$switch_choice" == "y" || "$switch_choice" == "Y" ]]; then
             # Backup current params if they exist
             if [ -d "$PARAMS_PATH" ]; then
                 mkdir -p "$FORKS_DIR/$CURRENT_FORK_NAME/params"
-                cp -r "$PARAMS_PATH/"* "$FORKS_DIR/$CURRENT_FORK_NAME/params/"
-                if [ $? -eq 0 ]; then
+                if cp -r "$PARAMS_PATH/"* "$FORKS_DIR/$CURRENT_FORK_NAME/params/"; then
                     log_info "Params for $CURRENT_FORK_NAME backed up successfully."
                 else
                     log_error "Error backing up params for $CURRENT_FORK_NAME."
@@ -635,10 +629,9 @@ switch_fork() {
 
             # Remove existing symbolic link and create a new one to the selected fork
             if [ -e "$OPENPILOT_DIR" ]; then
-                rm -f "$OPENPILOT_DIR"
+                rm -f "${OPENPILOT_DIR:?}"
             fi
-            ln -sfn "$fork_path/openpilot" "$OPENPILOT_DIR"
-            if [ $? -eq 0 ]; then
+            if ln -sfn "$fork_path/openpilot" "$OPENPILOT_DIR"; then
                 log_info "Switched to fork: $fork using symbolic link."
             else
                 log_error "Error creating symbolic link to $fork. Please check permissions."
@@ -658,7 +651,7 @@ switch_fork() {
 
             echo "Switched to $fork."
             echo "A reboot is required for changes to take effect."
-            read -p "Press Enter to reboot now..."
+            read -r -p "Press Enter to reboot now..."
             echo "Rebooting..."
             reboot
         else
@@ -733,8 +726,10 @@ update_current_fork() {
 
     log_info "Attempting to update the current fork to: $1"
 
-    # Try to write the fork name to the CURRENT_FORK_FILE and capture any error message
-    ERROR_MSG=$(echo "$1" > "$CURRENT_FORK_FILE" 2>&1)
+    # Try to write the fork name to the CURRENT_FORK_FILE
+    if ! echo "$1" > "$CURRENT_FORK_FILE"; then
+        log_error "Error writing to $CURRENT_FORK_FILE"
+    fi
 
     # Update CURRENT_FORK_NAME variable
     CURRENT_FORK_NAME="$1"
@@ -747,7 +742,7 @@ update_current_fork() {
     if [ "$CURRENT_FORK" == "$1" ]; then
         log_info "Current fork updated successfully to: $1"
     else
-        log_error "Mismatch detected. Expected fork: $1, but found: $CURRENT_FORK. Error during write (if any): $ERROR_MSG"
+        log_error "Mismatch detected. Expected fork: $1, but found: $CURRENT_FORK."
     fi
 }
 
@@ -756,6 +751,7 @@ update_fork() {
     local fork_name="$1"
     local fork_dir="$FORKS_DIR/$fork_name/openpilot"
     local info_file="$fork_dir/../fork_info.json"
+    local branch_name
 
     if [ ! -d "$fork_dir" ]; then
         echo "Error: Fork '$fork_name' does not exist."
@@ -770,12 +766,12 @@ update_fork() {
         return 1
     fi
 
-    pushd "$fork_dir" > /dev/null
+    pushd "$fork_dir" > /dev/null || return
 
     # Check for local changes
     if [ -n "$(git status --porcelain)" ]; then
         while true; do
-            read -p "Local changes detected in '$fork_name'. Update may overwrite them. Proceed? (y/n): " response
+            read -r -p "Local changes detected in '$fork_name'. Update may overwrite them. Proceed? (y/n): " response
             log_debug "User confirmation to update fork with local changes: $response"
             case "$response" in
                 y|Y)
@@ -783,7 +779,7 @@ update_fork() {
                     ;;
                 n|N)
                     echo "Update aborted by user."
-                    popd > /dev/null
+                    popd > /dev/null || return
                     return 1
                     ;;
                 *)
@@ -794,23 +790,19 @@ update_fork() {
     fi
 
     # Fetch and rebase updates
-    git fetch origin "$branch_name"
-    fetch_status=$?
-    if [ $fetch_status -ne 0 ]; then
+    if ! git fetch origin "$branch_name"; then
         echo "Error: Failed to fetch updates for fork '$fork_name'. Please check your network connection and try again."
-        popd > /dev/null
+        popd > /dev/null || return
         return 1
     fi
 
-    git rebase "origin/$branch_name"
-    rebase_status=$?
-    if [ $rebase_status -ne 0 ]; then
+    if ! git rebase "origin/$branch_name"; then
         echo "Error: Failed to rebase updates for fork '$fork_name'. Please resolve any conflicts manually."
-        popd > /dev/null
+        popd > /dev/null || return
         return 1
     fi
 
-    popd > /dev/null
+    popd > /dev/null || return
     echo "Fork '$fork_name' updated successfully."
 }
 
@@ -855,8 +847,10 @@ validate_variable() {
 # Compares the actual symbolic link target with the stored active fork file
 verify_active_fork() {
     if [ -L "$OPENPILOT_DIR" ]; then
-        local current_fork_path=$(readlink -f "$OPENPILOT_DIR")
-        local current_fork_name=$(basename "$(dirname "$current_fork_path")")
+        local current_fork_path
+        current_fork_path=$(readlink -f "$OPENPILOT_DIR")
+        local current_fork_name
+        current_fork_name=$(basename "$(dirname "$current_fork_path")")
         log_info "Active fork: $current_fork_name"
         echo "$current_fork_name" > "$CURRENT_FORK_FILE"
         # Update CURRENT_FORK_NAME variable
@@ -870,6 +864,7 @@ verify_active_fork() {
             ensure_initial_setup
         else
             # Read the current fork name from the file
+            local current_fork_name
             current_fork_name=$(cat "$CURRENT_FORK_FILE")
 
             # Check if the current fork name is valid and the corresponding fork directory exists
@@ -881,8 +876,7 @@ verify_active_fork() {
 
                 # Create the symbolic link to the active fork if it doesn't exist
                 if [ ! -L "$OPENPILOT_DIR" ]; then
-                    ln -sfn "$FORKS_DIR/$current_fork_name/openpilot" "$OPENPILOT_DIR"
-                    if [ $? -eq 0 ]; then
+                    if ln -sfn "$FORKS_DIR/$current_fork_name/openpilot" "$OPENPILOT_DIR"; then
                         log_info "Symbolic link created for the active fork: $current_fork_name"
                     else
                         log_error "Error creating symbolic link for the active fork: $current_fork_name"
@@ -936,7 +930,7 @@ while true; do
     # Display updated welcome screen with options
     display_welcome_screen
 
-    read -p "Your choice: " user_choice
+    read -r -p "Your choice: " user_choice
     log_debug "User selected option: $user_choice"
     user_choice_lower=$(echo "$user_choice" | tr '[:upper:]' '[:lower:]')  # Normalize input to lowercase for easier comparison
 
