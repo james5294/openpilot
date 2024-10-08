@@ -590,14 +590,13 @@ EOF
 )
 
     # Save JSON content to the file
-    echo "$json_content" > "$info_file"
-    local exit_status=$?
-    if [ $exit_status -eq 0 ]; then
+    if echo "$json_content" > "$info_file"; then
         echo "Fork information for $fork_name saved successfully."
     else
         echo "Error saving fork information for $fork_name."
     fi
 }
+
 
 # Function to switch to a specified cloned fork
 switch_fork() {
