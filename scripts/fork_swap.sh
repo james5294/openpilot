@@ -1,8 +1,8 @@
 #!/bin/bash
 #
 # Script Name: fork_swap.sh
-# Script Version: 3.0.3
-SCRIPT_VERSION="3.0.3"
+# Script Version: 3.0.4
+SCRIPT_VERSION="3.0.4"
 #
 # Author: swish865
 #
@@ -172,6 +172,7 @@ clone_fork() {
     local new_fork_name=""
     while true; do
         read -p "Enter a name for the new fork: " new_fork_name
+        log_debug "User entered fork name: $new_fork_name"
         if validate_input "$new_fork_name"; then
             break
         else
@@ -186,6 +187,7 @@ clone_fork() {
         echo "1. Overwrite"
         echo "2. Rename"
         read -p "Enter your choice (1 or 2): " choice
+        log_debug "User chose option: $choice"
         case $choice in
             1)
                 echo "Removing existing directory..."
@@ -193,6 +195,7 @@ clone_fork() {
                 ;;
             2)
                 read -p "Enter a new name for the existing fork: " rename_to
+                log_debug "User entered new name for existing fork: $rename_to"
                 mv "$target_dir" "$FORKS_DIR/$rename_to"
                 echo "Fork renamed to $rename_to."
                 ;;
@@ -207,6 +210,7 @@ clone_fork() {
     local fork_url=""
     while true; do
         read -p "Enter the GitHub URL of the fork to clone: " fork_url
+        log_debug "User entered fork URL: $fork_url"
         if validate_url "$fork_url"; then
             break
         else
@@ -217,6 +221,7 @@ clone_fork() {
     # Prompt for the branch name
     local branch_name=""
     read -p "Enter the branch name (leave empty for the default branch): " branch_name
+    log_debug "User entered branch name: $branch_name"
 
     log_debug "Cloning fork: $new_fork_name from $fork_url, branch: $branch_name"
 
@@ -315,6 +320,7 @@ clone_fork_repository() {
 delete_fork() {
     # Prompt the user for the name of the fork to delete and validate the input
     read -p "Enter the name of the fork to delete: " delete_fork_name
+    log_debug "User entered fork to delete: $delete_fork_name"
     validate_input "$delete_fork_name" || exit 1  # Exit if input is invalid
 
     log_debug "Deleting fork: $delete_fork_name"
@@ -323,6 +329,7 @@ delete_fork() {
     if [ -d "$FORKS_DIR/$delete_fork_name" ]; then
         # Confirm with the user that they really want to delete the fork
         read -p "Are you sure you want to delete $delete_fork_name? This cannot be undone. (y/n) " delete_choice
+        log_debug "User confirmation to delete fork: $delete_choice"
         if [[ "$delete_choice" == "y" || "$delete_choice" == "Y" ]]; then
             # Check if the fork to be deleted is currently active
             if [ "$delete_fork_name" == "$(cat "$CURRENT_FORK_FILE")" ]; then
@@ -436,6 +443,7 @@ ensure_initial_setup() {
 
     while true; do
         read -p "Enter a valid fork name (alphanumeric, dashes, and underscores allowed): " current_fork_name
+        log_debug "User entered initial fork name: $current_fork_name"
         if validate_fork_name "$current_fork_name"; then
             break
         else
@@ -445,6 +453,7 @@ ensure_initial_setup() {
 
     while true; do
         read -p "Enter the fork URL: " fork_url
+        log_debug "User entered initial fork URL: $fork_url"
         if validate_url "$fork_url"; then
             break
         else
@@ -453,6 +462,7 @@ ensure_initial_setup() {
     done
 
     read -p "Enter the branch name (leave empty for default): " branch_name
+    log_debug "User entered initial branch name: $branch_name"
 
     # Create the directory structure for the initial fork
     mkdir -p "$FORKS_DIR/$current_fork_name"
@@ -610,6 +620,7 @@ switch_fork() {
 
     if [ -d "$fork_path/openpilot" ]; then
         read -p "Switching to $fork. Are you sure? (y/n) " switch_choice
+        log_debug "User confirmation to switch fork: $switch_choice"
         if [[ "$switch_choice" == "y" || "$switch_choice" == "Y" ]]; then
             # Backup current params if they exist
             if [ -d "$PARAMS_PATH" ]; then
@@ -765,6 +776,7 @@ update_fork() {
     if [ -n "$(git status --porcelain)" ]; then
         while true; do
             read -p "Local changes detected in '$fork_name'. Update may overwrite them. Proceed? (y/n): " response
+            log_debug "User confirmation to update fork with local changes: $response"
             case "$response" in
                 y|Y)
                     break  # Proceed with the update
@@ -893,9 +905,6 @@ for cmd in git jq curl; do
     fi
 done
 
-# Update the available disk space first
-get_available_disk_space
-
 # Ensure necessary directories and files exist
 [ ! -d "$FORKS_DIR" ] && mkdir -p "$FORKS_DIR" && echo "Created directory: $FORKS_DIR" | tee -a "$LOG_FILE"
 [ ! -f "$LOG_FILE" ] && touch "$LOG_FILE" && echo "Log file created at: $LOG_FILE" | tee -a "$LOG_FILE"
@@ -911,22 +920,24 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 # Trap signals to ensure cleanup happens in case of errors or interruptions
-trap cleanup ERR SIGINT
+trap cleanup EXIT ERR SIGINT
 
 # Call the script update check function at the beginning
 check_for_script_updates
-
-# Display the welcome screen first
-display_welcome_screen
 
 # Verify and correct the active fork on script startup
 verify_active_fork
 
 # Main loop for script
 while true; do
+    # Update the available disk space
+    get_available_disk_space
+
     # Display updated welcome screen with options
     display_welcome_screen
+
     read -p "Your choice: " user_choice
+    log_debug "User selected option: $user_choice"
     user_choice_lower=$(echo "$user_choice" | tr '[:upper:]' '[:lower:]')  # Normalize input to lowercase for easier comparison
 
     case $user_choice_lower in
@@ -947,12 +958,14 @@ while true; do
             # Default case handles switching or updating forks
             if [[ "$user_choice_lower" == update* ]]; then
                 fork_name_to_update=${user_choice_lower#"update "}
+                log_debug "User wants to update fork: $fork_name_to_update"
                 update_fork "$fork_name_to_update"  # Update specified fork
             else
                 # Assume the input is a fork name to switch to
+                log_debug "User wants to switch to fork: $user_choice_lower"
                 switch_fork "$user_choice_lower"  # Switch to the specified fork
             fi
             ;;
     esac
-    # After each action, you might want to display the welcome screen again or perform additional checks
+    # After each action, you might want to perform additional checks or refresh states
 done
