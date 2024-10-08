@@ -2,7 +2,7 @@
 #
 # Script Name: fork_swap.sh
 # Script version
-SCRIPT_VERSION="3.0.0"
+SCRIPT_VERSION="3.0.1"
 #
 # Author: swish865
 #
@@ -32,7 +32,6 @@ SCRIPT_VERSION="3.0.0"
 #
 # License: 
 #   This script is released under the MIT license. 
-
 
 # Configuration variables for directories, files, and constants
 OPENPILOT_DIR="/data/openpilot"
@@ -65,18 +64,17 @@ else
     CURRENT_FORK_NAME=""
 fi
 
-# Function to check for updates for all cloned forks
+# Function to check for updates for a specific fork
 check_for_fork_updates() {
     local fork_name="$1"
     local fork_dir="$FORKS_DIR/$fork_name/openpilot"
     local info_file="$fork_dir/../fork_info.json"
-    local update_status=0  # Default: no update available
     local branch_name
 
     # Check if the fork info file exists
     if [ ! -f "$info_file" ]; then
         # Fork info file doesn't exist, skip the update check
-        return 0
+        return 1
     fi
 
     # Fetch branch name from the fork_info.json file
@@ -85,7 +83,7 @@ check_for_fork_updates() {
     # Ensure the directory is a valid Git repository
     if ! git -C "$fork_dir" rev-parse --git-dir > /dev/null 2>&1; then
         # Fork directory is not a valid Git repository, skip the update check
-        return 0
+        return 1
     fi
 
     # Fetch updates
@@ -102,18 +100,19 @@ check_for_fork_updates() {
     # Get the current commit hash of the local repository
     local current_local_commit=$(git rev-parse HEAD)
 
-    if [ "$current_local_commit" != "$latest_remote_commit" ]; then
-        update_status=1  # Update available
-    fi
-
     popd > /dev/null
-    return $update_status
+
+    if [ "$current_local_commit" != "$latest_remote_commit" ]; then
+        return 0  # Update available
+    else
+        return 1  # No update available
+    fi
 }
 
 # Function to check for updates for the fork_swap.sh script
 check_for_script_updates() {
     UPDATE_AVAILABLE=0
-    api_url="https://api.github.com/repos/james5294/openpilot/contents/scripts/fork_swap.sh?ref=pal"
+    api_url="https://api.github.com/repos/james5294/openpilot/contents/scripts/fork_swap.sh?ref=forkswap"
     script_path="/data/openpilot/scripts/fork_swap.sh"
 
     echo "Checking for updates to fork_swap.sh..."
@@ -184,29 +183,29 @@ clone_fork() {
 
     # Prompt for the new fork's name
     local new_fork_name=""
-    echo "Enter a name for the new fork:"
-    read new_fork_name
-    while ! validate_input "$new_fork_name"; do
-        echo "Invalid input. Names can only contain alphanumeric characters, dashes, and underscores."
-        echo "Enter a name for the new fork:"
-        read new_fork_name
+    while true; do
+        read -p "Enter a name for the new fork: " new_fork_name
+        if validate_input "$new_fork_name"; then
+            break
+        else
+            echo "Invalid input. Names can only contain alphanumeric characters, dashes, and underscores."
+        fi
     done
 
     # Handle existing fork directory
     local target_dir="$FORKS_DIR/$new_fork_name"
     if [ -d "$target_dir" ]; then
-        echo "A fork with this name already exists. Choose 'overwrite' or 'rename':"
-        local choice
-        read choice
+        echo "A fork with this name already exists. Choose an option:"
+        echo "1. Overwrite"
+        echo "2. Rename"
+        read -p "Enter your choice (1 or 2): " choice
         case $choice in
-            overwrite)
+            1)
                 echo "Removing existing directory..."
                 rm -rf "$target_dir"
                 ;;
-            rename)
-                echo "Enter a new name for the existing fork:"
-                local rename_to
-                read rename_to
+            2)
+                read -p "Enter a new name for the existing fork: " rename_to
                 mv "$target_dir" "$FORKS_DIR/$rename_to"
                 echo "Fork renamed to $rename_to."
                 ;;
@@ -219,17 +218,18 @@ clone_fork() {
 
     # Prompt for the fork URL
     local fork_url=""
-    echo "Enter the GitHub URL of the fork to clone:"
-    read fork_url
-    while ! validate_url "$fork_url"; do
-        echo "Invalid URL format. Please enter a valid GitHub URL:"
-        read fork_url
+    while true; do
+        read -p "Enter the GitHub URL of the fork to clone: " fork_url
+        if validate_url "$fork_url"; then
+            break
+        else
+            echo "Invalid URL format. Please enter a valid GitHub URL."
+        fi
     done
 
     # Prompt for the branch name
     local branch_name=""
-    echo "Enter the branch name (leave empty for the default branch):"
-    read branch_name
+    read -p "Enter the branch name (leave empty for the default branch): " branch_name
 
     log_debug "Cloning fork: $new_fork_name from $fork_url, branch: $branch_name"
 
@@ -253,9 +253,6 @@ clone_fork() {
     # Save fork information, including the branch name
     save_fork_info "$new_fork_name" "$fork_url" "$branch_name"
 
-    # Post-clone steps
-    sudo chown -R comma:comma "$target_dir"
-
     # Update current fork only if the cloning process was successful
     if [ $clone_status -eq 0 ]; then
         update_current_fork "$new_fork_name"
@@ -270,7 +267,7 @@ clone_fork() {
         echo "Error creating symbolic link to the new fork. Please check permissions."
         return 1
     fi
-    
+
     # Ensure the scripts directory exists in the new fork
     mkdir -p "$target_dir/openpilot/scripts"
 
@@ -291,13 +288,10 @@ clone_fork() {
 
     # Prompt for reboot only if the cloning process was successful
     if [ $clone_status -eq 0 ]; then
-        read -p "Would you like to reboot now for changes to take effect? (y/n) " reboot_choice
-        if [[ "$reboot_choice" == "y" || "$reboot_choice" == "Y" ]]; then
-            echo "Rebooting..."
-            sudo reboot
-        else
-            echo "Please reboot manually for changes to take effect."
-        fi
+        echo "A reboot is required for changes to take effect."
+        read -p "Press Enter to reboot now..."
+        echo "Rebooting..."
+        sudo reboot
     fi
 
     # Verify and correct the active fork after cloning
@@ -318,7 +312,7 @@ clone_fork_repository() {
     fi
 }
 
-#Function to delete a specified fork
+# Function to delete a specified fork
 delete_fork() {
     # Prompt the user for the name of the fork to delete and validate the input
     read -p "Enter the name of the fork to delete: " delete_fork_name
@@ -362,7 +356,7 @@ delete_fork() {
 # Function to display welcome screen
 display_welcome_screen() {
     local current_fork_name=$(cat "$CURRENT_FORK_FILE")
-    
+
     if [ -z "$current_fork_name" ]; then
         ensure_initial_setup
         current_fork_name=$(cat "$CURRENT_FORK_FILE")
@@ -396,9 +390,9 @@ display_welcome_screen() {
     for fork in $(ls "$FORKS_DIR" 2>/dev/null); do
         if [ -d "$FORKS_DIR/$fork/openpilot" ]; then
             if check_for_fork_updates "$fork"; then
-                echo "$fork - ${CYAN}(update available)${RESET}"
-            else
                 echo "$fork"
+            else
+                echo "$fork - ${CYAN}(update available)${RESET}"
             fi
         fi
     done
@@ -419,14 +413,14 @@ display_welcome_screen() {
 ensure_fork_swap_script() {
     local target_script="$OPENPILOT_DIR/scripts/fork_swap.sh"
     local source_script="$FORKS_DIR/$CURRENT_FORK_NAME/openpilot/scripts/fork_swap.sh"
-    
+
     # Dereference the symlink to get the actual fork directory
     local real_fork_dir=$(realpath "$OPENPILOT_DIR")
-    
+
     if [ -f "$source_script" ]; then
         log_info "Ensuring fork_swap.sh is up-to-date in current fork's scripts directory..."
         cp "$source_script" "$real_fork_dir/scripts/fork_swap.sh"
-        
+
         if [[ $? -eq 0 ]]; then
             log_info "fork_swap.sh copied/updated successfully in the current fork's scripts directory."
         else
@@ -437,25 +431,25 @@ ensure_fork_swap_script() {
     fi
 }
 
-# handles the fork setup process on initial run
+# Handles the fork setup process on initial run
 ensure_initial_setup() {
     echo "Unknown active fork. Setting up initial fork..."
 
     while true; do
         read -p "Enter a valid fork name (alphanumeric, dashes, and underscores allowed): " current_fork_name
-        if ! validate_fork_name "$current_fork_name"; then
-            echo "Invalid fork name. Please try again."
-        else
+        if validate_fork_name "$current_fork_name"; then
             break
+        else
+            echo "Invalid fork name. Please try again."
         fi
     done
 
     while true; do
         read -p "Enter the fork URL: " fork_url
-        if ! validate_url "$fork_url"; then
-            echo "Invalid URL format. Please enter a valid GitHub URL."
-        else
+        if validate_url "$fork_url"; then
             break
+        else
+            echo "Invalid URL format. Please enter a valid GitHub URL."
         fi
     done
 
@@ -504,12 +498,7 @@ ensure_initial_setup() {
 # Function to get available disk space
 get_available_disk_space() {
     DISK_SPACE_OUTPUT=$(df -h /data)
-    #echo "Debug: df -h /data returns: $DISK_SPACE_OUTPUT"
-
     DISK_SPACE=$(echo "$DISK_SPACE_OUTPUT" | awk 'NR==2 {print $4}')
-    #echo "Debug: Extracted disk space is: $DISK_SPACE"
-
-    echo -e "${MAGENTA}Available Disk Space: ${RESET}${YELLOW}$DISK_SPACE${RESET}"
 }
 
 # Function to log debug messages
@@ -652,13 +641,10 @@ switch_fork() {
             log_info "Permissions for fork_swap.sh adjusted."
 
             echo "Switched to $fork."
-            read -p "Would you like to reboot now for changes to take effect? (y/n) " reboot_choice
-            if [[ "$reboot_choice" == "y" || "$reboot_choice" == "Y" ]]; then
-                echo "Rebooting..."
-                sudo reboot
-            else
-                echo "Please reboot manually for changes to take effect."
-            fi
+            echo "A reboot is required for changes to take effect."
+            read -p "Press Enter to reboot now..."
+            echo "Rebooting..."
+            sudo reboot
         else
             echo "Switch aborted. No changes made."
         fi
@@ -730,18 +716,18 @@ update_current_fork() {
     fi
 
     log_info "Attempting to update the current fork to: $1"
-    
+
     # Try to write the fork name to the CURRENT_FORK_FILE and capture any error message
     ERROR_MSG=$(echo "$1" > "$CURRENT_FORK_FILE" 2>&1)
-    
+
     # Update CURRENT_FORK_NAME variable
     CURRENT_FORK_NAME="$1"
-    
+
     # Check if the operation was successful by reading back the file
     CURRENT_FORK=$(cat "$CURRENT_FORK_FILE")
-    
+
     log_info "Retrieved current fork value from file: $CURRENT_FORK"
-    
+
     if [ "$CURRENT_FORK" == "$1" ]; then
         log_info "Current fork updated successfully to: $1"
     else
@@ -768,10 +754,7 @@ update_fork() {
         return 1
     fi
 
-    # Dereference the symlink to get the actual fork directory
-    local real_fork_dir=$(realpath "$OPENPILOT_DIR")
-
-    pushd "$real_fork_dir" > /dev/null
+    pushd "$fork_dir" > /dev/null
 
     # Check for local changes
     if [ -n "$(git status --porcelain)" ]; then
@@ -784,7 +767,7 @@ update_fork() {
         fi
     fi
 
-    # Fetch and merge updates
+    # Fetch and rebase updates
     git fetch origin "$branch_name"
     fetch_status=$?
     if [ $fetch_status -ne 0 ]; then
@@ -793,10 +776,10 @@ update_fork() {
         return 1
     fi
 
-    git merge "origin/$branch_name"
-    merge_status=$?
-    if [ $merge_status -ne 0 ]; then
-        echo "Error: Failed to merge updates for fork '$fork_name'. Please resolve any conflicts manually."
+    git rebase "origin/$branch_name"
+    rebase_status=$?
+    if [ $rebase_status -ne 0 ]; then
+        echo "Error: Failed to rebase updates for fork '$fork_name'. Please resolve any conflicts manually."
         popd > /dev/null
         return 1
     fi
@@ -817,20 +800,22 @@ validate_fork_name() {
 
 # Function to validate general input and avoid special characters
 validate_input() {
-    if [[ $1 =~ [^a-zA-Z0-9_-] ]]; then
+    if [[ $1 =~ ^[a-zA-Z0-9_-]+$ ]]; then
+        return 0
+    else
         echo "Error: Invalid input. Only alphanumeric characters, dashes, and underscores are allowed." | tee -a $LOG_FILE
         return 1
     fi
-    return 0
 }
 
 # Function to validate the format of GitHub repository URL
 validate_url() {
-    if [[ ! $1 =~ ^https://github.com/[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+.git$ ]]; then
+    if [[ $1 =~ ^https://github\.com/[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+\.git$ ]]; then
+        return 0
+    else
         echo "Error: Invalid URL format." | tee -a $LOG_FILE
         return 1
     fi
-    return 0
 }
 
 # Function to validate a fork name or other key variables
@@ -885,6 +870,14 @@ verify_active_fork() {
         fi
     fi
 }
+
+# Check for required commands
+for cmd in git jq curl; do
+    if ! command -v $cmd &>/dev/null; then
+        echo "Error: Required command '$cmd' is not installed."
+        exit 1
+    fi
+done
 
 # Call the script update check function at the beginning
 check_for_script_updates
