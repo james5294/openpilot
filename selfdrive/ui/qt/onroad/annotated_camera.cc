@@ -559,13 +559,13 @@ void AnnotatedCameraWidget::drawDriverState(QPainter &painter, const UIState *s)
   painter.restore();
 }
 
-void AnnotatedCameraWidget::drawLead(QPainter &painter, const cereal::ModelDataV2::LeadDataV3::Reader &lead_data, const QPointF &vd, const float v_ego, const QColor lead_marker_color) {
+void AnnotatedCameraWidget::drawLead(QPainter &painter, const cereal::RadarState::LeadData::Reader &lead_data, const QPointF &vd, const float v_ego, const QColor lead_marker_color) {
   painter.save();
 
   const float speedBuff = useStockColors ? 10. : 25.;  // Make the center of the chevron appear sooner if a theme is active
   const float leadBuff = useStockColors ? 40. : 100.;  // Make the center of the chevron appear sooner if a theme is active
-  const float d_rel = lead_data.getX()[0];
-  const float v_rel = lead_data.getV()[0] - v_ego;
+  const float d_rel = lead_data.getDRel();
+  const float v_rel = lead_data.getVRel();
 
   float fillAlpha = 0;
   if (d_rel < leadBuff) {
@@ -686,16 +686,24 @@ void AnnotatedCameraWidget::paintEvent(QPaintEvent *event) {
     update_model(s, model, sm["uiPlan"].getUiPlan());
     drawLaneLines(painter, s);
 
-    if (s->scene.longitudinal_control && sm.rcv_frame("modelV2") > s->scene.started_frame && !s->scene.hide_lead_marker) {
-      update_leads(s, model);
-      float prev_drel = -1;
-      for (int i = 0; i < model.getLeadsV3().size() && i < 2; i++) {
-        const auto &lead = model.getLeadsV3()[i];
-        auto lead_drel = lead.getX()[0];
-        if (s->scene.has_lead && (prev_drel < 0 || std::abs(lead_drel - prev_drel) > 3.0)) {
-          drawLead(painter, lead, s->scene.lead_vertices[i], (speed / (is_metric ? MS_TO_KPH : MS_TO_MPH)), s->scene.lead_marker_color);
-        }
-        prev_drel = lead_drel;
+    if (s->scene.longitudinal_control && sm.rcv_frame("radarState") > s->scene.started_frame && !s->scene.hide_lead_marker) {
+      auto radar_state = sm["radarState"].getRadarState();
+      update_leads(s, radar_state, model.getPosition());
+      auto lead_one = radar_state.getLeadOne();
+      auto lead_two = radar_state.getLeadTwo();
+      auto lead_left = radar_state.getLeadLeft();
+      auto lead_right = radar_state.getLeadRight();
+      if (lead_one.getStatus()) {
+        drawLead(painter, lead_one, s->scene.lead_vertices[0], v_ego, s->scene.lead_marker_color);
+      }
+      if (lead_two.getStatus()) {
+        drawLead(painter, lead_two, s->scene.lead_vertices[1], v_ego, s->scene.lead_marker_color);
+      }
+      if (lead_left.getStatus()) {
+        drawLead(painter, lead_left, s->scene.lead_vertices[2], v_ego, s->scene.lead_marker_color.darker(150));
+      }
+      if (lead_right.getStatus()) {
+        drawLead(painter, lead_right, s->scene.lead_vertices[3], v_ego, s->scene.lead_marker_color.lighter(150));
       }
     }
   }
