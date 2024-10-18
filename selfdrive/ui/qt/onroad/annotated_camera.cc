@@ -749,7 +749,7 @@ void AnnotatedCameraWidget::paintEvent(QPaintEvent *event) {
   pm->send("uiDebug", msg);
 
   // Paint FrogPilot widgets
-  paintFrogPilotWidgets(painter);
+  paintFrogPilotWidgets(painter, sm);
 }
 
 void AnnotatedCameraWidget::showEvent(QShowEvent *event) {
@@ -974,7 +974,7 @@ void AnnotatedCameraWidget::updateFrogPilotVariables(int alert_height, const UIS
   useStockColors = scene.use_stock_colors;
 }
 
-void AnnotatedCameraWidget::paintFrogPilotWidgets(QPainter &painter) {
+void AnnotatedCameraWidget::paintFrogPilotWidgets(QPainter &painter, const SubMaster &sm) {
   if ((showAlwaysOnLateralStatusBar || showConditionalExperimentalStatusBar || roadNameUI) && !bigMapOpen) {
     drawStatusBar(painter);
   } else {
@@ -984,6 +984,8 @@ void AnnotatedCameraWidget::paintFrogPilotWidgets(QPainter &painter) {
   if (leadInfo && !bigMapOpen) {
     drawLeadInfo(painter);
   }
+
+  drawRadarTracks(painter, sm["liveTracks"].getLiveTracks());
 
   if (speedLimitChanged) {
     drawSLCConfirmation(painter);
@@ -1220,6 +1222,27 @@ void PedalIcons::paintEvent(QPaintEvent *event) {
 
   p.setOpacity(gasOpacity);
   p.drawPixmap(gasX, (height() - img_size) / 2, gas_pedal_img);
+}
+
+void AnnotatedCameraWidget::drawRadarTracks(QPainter &painter, const capnp::List<cereal::LiveTracks>::Reader &radar_tracks) {
+  painter.save();
+
+  painter.setPen(Qt::NoPen);
+  painter.setBrush(QBrush(Qt::red));
+
+  for (int i = 0; i < radar_tracks.size(); ++i) {
+    const cereal::LiveTracks::Reader track = radar_tracks[i];
+
+    float dRel = track.getDRel();
+    float yRel = track.getYRel();
+
+    float x = std::clamp(yRel * 10.0f, 0.f, (float)width());
+    float y = std::fmin(height(), dRel * 10.0f);
+
+    painter.drawEllipse(QPointF(x, y), 12, 12);
+  }
+
+  painter.restore();
 }
 
 void AnnotatedCameraWidget::drawSLCConfirmation(QPainter &p) {
