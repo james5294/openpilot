@@ -175,24 +175,16 @@ def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks
     return None
 
 
-def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: float, model_v_ego: float, frogpilot_toggles: SimpleNamespace):
-  prev_aLeadK = getattr(get_RadarState_from_vision, "prev_aLeadK", 0.0)
-  # Check if match_follow_distance is set to default value (0%), use original unblended value
-  if hasattr(frogpilot_toggles, "match_follow_distance") and frogpilot_toggles.match_follow_distance > 1:
-    blend_factor = frogpilot_toggles.match_follow_distance
-    aLeadK = blend_factor * float(lead_msg.a[0]) + (1 - blend_factor) * prev_aLeadK
-  else:
-    # Use original unblended value if disabled or set to 0%
-    aLeadK = float(lead_msg.a[0])
-  get_RadarState_from_vision.prev_aLeadK = aLeadK
 
+def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: float, model_v_ego: float):
+  lead_v_rel_pred = lead_msg.v[0] - model_v_ego
   return {
     "dRel": float(lead_msg.x[0] - RADAR_TO_CAMERA),
     "yRel": float(-lead_msg.y[0]),
-    "vRel": float(lead_msg.v[0] - model_v_ego),
-    "vLead": float(v_ego + (lead_msg.v[0] - model_v_ego)),
-    "vLeadK": float(v_ego + (lead_msg.v[0] - model_v_ego)),
-    "aLeadK": aLeadK,
+    "vRel": float(lead_v_rel_pred),
+    "vLead": float(v_ego + lead_v_rel_pred),
+    "vLeadK": float(v_ego + lead_v_rel_pred),
+    "aLeadK": float(lead_msg.a[0]),
     "aLeadTau": 0.3,
     "fcw": False,
     "modelProb": float(lead_msg.prob),
