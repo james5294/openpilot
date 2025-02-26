@@ -357,6 +357,7 @@ std::unordered_map<std::string, uint32_t> keys = {
     {"LeadDetectionThreshold", PERSISTENT},
     {"LeadInfo", PERSISTENT},
     {"LockDoors", PERSISTENT},
+    {"LockDoorsTimer", PERSISTENT},
     {"LongitudinalMetrics", PERSISTENT},
     {"LongitudinalTune", PERSISTENT},
     {"LongPitch", PERSISTENT},
