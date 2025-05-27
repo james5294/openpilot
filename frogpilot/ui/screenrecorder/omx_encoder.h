@@ -30,6 +30,8 @@ public:
   static OMX_ERRORTYPE fill_buffer_done(OMX_HANDLETYPE component, OMX_PTR app_data,
                                         OMX_BUFFERHEADERTYPE *buffer);
 
+  bool is_open = false;
+
 private:
   void wait_for_state(OMX_STATETYPE state);
   static void handle_out_buf(OmxEncoder *e, OMX_BUFFERHEADERTYPE *out_buf);
@@ -37,7 +39,6 @@ private:
   int width, height, fps;
   char vid_path[1024];
   char lock_path[1024];
-  bool is_open = false;
   bool dirty = false;
   int counter = 0;
 

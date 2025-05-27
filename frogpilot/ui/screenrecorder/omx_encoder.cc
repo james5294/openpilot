@@ -540,12 +540,12 @@ void OmxEncoder::encoder_close() {
 
   if (out_stream) {
     out_stream->nb_frames = counter;
-    out_stream->duration = counter;
+    out_stream->duration = av_rescale_q(counter, AVRational{1, fps}, out_stream->time_base);
   }
 
   if (ofmt_ctx) {
-    ofmt_ctx->duration = av_rescale_q(counter, AVRational{1, fps}, out_stream->time_base);
     av_write_trailer(ofmt_ctx);
+    ofmt_ctx->duration = out_stream->duration;
     avio_closep(&ofmt_ctx->pb);
     avformat_free_context(ofmt_ctx);
     ofmt_ctx = nullptr;
@@ -561,6 +561,21 @@ void OmxEncoder::encoder_close() {
   }
 
   is_open = false;
+
+  if (strlen(vid_path) > 0) {
+    char fixed_path[1024];
+    snprintf(fixed_path, sizeof(fixed_path), "%s.fixed.mp4", vid_path);
+
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd), "ffmpeg -y -i \"%s\" -c copy -movflags +faststart \"%s\" && mv \"%s\" \"%s\"", vid_path, fixed_path, fixed_path, vid_path);
+
+    int ret = system(cmd);
+    if (ret != 0) {
+      LOGW("ffmpeg faststart remux failed with exit code %d", ret);
+    } else {
+      LOG("Faststart fix applied via ffmpeg");
+    }
+  }
 }
 
 OmxEncoder::~OmxEncoder() {

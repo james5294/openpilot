@@ -14,8 +14,6 @@ const QDir RECORDINGS_FOLDER("/data/media/screen_recordings");
 ScreenRecorder::ScreenRecorder(QWidget *parent) : QPushButton(parent) {
   setFixedSize(btn_size, btn_size);
 
-  encoder = std::make_unique<OmxEncoder>(RECORDINGS_FOLDER.path().toStdString().c_str(), SCREEN_WIDTH, SCREEN_HEIGHT, UI_FREQ * 2, 12 * 1024 * 1024);
-
   rgbScaleBuffer.resize(SCREEN_WIDTH * SCREEN_HEIGHT * 4);
 
   rootWidget = topWidget(this);
@@ -48,7 +46,13 @@ void ScreenRecorder::toggleRecording() {
 }
 
 void ScreenRecorder::startRecording() {
+  encoder = std::make_unique<OmxEncoder>(RECORDINGS_FOLDER.path().toStdString().c_str(), SCREEN_WIDTH, SCREEN_HEIGHT, UI_FREQ * 2, 12 * 1024 * 1024);
   encoder->encoder_open((QDateTime::currentDateTime().toString("MMMM_dd_yyyy-hh-mmAP").toStdString() + ".mp4").c_str());
+
+  if (!encoder->is_open) {
+    encoder.reset();
+    return;
+  }
 
   recording = true;
 
@@ -66,7 +70,10 @@ void ScreenRecorder::stopRecording() {
     encodingThread.join();
   }
 
-  encoder->encoder_close();
+  if (encoder) {
+    encoder->encoder_close();
+    encoder.reset();
+  }
 }
 
 QImage ScreenRecorder::synthesizeFrame(const QImage &frame1, const QImage &frame2, double alpha) {
