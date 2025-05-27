@@ -95,13 +95,16 @@ def calculate_lane_width(lane, current_lane, road_edge=None):
   return float(distance_to_lane)
 
 # Credit goes to Pfeiferj!
-def calculate_road_curvature(modelData, v_ego):
+def calculate_predicted_lateral_acceleration(modelData):
   orientation_rate = np.array(modelData.orientationRate.z)
   velocity = np.array(modelData.velocity.x)
 
-  max_pred_lat_acc = max(np.max(orientation_rate * velocity), np.min(orientation_rate * velocity), key=abs)
+  return float(max(orientation_rate * velocity, key=abs))
 
-  return float(max_pred_lat_acc / max(v_ego, 1)**2)
+# Credit goes to Pfeiferj!
+def calculate_road_curvature(modelData, v_ego):
+  predicted_lateral_acc = calculate_predicted_lateral_acceleration(modelData)
+  return predicted_lateral_acc / max(v_ego, 1)**2
 
 def delete_file(path):
   path = Path(path)

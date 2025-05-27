@@ -68,11 +68,9 @@ class FrogPilotPlanner:
 
     if sm["controlsState"].enabled and frogpilot_toggles.conditional_experimental_mode:
       self.cem.update(v_ego, sm, frogpilot_toggles)
-    elif frogpilot_toggles.force_stops or frogpilot_toggles.green_light_alert or frogpilot_toggles.show_stopping_point:
-      self.cem.curve_detected = False
-      self.cem.stop_sign_and_light(v_ego, sm, frogpilot_toggles)
     else:
-      self.cem.stop_light_detected = False
+      self.cem.curve_detected = False
+      self.cem.stop_sign_and_light(v_ego, sm, PLANNER_TIME - 2)
 
     self.frogpilot_events.update(v_cruise, sm, frogpilot_toggles)
 
@@ -154,7 +152,10 @@ class FrogPilotPlanner:
     frogpilotPlan.minAcceleration = self.frogpilot_acceleration.min_accel
 
     frogpilotPlan.mtscSpeed = self.frogpilot_vcruise.mtsc_target
-    frogpilotPlan.vtscControllingCurve = self.frogpilot_vcruise.mtsc_target > self.frogpilot_vcruise.vtsc_target
+    frogpilotPlan.stscControllingCurve = self.frogpilot_vcruise.stsc.controlling_curve
+    frogpilotPlan.stscSpeed = self.frogpilot_vcruise.stsc.target
+    frogpilotPlan.stscTraining = self.frogpilot_vcruise.stsc.training_active
+    frogpilotPlan.vtscControllingCurve = self.frogpilot_vcruise.mtsc_target > self.frogpilot_vcruise.vtsc_target < self.frogpilot_vcruise.stsc_target
     frogpilotPlan.vtscSpeed = self.frogpilot_vcruise.vtsc_target
 
     frogpilotPlan.redLight = self.cem.stop_light_detected

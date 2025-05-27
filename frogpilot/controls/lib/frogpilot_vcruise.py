@@ -4,6 +4,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import COMFO
 
 from openpilot.frogpilot.common.frogpilot_variables import CRUISING_SPEED, PLANNER_TIME
 from openpilot.frogpilot.controls.lib.map_turn_speed_controller import MapTurnSpeedController
+from openpilot.frogpilot.controls.lib.smart_turn_speed_controller import SmartTurnSpeedController
 from openpilot.frogpilot.controls.lib.speed_limit_controller import SpeedLimitController
 
 TARGET_LAT_A = 2.0
@@ -13,6 +14,7 @@ class FrogPilotVCruise:
     self.frogpilot_planner = FrogPilotPlanner
 
     self.mtsc = MapTurnSpeedController()
+    self.stsc = SmartTurnSpeedController(self)
     self.slc = SpeedLimitController()
 
     self.forcing_stop = False
@@ -67,6 +69,19 @@ class FrogPilotVCruise:
     else:
       self.mtsc_target = v_cruise
 
+    # FrogsGoMoo's Smart Turn Speed Controller
+    if v_ego > CRUISING_SPEED and sm["controlsState"].enabled and self.frogpilot_planner.road_curvature_detected and frogpilot_toggles.smart_turn_speed_controller:
+      self.stsc.update_target(v_cruise, v_ego, sm)
+
+      self.stsc.controlling_curve = self.mtsc_target > self.stsc.target < self.vtsc_target
+      self.stsc.controlling_curve |= not (frogpilot_toggles.map_turn_speed_controller or frogpilot_toggles.vision_turn_speed_controller)
+    else:
+      self.stsc.log_data(v_ego, sm)
+
+      self.stsc.controlling_curve = False
+
+      self.stsc.target = v_cruise
+
     # Pfeiferj's Speed Limit Controller
     self.slc.frogpilot_toggles = frogpilot_toggles
 
@@ -108,7 +123,7 @@ class FrogPilotVCruise:
 
       self.tracked_model_length = self.frogpilot_planner.model_length
 
-      targets = [self.braking_target, self.mtsc_target, self.vtsc_target, v_cruise]
+      targets = [self.braking_target, self.mtsc_target, self.stsc.target, self.vtsc_target, v_cruise]
       if frogpilot_toggles.speed_limit_controller:
         targets.append(max(self.slc.overridden_speed, self.slc_target + self.slc_offset))
 

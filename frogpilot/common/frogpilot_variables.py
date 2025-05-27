@@ -317,6 +317,7 @@ frogpilot_default_params: list[tuple[str, str | bytes, int]] = [
   ("SLCPriority1", "Navigation", 2),
   ("SLCPriority2", "Map Data", 2),
   ("SLCPriority3", "Dashboard", 2),
+  ("SmartTurnControl", "1", 1),
   ("SNGHack", "1", 2),
   ("SpeedLimitChangedAlert", "1", 0),
   ("SpeedLimitController", "1", 0),
@@ -362,6 +363,7 @@ frogpilot_default_params: list[tuple[str, str | bytes, int]] = [
   ("UnlockDoors", "1", 0),
   ("UpdaterAvailableBranches", "", 0),
   ("UseKonikServer", "0", 2),
+  ("UserLateralAccelerationData", "", 1),
   ("UseSI", "1", 3),
   ("UseVienna", "0", 1),
   ("VeryLongDistanceButtonControl", "6", 2),
@@ -552,6 +554,7 @@ class FrogPilotVariables:
     toggle.turn_aggressiveness = params.get_int("TurnAggressiveness") / 100 if toggle.curve_speed_controller and tuning_level >= level["TurnAggressiveness"] else default.get_int("TurnAggressiveness") / 100
     toggle.map_turn_speed_controller = toggle.curve_speed_controller and (params.get_bool("MapTurnControl") if tuning_level >= level["MapTurnControl"] else default.get_bool("MapTurnControl"))
     toggle.mtsc_curvature_check = toggle.map_turn_speed_controller and (params.get_bool("MTSCCurvatureCheck") if tuning_level >= level["MTSCCurvatureCheck"] else default.get_bool("MTSCCurvatureCheck"))
+    toggle.smart_turn_speed_controller = toggle.curve_speed_controller and (params.get_bool("SmartTurnControl") if tuning_level >= level["SmartTurnControl"] else default.get_bool("SmartTurnControl"))
     toggle.vision_turn_speed_controller = toggle.curve_speed_controller and (params.get_bool("VisionTurnControl") if tuning_level >= level["VisionTurnControl"] else default.get_bool("VisionTurnControl"))
     toggle.csc_status = toggle.curve_speed_controller and (params.get_bool("ShowCSCStatus") if tuning_level >= level["ShowCSCStatus"] else default.get_bool("ShowCSCStatus")) or toggle.debug_mode
 
