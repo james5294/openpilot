@@ -189,7 +189,10 @@ class Controls:
     # FrogPilot variables
     self.frogpilot_toggles = get_frogpilot_toggles()
 
+    self.belowSteerSpeed_shown = False
     self.distance_pressed_previously = False
+    self.resumeRequired_shown = False
+    self.steerTempUnavailableSilent_shown = False
 
     self.planner_curves = self.frogpilot_toggles.planner_curvature_model
     self.radarless_model = self.frogpilot_toggles.radarless_model
@@ -198,6 +201,8 @@ class Controls:
     self.display_timer = 0
 
     self.has_menu = self.CP.carName == "gm" and not (self.CP.flags & GMFlags.NO_CAMERA.value or self.CP.carFingerprint in CC_ONLY_CAR)
+
+    self.event_names_to_clear = []
 
   def set_initial_state(self):
     if REPLAY:
@@ -428,6 +433,30 @@ class Controls:
 
     if self.frogpilot_toggles.block_user:
       self.events.add(EventName.blockUser, static=True)
+
+    # Remove already played events
+    event_names = [event.name for event in self.events]
+
+    if EventName.belowSteerSpeed in event_names:
+      self.belowSteerSpeed_shown = True
+
+    if EventName.resumeRequired in event_names:
+      self.resumeRequired_shown = True
+
+    if EventName.steerTempUnavailableSilent in event_names:
+      self.steerTempUnavailableSilent_shown = True
+
+    if self.belowSteerSpeed_shown and CS.vEgo >= self.CP.minSteerSpeed:
+      self.event_names_to_clear.append(EventName.belowSteerSpeed)
+
+    if self.resumeRequired_shown and not CS.cruiseState.standstill and not self.CP.autoResumeSng:
+      self.event_names_to_clear.append(EventName.resumeRequired)
+
+    if self.steerTempUnavailableSilent_shown and not CS.steerFaultTemporary:
+      self.event_names_to_clear.append(EventName.steerTempUnavailableSilent)
+
+    if self.event_names_to_clear:
+      self.events = [event for event in self.events if event.name not in self.event_names_to_clear]
 
   def data_sample(self):
     """Receive data from sockets"""
