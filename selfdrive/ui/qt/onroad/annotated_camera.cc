@@ -104,8 +104,8 @@ void AnnotatedCameraWidget::updateState(const UIState &s, const FrogPilotUIState
   dm_fade_state = std::clamp(dm_fade_state+0.2*(0.5-dmActive), 0.0, 1.0);
 
   // hide map settings button for alerts and flip for right hand DM
+  map_settings_btn->road_name_ui = frogpilot_toggles.value("road_name_ui").toBool();
   if (map_settings_btn->isEnabled()) {
-    map_settings_btn->road_name_ui = frogpilot_toggles.value("road_name_ui").toBool();
     map_settings_btn->setVisible(!hideBottomIcons && !frogpilot_toggles.value("hide_map_icon").toBool());
     main_layout->setAlignment(map_settings_btn, (rightHandDM ? Qt::AlignLeft : Qt::AlignRight) | Qt::AlignBottom);
   }
