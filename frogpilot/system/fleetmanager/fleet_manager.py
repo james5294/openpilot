@@ -373,7 +373,8 @@ def speed_limits():
 @app.route("/lock_doors", methods=['POST'])
 def lock_doors_route():
   try:
-    fleet.lock_doors()
+    for _ in range(3):
+      fleet.lock_doors()
     return jsonify({"message": "Doors locked successfully!"}), 200
   except Exception as error:
     return jsonify({"error": "Failed to lock doors...", "details": str(error)}), 400
@@ -381,7 +382,8 @@ def lock_doors_route():
 @app.route("/unlock_doors", methods=['POST'])
 def unlock_doors_route():
   try:
-    fleet.unlock_doors()
+    for _ in range(3):
+      fleet.unlock_doors()
     return jsonify({"message": "Doors unlocked successfully!"}), 200
   except Exception as error:
     return jsonify({"error": "Failed to unlock doors...", "details": str(error)}), 400

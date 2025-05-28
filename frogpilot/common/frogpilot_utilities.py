@@ -160,10 +160,11 @@ def lock_doors(lock_doors_timer, sm):
   wait_for_no_driver(sm, lock_doors_timer)
 
   if not any(ps.ignitionLine or ps.ignitionCan for ps in sm["pandaStates"] if ps.pandaType != log.PandaState.PandaType.unknown):
-    with Panda() as panda:
-      panda.set_safety_mode(panda.SAFETY_TOYOTA)
-      panda.can_send(0x750, LOCK_CMD, 0)
-      panda.send_heartbeat()
+    for _ in range(3):
+      with Panda() as panda:
+        panda.set_safety_mode(panda.SAFETY_TOYOTA)
+        panda.can_send(0x750, LOCK_CMD, 0)
+        panda.send_heartbeat()
 
 def run_cmd(cmd, success_message, fail_message, report=True):
   try:
