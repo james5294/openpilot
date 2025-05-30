@@ -9,6 +9,6 @@ RUN pip3 install --upgrade pip && \
     pip3 install flask requests gevent
 
 # Copy the current directory contents into the container at /app
-COPY . /thepond
+COPY . /the_pond
 
-CMD ["python3", "-m", "thepond.thepond"]
+CMD ["python3", "-m", "the_pond.the_pond"]

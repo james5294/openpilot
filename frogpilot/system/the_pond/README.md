@@ -1,15 +1,15 @@
-# Thepond
+# The Pond
 
-This is a new way to manage your frogpilot device. It allows you to change most settings that you can edit in on the device, as well as view the video stream and download the logs.
+This is a new way to manage your FrogPilot device. It allows you to change most settings that you can edit in on the device, as well as view the video stream and download the logs.
 
 
 # Architecture
 
-ThePond consists of two parts: the python-flask API and the Arrow.js SPA frontend. By using es-modules I've been able to avoid having to introcude any kind of build-system (mostly as that would require node somewhere in the build process, and I have no clue how I would go about adding that :P).
+"The Pond" consists of two parts: the python-flask API and the Arrow.js SPA frontend. By using es-modules I've been able to avoid having to introduce any kind of build-system (mostly as that would require node somewhere in the build process, and I have no clue how I would go about adding that :P).
 
 ### API
 
-The API is fairly simple, there are endpoints for (these are all found in `thepond.py`, and are implemented as simple flask routes which return json):
+The API is fairly simple, there are endpoints for (these are all found in `the_pond.py`, and are implemented as simple flask routes which return json):
 
 - Getting and saving settings
 - Fetching lists of driven routes
@@ -30,14 +30,14 @@ There are then a few structural components such as the `sidebar`, `router` and `
 
 ---
 
-# Developing 
+# Developing
 
 ## Add a new page
 
 To add a new page, you need to create a new component in the `components` folder, and then add it to the `router` component. The router component is a simple switch statement which renders the correct component based on the current route:
 
 `router.js`
-```js 
+```js
  let routes = [
     createRoute("root", "/", Overview),
     createRoute("routes", "/routes", RecordedRoutes),
@@ -106,8 +106,8 @@ export function SampleCompoent() {
 ### To run using docker:
 
 ```bash
-docker build -t thepond .
-docker run -v $(pwd):/app --rm -ti -p 8084:8084 thepond
+docker build -t the_pond .
+docker run -v $(pwd):/app --rm -ti -p 8084:8084 the_pond
 ```
 
 ### Run and debug on comma device (or computer with python)
