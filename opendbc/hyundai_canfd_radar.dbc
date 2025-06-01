@@ -1,0 +1,2 @@
+VERSION ""\n\nNS_ : \n\tNS_DESC_\n\tCM_\n\tBA_DEF_\n\tBA_\n\tVAL_\n\tCAT_DEF_\n\tCAT_\n\tFILTER\n\tBA_DEF_DEF_\n\tEV_DATA_\n\tENVVAR_DATA_\n\tSGTYPE_\n\tSGTYPE_VAL_\n\tBA_DEF_SGTYPE_\n\tBA_SGTYPE_\n\tSIG_TYPE_DEF_\n\tSIG_GROUP_\n\tSIG_VALTYPE_\n\tSIGTYPE_VALTYPE_\n\tBO_TX_BU_\n\tSG_MUL_VAL_\n\nBS_:\n\nBU_: RADAR INTERN // Example ECUs\n\n// TODO: Replace this with actual content from RoyJR's hyundai_canfd_radar.dbc
+BO_ 2001 EXAMPLE_MESSAGE_RADAR: 8 RADAR\n SG_ EXAMPLE_SIG_RADAR : 0|16@1+ (1,0) [0|0] "" INTERN\n

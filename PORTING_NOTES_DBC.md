@@ -1,0 +1,1 @@
+Manual/Build Step: After replacing placeholder DBCs with actual content, FrogPilot's build process must be run to regenerate CAN parser/packer code. If no such script exists, this may require manual code generation or library updates.
