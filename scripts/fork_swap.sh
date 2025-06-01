@@ -8,8 +8,8 @@ SCRIPT_VERSION="3.0.4"
 #
 # Description:
 #   This script is a utility designed to manage multiple forks of the OpenPilot project
-#   installed on your comma device. It allows users to effortlessly switch between various forks,
-#   clone new ones from GitHub repositories, and then manage the forks locally. The script performs
+#   on your comma device. It uses symbolic links to allow users to effortlessly switch between various forks,
+#   clone new ones from GitHub repositories, and manage them locally. The script performs
 #   validations, backups, updates, and handles log rotation.
 #
 # Prerequisites:
@@ -244,6 +244,8 @@ clone_fork() {
     # Update current fork
     update_current_fork "$new_fork_name"
 
+    # Remove any existing file or directory at $OPENPILOT_DIR to ensure it can become a symlink.
+    # ln -sfn would fail if $OPENPILOT_DIR is a non-empty directory.
     # Remove existing symbolic link and create a new one to the new fork
     if [ -e "$OPENPILOT_DIR" ]; then
         rm -rf "${OPENPILOT_DIR:?}"
@@ -411,24 +413,91 @@ display_welcome_screen() {
     echo -e "${YELLOW}=========================================================================${RESET}"
 }
 
-# Function to ensure fork_swap.sh exists in the current fork's directory and is up-to-date
+# Function to ensure fork_swap.sh exists in the current fork's true directory and is consistent with the active (symlinked) script.
+# This is important for ensuring that after a script update (which modifies the script at $OPENPILOT_DIR/scripts/fork_swap.sh),
+# the updated script is also reflected in the fork's own directory ($FORKS_DIR/$CURRENT_FORK_NAME/openpilot/scripts/fork_swap.sh).
 ensure_fork_swap_script() {
-    local source_script="$FORKS_DIR/$CURRENT_FORK_NAME/openpilot/scripts/fork_swap.sh"
+    log_info "Ensuring fork_swap.sh consistency for active fork '$CURRENT_FORK_NAME'."
 
-    # Dereference the symlink to get the actual fork directory
-    local real_fork_dir
-    real_fork_dir=$(readlink -f "$OPENPILOT_DIR")
+    local active_script_path="$OPENPILOT_DIR/scripts/fork_swap.sh" # Path via symlink
+    local forks_own_script_storage_path="$FORKS_DIR/$CURRENT_FORK_NAME/openpilot/scripts/fork_swap.sh"
+    local forks_own_script_storage_dir
 
-    if [ -f "$source_script" ]; then
-        log_info "Ensuring fork_swap.sh is up-to-date in current fork's scripts directory..."
-        if cp "$source_script" "$real_fork_dir/scripts/fork_swap.sh"; then
-            log_info "fork_swap.sh copied/updated successfully in the current fork's scripts directory."
+    forks_own_script_storage_dir=$(dirname "$forks_own_script_storage_path")
+
+    # Validate that CURRENT_FORK_NAME is set
+    if [ -z "$CURRENT_FORK_NAME" ]; then
+        log_error "CURRENT_FORK_NAME is not set. Cannot ensure fork_swap.sh consistency."
+        return 1
+    fi
+
+    # Validate that the symlinked script path ($OPENPILOT_DIR/scripts/fork_swap.sh) actually exists and is a file.
+    # This is the script that is currently running or was just updated.
+    if [ ! -f "$active_script_path" ]; then
+        log_error "Active script at '$active_script_path' (via symlink) not found or is not a regular file. This is unexpected."
+        # Attempt to copy the currently executing script ($0) to the active_script_path if $OPENPILOT_DIR is valid
+        if [ -L "$OPENPILOT_DIR" ] && [ -d "$(dirname "$active_script_path")" ]; then
+            log_info "Attempting to restore active script path '$active_script_path' using currently executing script '$0'."
+            if cp "$0" "$active_script_path"; then
+                log_info "Successfully copied '$0' to '$active_script_path'."
+                chmod +x "$active_script_path"
+            else
+                log_error "Failed to copy '$0' to '$active_script_path'."
+                return 1
+            fi
         else
-            log_error "Error while copying/updating fork_swap.sh in the current fork's scripts directory."
+            log_error "Cannot attempt restoration of '$active_script_path' as $OPENPILOT_DIR is not a valid symlink or parent dir is missing."
+            return 1
+        fi
+    fi
+
+    # Ensure the fork's own script directory ($FORKS_DIR/$CURRENT_FORK_NAME/openpilot/scripts/) exists.
+    if [ ! -d "$forks_own_script_storage_dir" ]; then
+        log_info "Scripts directory '$forks_own_script_storage_dir' does not exist in fork '$CURRENT_FORK_NAME'. Creating it."
+        if ! mkdir -p "$forks_own_script_storage_dir"; then
+            log_error "Failed to create scripts directory '$forks_own_script_storage_dir' for fork '$CURRENT_FORK_NAME'."
+            return 1
+        fi
+    fi
+
+    # Compare the active script with the fork's stored version.
+    # If different, or if the fork's stored version doesn't exist, copy the active script to the fork's storage.
+    if [ ! -f "$forks_own_script_storage_path" ] || ! cmp -s "$active_script_path" "$forks_own_script_storage_path"; then
+        if [ ! -f "$forks_own_script_storage_path" ]; then
+            log_info "Script not found in fork '$CURRENT_FORK_NAME's own directory. Copying active script."
+        else
+            log_info "Script in fork '$CURRENT_FORK_NAME's own directory differs from active script. Updating."
+        fi
+
+        if cp "$active_script_path" "$forks_own_script_storage_path"; then
+            log_info "fork_swap.sh copied successfully from '$active_script_path' to '$forks_own_script_storage_path'."
+            chmod +x "$forks_own_script_storage_path"
+        else
+            log_error "Error copying fork_swap.sh from '$active_script_path' to '$forks_own_script_storage_path'."
+            return 1 # Return error
         fi
     else
-        log_error "Source script '$source_script' not found. Unable to update fork_swap.sh in the current fork's directory."
+        log_info "fork_swap.sh in fork '$CURRENT_FORK_NAME' is already consistent with the active version."
+        # Ensure it's executable anyway
+        if ! chmod +x "$forks_own_script_storage_path"; then
+            log_warning "Failed to chmod +x '$forks_own_script_storage_path', but script is consistent."
+        fi
     fi
+
+    # Final check: ensure the script at $OPENPILOT_DIR/scripts/fork_swap.sh is executable
+    # This is usually called after clone or switch, so $OPENPILOT_DIR/scripts/fork_swap.sh should be the one from the fork.
+    # The above logic ensures the fork's own copy is updated from the active one if `update_script` ran.
+    # Then, when switching, the script from the target fork's own directory is effectively made active.
+    # Let's ensure the one at $OPENPILOT_DIR/scripts/fork_swap.sh is executable.
+    if [ -f "$active_script_path" ]; then
+        if ! chmod +x "$active_script_path"; then
+            log_warning "Failed to make '$active_script_path' executable."
+        else
+            log_info "'$active_script_path' is executable."
+        fi
+    fi
+
+    return 0
 }
 
 # Handles the fork setup process on initial run
@@ -479,6 +548,8 @@ ensure_initial_setup() {
     # Update CURRENT_FORK_NAME variable
     CURRENT_FORK_NAME="$current_fork_name"
 
+    # Remove any existing file or directory at $OPENPILOT_DIR to ensure it can become a symlink.
+    # ln -sfn would fail if $OPENPILOT_DIR is a non-empty directory.
     # Remove the existing OpenPilot directory if it exists
     if [ -e "$OPENPILOT_DIR" ]; then
         rm -rf "${OPENPILOT_DIR:?}"
@@ -498,6 +569,9 @@ ensure_initial_setup() {
 
 # Function to get available disk space
 get_available_disk_space() {
+    # This reports the available space on the /data partition,
+    # which is where the $FORKS_DIR (containing actual fork data) resides.
+    # Symbolic links themselves ($OPENPILOT_DIR) consume negligible space.
     DISK_SPACE_OUTPUT=$(df -h /data)
     DISK_SPACE=$(echo "$DISK_SPACE_OUTPUT" | awk 'NR==2 {print $4}')
 }
@@ -630,6 +704,7 @@ switch_fork() {
             if [ -e "$OPENPILOT_DIR" ]; then
                 rm -f "${OPENPILOT_DIR:?}"
             fi
+            # Create/update the symbolic link: -s for symbolic, -f to force (remove target if exists), -n to treat link destination as a normal file if it's a symlink to a directory.
             if ln -sfn "$fork_path/openpilot" "$OPENPILOT_DIR"; then
                 log_info "Switched to fork: $fork using symbolic link."
             else
@@ -847,6 +922,7 @@ validate_variable() {
 verify_active_fork() {
     if [ -L "$OPENPILOT_DIR" ]; then
         local current_fork_path
+        # Get the canonical path of the symlink's target; -f follows all symlinks and resolves '..' components.
         current_fork_path=$(readlink -f "$OPENPILOT_DIR")
         local current_fork_name
         current_fork_name=$(basename "$(dirname "$current_fork_path")")
