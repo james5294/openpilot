@@ -1172,6 +1172,14 @@
         <source>Turn Signal Only</source>
         <translation type="gpt-4o-generated">僅限轉向燈</translation>
     </message>
+    <message>
+        <source>Force Torque Controller</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Use a steadier steering method that holds lane center more firmly, especially through curves and in crosswinds.</source>
+        <translation type="unfinished"></translation>
+    </message>
 </context>
 <context>
     <name>FrogPilotLongitudinalPanel</name>
@@ -2052,56 +2060,40 @@
         <translation type="gpt-4o-generated">速度偏移（120–140 km/h）</translation>
     </message>
     <message>
-        <source>Curve Speed Control</source>
-        <translation type="gpt-4o-generated">曲線速度控制</translation>
+        <source>Curve Speed Controller</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <source>Automatically slow down for upcoming curves using downloaded maps or the driving model.</source>
-        <translation type="gpt-4o-generated">使用下載的地圖或駕駛模型自動減速以應對即將到來的彎道。</translation>
+        <source>Automatically slows down for upcoming curves using data from your own driving, adapting to curves just like you would.</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <source>Curve Detection Method</source>
-        <translation type="gpt-4o-generated">曲線檢測方法</translation>
+        <source>Calibrated Lateral Acceleration</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <source>How curves are detected. &lt;b&gt;Map-Based&lt;/b&gt; uses downloaded map data to identify curves and determine the appropriate speed in which to handle them at, while &lt;b&gt;Vision&lt;/b&gt; relies solely on the driving model.</source>
-        <translation type="gpt-4o-generated">如何檢測曲線。&lt;b&gt;基於地圖&lt;/b&gt;使用下載的地圖數據來識別曲線並確定處理它們的適當速度，而&lt;b&gt;視覺&lt;/b&gt;則完全依賴於駕駛模型。</translation>
+        <source>Displays the learned lateral acceleration target based on your driving.</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <source>Curve Detection Failsafe</source>
-        <translation type="gpt-4o-generated">曲線檢測故障保護</translation>
+        <source>Calibration Progress</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <source>Only trigger &lt;b&gt;Curve Speed Control&lt;/b&gt; if a curve is detected with the model while using the &lt;b&gt;Map-Based&lt;/b&gt; method. Useful to help prevent false positives.</source>
-        <translation type="gpt-4o-generated">僅在使用&lt;b&gt;基於地圖&lt;/b&gt;方法時，模型檢測到曲線時觸發&lt;b&gt;曲線速度控制&lt;/b&gt;。有助於防止誤報。</translation>
+        <source>How much driving data has been collected to personalize the vehicle's curve handling behavior.</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <source>Curve Detection Sensitivity</source>
-        <translation type="gpt-4o-generated">曲線檢測靈敏度</translation>
+        <source>Reset Curve Data</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <source>How sensitive openpilot is when detecting curves. Higher values trigger earlier responses at the risk of triggering too often, while lower values increase confidence at the risk of triggering too infrequently.</source>
-        <translation type="gpt-4o-generated">openpilot 在檢測曲線時的靈敏度。較高的值會在更早的時候觸發反應，但有可能過於頻繁觸發，而較低的值則會增加信心，但有可能觸發過於不頻繁。</translation>
+        <source>Reset collected user data for &lt;b&gt;Curve Speed Control&lt;/b&gt;.</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <source>Curve Speed Aggressiveness</source>
-        <translation type="gpt-4o-generated">曲線速度激進性</translation>
-    </message>
-    <message>
-        <source>How aggressive openpilot is when navigating through curves. Higher values result in faster turns but may reduce comfort or stability, while lower values result in slower, smoother turns at the risk of being overly cautious.</source>
-        <translation type="gpt-4o-generated">openpilot 在通過彎道時的激進程度。較高的值會導致更快的轉彎，但可能會降低舒適性或穩定性，而較低的值會導致轉彎速度較慢、更平穩，但可能過於謹慎。</translation>
-    </message>
-    <message>
-        <source>Map Based</source>
-        <translation type="gpt-4o-generated">地圖為基礎</translation>
-    </message>
-    <message>
-        <source>Vision</source>
-        <translation type="gpt-4o-generated">視覺</translation>
-    </message>
-    <message>
-        <source>The &lt;b&gt;Map Based&lt;/b&gt; option is only available when some &lt;b&gt;Map Data&lt;/b&gt; has been downloaded!</source>
-        <translation type="gpt-4o-generated">&lt;b&gt;地圖為基礎&lt;/b&gt;選項僅在下載了一些&lt;b&gt;地圖數據&lt;/b&gt;後才可用！</translation>
+        <source>Are you sure you want to completely reset your curvature data?</source>
+        <translation type="unfinished"></translation>
     </message>
 </context>
 <context>
@@ -2463,6 +2455,42 @@
     <message>
         <source>Offline...</source>
         <translation type="gpt-4o-generated">離線...</translation>
+    </message>
+    <message>
+        <source>Update Tinygrad</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Update the Tinygrad model process to support the latest models.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Your Tinygrad version is out of date and must be updated before downloading new models. Update now?</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Updating...</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>UPDATE</source>
+        <translation type="unfinished">更新</translation>
+    </message>
+    <message>
+        <source>Cancelling...</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Update available!</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Up to date!</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Updated!</source>
+        <translation type="unfinished"></translation>
     </message>
 </context>
 <context>

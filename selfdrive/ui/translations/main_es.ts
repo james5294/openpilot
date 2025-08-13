@@ -1172,6 +1172,14 @@
         <source>Turn Signal Only</source>
         <translation type="gpt-4o-generated">Solo luz de giro</translation>
     </message>
+    <message>
+        <source>Force Torque Controller</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Use a steadier steering method that holds lane center more firmly, especially through curves and in crosswinds.</source>
+        <translation type="unfinished"></translation>
+    </message>
 </context>
 <context>
     <name>FrogPilotLongitudinalPanel</name>
@@ -2052,56 +2060,40 @@
         <translation type="gpt-4o-generated">Desplazamiento de velocidad (120–140 km/h)</translation>
     </message>
     <message>
-        <source>Curve Speed Control</source>
-        <translation type="gpt-4o-generated">Control de velocidad en curvas</translation>
+        <source>Curve Speed Controller</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <source>Automatically slow down for upcoming curves using downloaded maps or the driving model.</source>
-        <translation type="gpt-4o-generated">Reducir automáticamente la velocidad para las curvas próximas utilizando mapas descargados o el modelo de conducción.</translation>
+        <source>Automatically slows down for upcoming curves using data from your own driving, adapting to curves just like you would.</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <source>Curve Detection Method</source>
-        <translation type="gpt-4o-generated">Método de Detección de Curvas</translation>
+        <source>Calibrated Lateral Acceleration</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <source>How curves are detected. &lt;b&gt;Map-Based&lt;/b&gt; uses downloaded map data to identify curves and determine the appropriate speed in which to handle them at, while &lt;b&gt;Vision&lt;/b&gt; relies solely on the driving model.</source>
-        <translation type="gpt-4o-generated">Cómo se detectan las curvas. &lt;b&gt;Basado en mapas&lt;/b&gt; utiliza datos de mapas descargados para identificar curvas y determinar la velocidad adecuada para manejarlas, mientras que &lt;b&gt;Visión&lt;/b&gt; se basa únicamente en el modelo de conducción.</translation>
+        <source>Displays the learned lateral acceleration target based on your driving.</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <source>Curve Detection Failsafe</source>
-        <translation type="gpt-4o-generated">Sistema de seguridad para detección de curvas</translation>
+        <source>Calibration Progress</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <source>Only trigger &lt;b&gt;Curve Speed Control&lt;/b&gt; if a curve is detected with the model while using the &lt;b&gt;Map-Based&lt;/b&gt; method. Useful to help prevent false positives.</source>
-        <translation type="gpt-4o-generated">Solo activar &lt;b&gt;Control de Velocidad en Curvas&lt;/b&gt; si se detecta una curva con el modelo mientras se utiliza el método &lt;b&gt;Basado en Mapas&lt;/b&gt;. Útil para ayudar a prevenir falsos positivos.</translation>
+        <source>How much driving data has been collected to personalize the vehicle's curve handling behavior.</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <source>Curve Detection Sensitivity</source>
-        <translation type="gpt-4o-generated">Sensibilidad de Detección de Curvas</translation>
+        <source>Reset Curve Data</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <source>How sensitive openpilot is when detecting curves. Higher values trigger earlier responses at the risk of triggering too often, while lower values increase confidence at the risk of triggering too infrequently.</source>
-        <translation type="gpt-4o-generated">Qué tan sensible es openpilot al detectar curvas. Valores más altos activan respuestas más tempranas con el riesgo de activarse con demasiada frecuencia, mientras que valores más bajos aumentan la confianza con el riesgo de activarse con poca frecuencia.</translation>
+        <source>Reset collected user data for &lt;b&gt;Curve Speed Control&lt;/b&gt;.</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <source>Curve Speed Aggressiveness</source>
-        <translation type="gpt-4o-generated">Agresividad de Velocidad en Curvas</translation>
-    </message>
-    <message>
-        <source>How aggressive openpilot is when navigating through curves. Higher values result in faster turns but may reduce comfort or stability, while lower values result in slower, smoother turns at the risk of being overly cautious.</source>
-        <translation type="gpt-4o-generated">Qué tan agresivo es openpilot al navegar por curvas. Valores más altos resultan en giros más rápidos pero pueden reducir la comodidad o estabilidad, mientras que valores más bajos resultan en giros más lentos y suaves con el riesgo de ser demasiado cautelosos.</translation>
-    </message>
-    <message>
-        <source>Map Based</source>
-        <translation type="gpt-4o-generated">Basado en mapas</translation>
-    </message>
-    <message>
-        <source>Vision</source>
-        <translation type="gpt-4o-generated">Visión</translation>
-    </message>
-    <message>
-        <source>The &lt;b&gt;Map Based&lt;/b&gt; option is only available when some &lt;b&gt;Map Data&lt;/b&gt; has been downloaded!</source>
-        <translation type="gpt-4o-generated">La opción &lt;b&gt;Basada en el Mapa&lt;/b&gt; solo está disponible cuando se han descargado algunos &lt;b&gt;Datos del Mapa&lt;/b&gt;.</translation>
+        <source>Are you sure you want to completely reset your curvature data?</source>
+        <translation type="unfinished"></translation>
     </message>
 </context>
 <context>
@@ -2463,6 +2455,42 @@
     <message>
         <source>Offline...</source>
         <translation type="gpt-4o-generated">Desconectado...</translation>
+    </message>
+    <message>
+        <source>Update Tinygrad</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Update the Tinygrad model process to support the latest models.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Your Tinygrad version is out of date and must be updated before downloading new models. Update now?</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Updating...</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>UPDATE</source>
+        <translation type="unfinished">ACTUALIZAR</translation>
+    </message>
+    <message>
+        <source>Cancelling...</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Update available!</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Up to date!</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Updated!</source>
+        <translation type="unfinished"></translation>
     </message>
 </context>
 <context>

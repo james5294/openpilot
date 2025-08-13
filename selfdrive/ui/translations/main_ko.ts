@@ -1172,6 +1172,14 @@
         <source>Turn Signal Only</source>
         <translation type="gpt-4o-generated">방향 지시등 전용</translation>
     </message>
+    <message>
+        <source>Force Torque Controller</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Use a steadier steering method that holds lane center more firmly, especially through curves and in crosswinds.</source>
+        <translation type="unfinished"></translation>
+    </message>
 </context>
 <context>
     <name>FrogPilotLongitudinalPanel</name>
@@ -2052,56 +2060,40 @@
         <translation type="gpt-4o-generated">속도 오프셋 (120–140 km/h)</translation>
     </message>
     <message>
-        <source>Curve Speed Control</source>
-        <translation type="gpt-4o-generated">곡선 속도 제어</translation>
+        <source>Curve Speed Controller</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <source>Automatically slow down for upcoming curves using downloaded maps or the driving model.</source>
-        <translation type="gpt-4o-generated">다운로드된 지도나 주행 모델을 사용하여 다가오는 커브에 자동으로 속도를 줄입니다.</translation>
+        <source>Automatically slows down for upcoming curves using data from your own driving, adapting to curves just like you would.</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <source>Curve Detection Method</source>
-        <translation type="gpt-4o-generated">곡선 감지 방법</translation>
+        <source>Calibrated Lateral Acceleration</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <source>How curves are detected. &lt;b&gt;Map-Based&lt;/b&gt; uses downloaded map data to identify curves and determine the appropriate speed in which to handle them at, while &lt;b&gt;Vision&lt;/b&gt; relies solely on the driving model.</source>
-        <translation type="gpt-4o-generated">곡선이 감지되는 방법. &lt;b&gt;지도 기반&lt;/b&gt;은 다운로드된 지도 데이터를 사용하여 곡선을 식별하고 이를 처리하기 위한 적절한 속도를 결정하는 반면, &lt;b&gt;비전&lt;/b&gt;은 오로지 주행 모델에 의존합니다.</translation>
+        <source>Displays the learned lateral acceleration target based on your driving.</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <source>Curve Detection Failsafe</source>
-        <translation type="gpt-4o-generated">곡선 감지 안전장치</translation>
+        <source>Calibration Progress</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <source>Only trigger &lt;b&gt;Curve Speed Control&lt;/b&gt; if a curve is detected with the model while using the &lt;b&gt;Map-Based&lt;/b&gt; method. Useful to help prevent false positives.</source>
-        <translation type="gpt-4o-generated">&lt;b&gt;Map-Based&lt;/b&gt; 방법을 사용할 때 모델로 곡선이 감지된 경우에만 &lt;b&gt;Curve Speed Control&lt;/b&gt;을 트리거하십시오. 오탐 방지에 유용합니다.</translation>
+        <source>How much driving data has been collected to personalize the vehicle's curve handling behavior.</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <source>Curve Detection Sensitivity</source>
-        <translation type="gpt-4o-generated">곡선 감지 민감도</translation>
+        <source>Reset Curve Data</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <source>How sensitive openpilot is when detecting curves. Higher values trigger earlier responses at the risk of triggering too often, while lower values increase confidence at the risk of triggering too infrequently.</source>
-        <translation type="gpt-4o-generated">openpilot이 곡선을 감지할 때의 민감도. 값이 높을수록 더 자주 트리거될 위험이 있지만 더 빠른 반응을 유도하며, 값이 낮을수록 트리거 빈도가 줄어드는 위험이 있지만 신뢰도가 높아집니다.</translation>
+        <source>Reset collected user data for &lt;b&gt;Curve Speed Control&lt;/b&gt;.</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <source>Curve Speed Aggressiveness</source>
-        <translation type="gpt-4o-generated">곡선 속도 공격성</translation>
-    </message>
-    <message>
-        <source>How aggressive openpilot is when navigating through curves. Higher values result in faster turns but may reduce comfort or stability, while lower values result in slower, smoother turns at the risk of being overly cautious.</source>
-        <translation type="gpt-4o-generated">openpilot이 곡선을 탐색할 때 얼마나 공격적인지. 높은 값은 더 빠른 회전을 유도하지만 편안함이나 안정성을 감소시킬 수 있으며, 낮은 값은 더 느리고 부드러운 회전을 유도하지만 지나치게 신중할 위험이 있습니다.</translation>
-    </message>
-    <message>
-        <source>Map Based</source>
-        <translation type="gpt-4o-generated">지도 기반</translation>
-    </message>
-    <message>
-        <source>Vision</source>
-        <translation type="gpt-4o-generated">비전</translation>
-    </message>
-    <message>
-        <source>The &lt;b&gt;Map Based&lt;/b&gt; option is only available when some &lt;b&gt;Map Data&lt;/b&gt; has been downloaded!</source>
-        <translation type="gpt-4o-generated">&lt;b&gt;지도 기반&lt;/b&gt; 옵션은 일부 &lt;b&gt;지도 데이터&lt;/b&gt;가 다운로드된 경우에만 사용할 수 있습니다!</translation>
+        <source>Are you sure you want to completely reset your curvature data?</source>
+        <translation type="unfinished"></translation>
     </message>
 </context>
 <context>
@@ -2463,6 +2455,42 @@
     <message>
         <source>Offline...</source>
         <translation type="gpt-4o-generated">오프라인...</translation>
+    </message>
+    <message>
+        <source>Update Tinygrad</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Update the Tinygrad model process to support the latest models.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Your Tinygrad version is out of date and must be updated before downloading new models. Update now?</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Updating...</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>UPDATE</source>
+        <translation type="unfinished">업데이트</translation>
+    </message>
+    <message>
+        <source>Cancelling...</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Update available!</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Up to date!</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Updated!</source>
+        <translation type="unfinished"></translation>
     </message>
 </context>
 <context>
