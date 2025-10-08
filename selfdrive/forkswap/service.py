@@ -1,0 +1,703 @@
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import time
+from dataclasses import asdict
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+from openpilot.common.basedir import BASEDIR
+try:
+  from openpilot.common.params import Params, UnknownKeyName  # type: ignore
+except (ImportError, OSError):  # pragma: no cover - fallback for harness environments
+  Params = None  # type: ignore
+
+  class UnknownKeyName(Exception):  # type: ignore
+    pass
+try:
+  from openpilot.common.swaglog import cloudlog
+except (ImportError, OSError):
+  class _CloudlogStub:  # pragma: no cover - fallback for harness environments without full deps
+    def __getattr__(self, name):
+      return lambda *args, **kwargs: None
+  cloudlog = _CloudlogStub()
+from openpilot.selfdrive.forkswap.types import (
+  ForkInfo,
+  ForkSwapRequest,
+  ForkSwapState,
+  ForkSwapStatus,
+  SUPPORTED_ACTIONS,
+)
+
+
+DEFAULT_SCRIPT_PATH = os.path.join(BASEDIR, "tools", "scripts", "forkswap.sh")
+DEFAULT_FORKS_DIR = "/data/forks"
+DEFAULT_CURRENT_FORK_FILE = "/data/current_fork.txt"
+DEFAULT_LOG_FILE = "/data/fork_swap.log"
+DEFAULT_POLL_INTERVAL = 1.0
+DEFAULT_TIMEOUT = 900.0  # 15 minutes
+GIT_URL_PATTERN = re.compile(r'^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?/?$')
+
+
+class ForkSwapService:
+  """
+  Service wrapper that watches the ForkSwapAction param, executes forkswap.sh
+  actions, and publishes structured status updates for the UI.
+  """
+
+  def __init__(
+    self,
+    *,
+    params: Optional[Params] = None,
+    script_path: Optional[str] = None,
+    poll_interval: float = DEFAULT_POLL_INTERVAL,
+    timeout: float = DEFAULT_TIMEOUT,
+    allow_nonroot: bool = True,
+    log_tail_lines: int = 200,
+    base_paths: Optional[Dict[str, str]] = None,
+    env_overrides: Optional[Dict[str, str]] = None,
+  ) -> None:
+    if params is not None:
+      self.params = params
+    else:
+      if Params is None:
+        raise RuntimeError("ForkSwapService requires a Params instance when openpilot.common.params is unavailable.")
+      self.params = Params()
+    self.script_path = script_path or DEFAULT_SCRIPT_PATH
+    self.poll_interval = poll_interval
+    self.timeout = timeout
+    self.allow_nonroot = allow_nonroot
+    self.log_tail_lines = log_tail_lines
+    self.base_paths = base_paths or {}
+    self.env_overrides = env_overrides or {}
+
+    if not os.path.exists(self.script_path):
+      raise FileNotFoundError(f"forkswap script not found at {self.script_path}")
+
+    self.status = ForkSwapStatus(message="Forkswap service initialized.")
+    self.last_request_id: Optional[str] = None
+
+  # ------------------------------------------------------------------------- #
+  # Public API
+  # ------------------------------------------------------------------------- #
+  def run_forever(self) -> None:
+    """Main loop – monitor params and process requests."""
+    self._publish_status()
+    while True:
+      try:
+        self.process_once()
+      except Exception as exc:  # pylint: disable=broad-exception-caught
+        self.status.update(
+          state=ForkSwapState.ERROR,
+          message=f"Unhandled service error: {exc}",
+          detail={"exception": repr(exc)},
+        )
+        self._publish_status()
+        self._increment_error_counter()
+      finally:
+        self._write_heartbeat()
+      time.sleep(self.poll_interval)
+
+  def process_once(self) -> None:
+    """Check if a new request arrived and handle it."""
+    token = self._read_param("ForkSwapAction")
+    if token is None or token == self.last_request_id:
+      return
+
+    payload_raw = self._read_param("ForkSwapPayload")
+    try:
+      request = ForkSwapRequest.from_raw(payload_raw)
+    except (ValueError, TypeError) as exc:
+      self._handle_invalid_request(token, f"Invalid payload: {exc}")
+      cloudlog.warning("ForkSwapService invalid payload (token=%s): %s", token, exc)
+      return
+
+    if request.request_id != token:
+      # Ensure UI and service are aligned on request identity
+      self._handle_invalid_request(token, "Request ID mismatch between action and payload.")
+      cloudlog.warning("ForkSwapService request_id mismatch action=%s payload=%s", token, request.request_id)
+      return
+
+    self.last_request_id = token
+    cloudlog.info("ForkSwapService handling request %s (%s)", request.request_id, request.action)
+    self._handle_request(request)
+
+  # ------------------------------------------------------------------------- #
+  # Request handling
+  # ------------------------------------------------------------------------- #
+  def _handle_request(self, request: ForkSwapRequest) -> None:
+    validation_error = self._validate_request(request)
+    if validation_error is not None:
+      self._reject_request(request, validation_error)
+      return
+
+    start_time = time.time()
+    duration = 0.0
+    success = False
+    self.status.update(
+      state=ForkSwapState.RUNNING,
+      action=request.action,
+      request_id=request.request_id,
+      message="Processing request.",
+      detail={"request": asdict(request)},
+      log_tail=[],
+      started_at=start_time,
+      duration=None,
+    )
+    self._publish_status()
+
+    env = self._build_env(request)
+
+    if request.action == "clone":
+      forks_dir = env.get("FORKS_DIR", self.base_paths.get("forks_dir", DEFAULT_FORKS_DIR))
+      if not self._check_disk_space(forks_dir):
+        self._reject_request(request, "Insufficient disk space for clone operation.")
+        return
+
+    try:
+      if request.action == "list":
+        forks = self._list_forks(env, request)
+        duration = time.time() - start_time
+        self.status.update(
+          state=ForkSwapState.SUCCESS,
+          message=f"Found {len(forks)} fork(s).",
+          detail={"forks": [fork.to_dict() for fork in forks]},
+          duration=time.time() - start_time,
+        )
+        success = True
+        self._publish_status()
+        return
+
+      if request.action == "status":
+        forks = self._list_forks(env, request)
+        active = self._read_current_fork(env)
+        duration = time.time() - start_time
+        self.status.update(
+          state=ForkSwapState.SUCCESS,
+          message="Status refreshed.",
+          detail={"forks": [fork.to_dict() for fork in forks], "current_fork": active},
+          duration=time.time() - start_time,
+        )
+        success = True
+        self._publish_status()
+        return
+
+      stdout, stderr, returncode = self._run_script(request, env)
+      log_tail = self._read_log_tail(env)
+
+      if returncode == 0:
+        msg = f"{request.action.capitalize()} operation completed."
+        success = True
+        duration = time.time() - start_time
+        cloudlog.info("ForkSwapService success %s (%.2fs)", request.action, time.time() - start_time)
+        self.status.update(
+          state=ForkSwapState.SUCCESS,
+          message=msg,
+          detail={
+            "request": asdict(request),
+            "stdout": stdout,
+            "stderr": stderr,
+            "returncode": returncode,
+          },
+          log_tail=log_tail,
+          duration=time.time() - start_time,
+        )
+      else:
+        msg = f"{request.action.capitalize()} failed (return code {returncode})."
+        cloudlog.error("ForkSwapService failure %s returncode=%s", request.action, returncode)
+        duration = time.time() - start_time
+        self.status.update(
+          state=ForkSwapState.ERROR,
+          message=msg,
+          detail={
+            "request": asdict(request),
+            "stdout": stdout,
+            "stderr": stderr,
+            "returncode": returncode,
+          },
+          log_tail=log_tail,
+          duration=time.time() - start_time,
+        )
+    except subprocess.TimeoutExpired as exc:
+      cloudlog.error("ForkSwapService timeout %s after %.0fs", request.action, self.timeout)
+      duration = time.time() - start_time
+      self.status.update(
+        state=ForkSwapState.ERROR,
+        message=f"{request.action.capitalize()} timed out after {self.timeout:.0f}s.",
+        detail={"request": asdict(request), "exception": repr(exc)},
+        duration=time.time() - start_time,
+      )
+    except FileNotFoundError as exc:
+      cloudlog.error("ForkSwapService missing resource for %s: %s", request.action, exc)
+      duration = time.time() - start_time
+      self.status.update(
+        state=ForkSwapState.ERROR,
+        message=f"Required resource missing: {exc}",
+        detail={"request": asdict(request)},
+        duration=time.time() - start_time,
+      )
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+      cloudlog.exception("ForkSwapService unhandled exception during %s", request.action)
+      duration = time.time() - start_time
+      self.status.update(
+        state=ForkSwapState.ERROR,
+        message=f"Unhandled exception during {request.action}: {exc}",
+        detail={
+          "request": asdict(request),
+          "exception": repr(exc),
+        },
+        duration=time.time() - start_time,
+      )
+    finally:
+      self._record_outcome(success, request, duration)
+      self._publish_status()
+      self._clear_action_params(request.request_id)
+
+  def _handle_invalid_request(self, token: str, message: str) -> None:
+    self.last_request_id = token
+    self.status.update(
+      state=ForkSwapState.ERROR,
+      action=None,
+      request_id=token,
+      message=message,
+    )
+    self._publish_status()
+    self._clear_action_params(token)
+
+  # ------------------------------------------------------------------------- #
+  # Environment & execution helpers
+  # ------------------------------------------------------------------------- #
+  def _validate_request(self, request: ForkSwapRequest) -> Optional[str]:
+    if request.action in {"clone", "switch", "delete", "update"} and not self._is_offroad():
+      return "Cannot modify forks while vehicle is engaged."
+
+    if request.action in {"clone", "switch", "delete", "update"}:
+      if not request.fork or not self._validate_fork_name(request.fork):
+        return "Invalid fork name provided."
+
+    if request.action == "clone":
+      if not request.url or not self._validate_url(request.url):
+        return "Invalid repository URL."
+      if request.branch and not self._validate_branch_name(request.branch):
+        return "Invalid branch name."
+      exists_mode = request.options.get("on_exists") if isinstance(request.options, dict) else None
+      if exists_mode == "rename":
+        rename_to = request.options.get("rename_to")
+        if not rename_to or not self._validate_fork_name(str(rename_to)):
+          return "Invalid rename target for existing fork."
+      elif exists_mode and exists_mode not in {"overwrite", "abort", None}:
+        return "Invalid on_exists option."
+
+    return None
+
+  def _reject_request(self, request: ForkSwapRequest, message: str) -> None:
+    payload = asdict(request)
+    self.status.update(
+      state=ForkSwapState.ERROR,
+      action=request.action,
+      request_id=request.request_id,
+      message=message,
+      detail={"request": payload},
+    )
+    self._record_outcome(False, request, 0.0)
+    self._publish_status()
+    self._clear_action_params(request.request_id)
+
+  def _validate_fork_name(self, name: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9_-]+", name))
+
+  def _validate_branch_name(self, name: str) -> bool:
+    if ".." in name:
+      return False
+    return bool(re.fullmatch(r"[A-Za-z0-9._/-]+", name))
+
+  def _validate_url(self, url: str) -> bool:
+    if url.startswith("file://"):
+      return True
+    return bool(GIT_URL_PATTERN.fullmatch(url))
+
+  def _is_offroad(self) -> bool:
+    try:
+      if hasattr(self.params, "get_bool"):
+        return bool(self.params.get_bool("IsOffroad"))
+    except UnknownKeyName:
+      pass
+    except Exception:
+      pass
+    try:
+      raw = self.params.get("IsOffroad", encoding="utf-8")
+      if raw is None:
+        return False
+      if isinstance(raw, bytes):
+        raw = raw.decode("utf-8")
+      return raw == "1"
+    except UnknownKeyName:
+      return False
+    except Exception:
+      return False
+
+  def _check_disk_space(self, path: str, required_mb: int = 500) -> bool:
+    try:
+      os.makedirs(path, exist_ok=True)
+      stats = os.statvfs(path)
+      available_mb = (stats.f_bavail * stats.f_frsize) / (1024 * 1024)
+      return available_mb >= required_mb
+    except OSError:
+      return False
+
+  def _write_heartbeat(self) -> None:
+    timestamp = str(int(time.time()))
+    try:
+      self.params.put_nonblocking("ForkSwapServiceHeartbeat", timestamp)
+    except (UnknownKeyName, AttributeError):
+      pass
+
+  def _increment_error_counter(self) -> None:
+    try:
+      raw = self.params.get("ForkSwapServiceErrorCount", encoding="utf-8")
+      current = int(raw) if raw is not None else 0
+    except (UnknownKeyName, ValueError, TypeError):
+      current = 0
+    current += 1
+    try:
+      self.params.put_nonblocking("ForkSwapServiceErrorCount", str(current))
+    except (UnknownKeyName, AttributeError):
+      pass
+
+  def _build_env(self, request: ForkSwapRequest) -> Dict[str, str]:
+    env: Dict[str, str] = dict(os.environ)
+    env.setdefault("TERM", "dumb")
+    if self.allow_nonroot or request.options.get("allow_nonroot") is True:
+      env["FORKSWAP_ALLOW_NONROOT"] = "1"
+    env.setdefault("FORKSWAP_REBOOT_CMD", ":")
+
+    # Apply base path overrides (use upper-case env names used by forkswap.sh)
+    paths = dict(self.base_paths)
+    request_paths = request.options.get("paths")
+    if isinstance(request_paths, dict):
+      paths.update(request_paths)
+
+    path_mapping = {
+      "openpilot_dir": "OPENPILOT_DIR",
+      "forks_dir": "FORKS_DIR",
+      "params_path": "PARAMS_PATH",
+      "current_fork_file": "CURRENT_FORK_FILE",
+      "log_file": "LOG_FILE",
+      "lock_path": "FORKSWAP_LOCK_PATH",
+    }
+    for key, env_key in path_mapping.items():
+      if key in paths and paths[key]:
+        env[env_key] = paths[key]
+
+    if request.options.get("reboot") is True:
+      env["FORKSWAP_REBOOT_CMD"] = request.options.get("reboot_cmd", "reboot")
+
+    if isinstance(request.options.get("env"), dict):
+      env.update({str(k): str(v) for k, v in request.options["env"].items()})
+
+    env.update({str(k): str(v) for k, v in self.env_overrides.items()})
+    return env
+
+  def _run_script(
+    self,
+    request: ForkSwapRequest,
+    env: Dict[str, str],
+  ) -> Tuple[str, str, int]:
+    input_lines = self._build_input_sequence(request, env)
+    command_input = "\n".join(input_lines) + "\n"
+    timeout = float(request.options.get("timeout", self.timeout))
+
+    proc = subprocess.Popen(
+      ["/bin/bash", self.script_path],
+      stdin=subprocess.PIPE,
+      stdout=subprocess.PIPE,
+      stderr=subprocess.PIPE,
+      text=True,
+      env=env,
+    )
+
+    try:
+      stdout, stderr = proc.communicate(command_input, timeout=timeout)
+    except subprocess.TimeoutExpired:
+      cloudlog.warning("forkswap.sh timed out; attempting graceful termination")
+      proc.terminate()
+      try:
+        stdout, stderr = proc.communicate(timeout=2)
+      except subprocess.TimeoutExpired:
+        cloudlog.warning("forkswap.sh did not terminate after SIGTERM; killing")
+        proc.kill()
+        stdout, stderr = proc.communicate()
+      raise
+
+    return stdout.strip(), stderr.strip(), proc.returncode
+
+  def _build_input_sequence(
+    self,
+    request: ForkSwapRequest,
+    env: Dict[str, str],
+  ) -> List[str]:
+    reboot_choice = "y" if request.options.get("reboot") else "n"
+    forks_dir = env.get("FORKS_DIR", DEFAULT_FORKS_DIR)
+    fork_name = (request.fork or "").strip()
+    lines: List[str] = []
+
+    if request.action == "clone":
+      if not fork_name:
+        raise ValueError("Clone request requires 'fork' (target fork name).")
+      if not request.url:
+        raise ValueError("Clone request requires 'url'.")
+
+      existing_path = os.path.join(forks_dir, fork_name)
+      on_exists = request.options.get("on_exists", "abort")
+      rename_to = request.options.get("rename_to")
+      if os.path.isdir(existing_path):
+        if on_exists not in {"overwrite", "rename"}:
+          raise ValueError("Target fork already exists; set options.on_exists to 'overwrite' or 'rename'.")
+        if on_exists == "rename" and not rename_to:
+          raise ValueError("options.rename_to is required when on_exists='rename'.")
+
+      lines.append("Clone")
+      lines.append(fork_name)
+      if os.path.isdir(existing_path):
+        if on_exists == "overwrite":
+          lines.append("overwrite")
+        else:
+          lines.extend(["rename", rename_to])
+      lines.append(request.url or "")
+      branch = request.branch or ""
+      lines.append(branch)
+      lines.append(reboot_choice)
+      lines.append("Exit")
+      return lines
+
+    if request.action == "switch":
+      if not fork_name:
+        raise ValueError("Switch request requires 'fork'.")
+      confirm = "y" if request.options.get("confirm", True) else "n"
+      lines.extend([fork_name, confirm, reboot_choice, "Exit"])
+      return lines
+
+    if request.action == "delete":
+      if not fork_name:
+        raise ValueError("Delete request requires 'fork'.")
+      confirm = "y" if request.options.get("confirm", True) else "n"
+      lines.extend(["Delete", fork_name, confirm, "Exit"])
+      return lines
+
+    if request.action == "update":
+      if not fork_name:
+        raise ValueError("Update request requires 'fork'.")
+      local_changes = self._has_local_changes(os.path.join(forks_dir, fork_name, "openpilot"))
+      lines.append(f"update {fork_name}")
+      if local_changes:
+        answer = "y" if request.options.get("accept_local_changes", True) else "n"
+        lines.append(answer)
+      lines.append("Exit")
+      return lines
+
+    raise ValueError(f"Unsupported interactive action '{request.action}'")
+
+  # ------------------------------------------------------------------------- #
+  # Utility helpers
+  # ------------------------------------------------------------------------- #
+  def _read_param(self, key: str) -> Optional[str]:
+    try:
+      raw = self.params.get(key, encoding="utf-8")
+    except UnknownKeyName:
+      return None
+    return raw
+
+  def _publish_status(self) -> None:
+    try:
+      self.params.put_nonblocking("ForkSwapStatus", self.status.to_json())
+    except UnknownKeyName:
+      # Param not registered; ignore in testing contexts.
+      pass
+
+  def _clear_action_params(self, expected_request_id: Optional[str]) -> None:
+    current_token = None
+    try:
+      current_token = self.params.get("ForkSwapAction", encoding="utf-8")
+    except UnknownKeyName:
+      pass
+
+    if expected_request_id is None or current_token == expected_request_id:
+      try:
+        if current_token is not None:
+          self.params.remove("ForkSwapAction")
+      except UnknownKeyName:
+        pass
+
+    payload_raw = None
+    try:
+      payload_raw = self.params.get("ForkSwapPayload", encoding="utf-8")
+    except UnknownKeyName:
+      pass
+
+    if payload_raw is None:
+      if expected_request_id is None:
+        try:
+          self.params.remove("ForkSwapPayload")
+        except UnknownKeyName:
+          pass
+      return
+
+    payload_request_id = None
+    try:
+      payload_request_id = json.loads(payload_raw).get("request_id")
+    except json.JSONDecodeError:
+      pass
+
+    if expected_request_id is None or payload_request_id == expected_request_id:
+      try:
+        self.params.remove("ForkSwapPayload")
+      except UnknownKeyName:
+        pass
+
+  def _record_outcome(self, success: bool, request: ForkSwapRequest, duration: float) -> None:
+    payload = {
+      "ts": time.time(),
+      "success": success,
+      "action": request.action,
+      "fork": request.fork,
+      "request_id": request.request_id,
+      "duration": duration,
+      "state": self.status.state,
+      "message": self.status.message,
+    }
+    json_blob = json.dumps(payload, separators=(",", ":"))
+
+    try:
+      streak_raw = self.params.get("ForkSwapFailureStreak")
+      streak = int(streak_raw.decode("utf-8")) if streak_raw else 0
+    except (UnknownKeyName, ValueError, AttributeError):
+      streak = 0
+
+    if success:
+      streak = 0
+    else:
+      streak += 1
+
+    try:
+      self.params.put_nonblocking("ForkSwapFailureStreak", str(streak))
+      self.params.put_nonblocking("ForkSwapLastResult", json_blob)
+    except UnknownKeyName:
+      pass
+
+  def _list_forks(self, env: Dict[str, str], request: ForkSwapRequest) -> List[ForkInfo]:
+    forks_dir = env.get("FORKS_DIR", DEFAULT_FORKS_DIR)
+    current = self._read_current_fork(env)
+    check_updates = bool(request.options.get("check_updates"))
+    forks: List[ForkInfo] = []
+
+    if not os.path.isdir(forks_dir):
+      return forks
+
+    for entry in sorted(os.listdir(forks_dir)):
+      fork_path = os.path.join(forks_dir, entry)
+      if not os.path.isdir(fork_path):
+        continue
+
+      info_file = os.path.join(fork_path, "fork_info.json")
+      url = None
+      branch = None
+      if os.path.isfile(info_file):
+        try:
+          with open(info_file, "r", encoding="utf-8") as handle:
+            metadata = json.load(handle)
+            url = metadata.get("url")
+            branch = metadata.get("branch")
+        except (OSError, json.JSONDecodeError):
+          pass
+
+      has_update = None
+      if check_updates and branch:
+        has_update = self._check_for_updates(fork_path, branch)
+
+      forks.append(
+        ForkInfo(
+          name=entry,
+          path=fork_path,
+          branch=branch,
+          url=url,
+          has_update=has_update,
+          is_current=(entry == current),
+        )
+      )
+    return forks
+
+  def _read_current_fork(self, env: Dict[str, str]) -> Optional[str]:
+    current_file = env.get("CURRENT_FORK_FILE", DEFAULT_CURRENT_FORK_FILE)
+    try:
+      with open(current_file, "r", encoding="utf-8") as handle:
+        return handle.read().strip() or None
+    except OSError:
+      return None
+
+  def _check_for_updates(self, fork_path: str, branch: str) -> Optional[bool]:
+    repo_path = os.path.join(fork_path, "openpilot")
+    if not os.path.isdir(repo_path):
+      return None
+    try:
+      subprocess.run(["git", "fetch", "origin", branch], cwd=repo_path, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+      local_commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_path, check=True, capture_output=True, text=True, timeout=15).stdout.strip()
+      remote_commit = subprocess.run(["git", "rev-parse", f"origin/{branch}"], cwd=repo_path, check=True, capture_output=True, text=True, timeout=15).stdout.strip()
+      if not local_commit or not remote_commit:
+        return None
+      return local_commit != remote_commit
+    except subprocess.SubprocessError:
+      return None
+
+  def _has_local_changes(self, repo_dir: str) -> bool:
+    if not os.path.isdir(repo_dir):
+      return False
+    try:
+      result = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=repo_dir,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=15,
+      )
+      return bool(result.stdout.strip())
+    except subprocess.SubprocessError:
+      return False
+
+  def _read_log_tail(self, env: Dict[str, str]) -> List[str]:
+    log_file = env.get("LOG_FILE", DEFAULT_LOG_FILE)
+    path = Path(log_file)
+    if not path.exists():
+      # If log rotated, try to read most recent rotated file
+      rotated = sorted(path.parent.glob(f"{path.name}.*"), reverse=True)
+      if rotated:
+        path = rotated[0]
+      else:
+        return []
+    try:
+      with open(path, "r", encoding="utf-8") as handle:
+        lines = handle.readlines()
+      tail = [line.rstrip("\n") for line in lines[-self.log_tail_lines:]]
+      return tail
+    except OSError:
+      return []
+
+  # ------------------------------------------------------------------------- #
+  # CLI helpers
+  # ------------------------------------------------------------------------- #
+  @staticmethod
+  def format_status(status: ForkSwapStatus) -> str:
+    data = asdict(status)
+    return json.dumps(data, indent=2, sort_keys=True)
+
+
+def main() -> None:
+  service = ForkSwapService()
+  service.run_forever()
+
+
+if __name__ == "__main__":
+  main()

@@ -17,6 +17,7 @@
 #include "selfdrive/ui/ui.h"
 
 #include "frogpilot/ui/qt/widgets/developer_sidebar.h"
+#include "selfdrive/ui/qt/offroad/forkswap_panel.h"
 
 class OffroadHome : public QFrame {
   Q_OBJECT
@@ -41,6 +42,9 @@ private:
   OffroadAlert* alerts_widget;
   QPushButton* alert_notif;
   QPushButton* update_notif;
+  QPushButton* forkswap_notif;
+  ForkSwapPanel* forkswap_panel;
+  int forkswap_index = -1;
 
   // FrogPilot variables
   ElidedLabel* date;

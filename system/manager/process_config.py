@@ -48,6 +48,11 @@ def allow_logging(started, params, CP: car.CarParams, classic_model, tinygrad_mo
 def allow_uploads(started, params, CP: car.CarParams, classic_model, tinygrad_model, frogpilot_toggles) -> bool:
   return not frogpilot_toggles.no_uploads or frogpilot_toggles.no_onroad_uploads
 
+def run_forkswap_service(started, params, CP: car.CarParams, classic_model, tinygrad_model, frogpilot_toggles) -> bool:
+  # Service operates primarily offroad but may be useful onroad for status polling.
+  # Allow disabling via param for diagnostics.
+  return not params.get_bool("ForkSwapServiceDisabled")
+
 def run_classic_modeld(started, params, CP: car.CarParams, classic_model, tinygrad_model, frogpilot_toggles) -> bool:
   return started and classic_model
 
@@ -103,6 +108,7 @@ procs = [
   PythonProcess("updated", "system.updated.updated", always_run, enabled=not PC),
   PythonProcess("uploader", "system.loggerd.uploader", allow_uploads),
   PythonProcess("statsd", "system.statsd", allow_logging),
+  PythonProcess("forkswapd", "selfdrive.forkswap.service", run_forkswap_service),
 
   # debug procs
   NativeProcess("bridge", "cereal/messaging", ["./bridge"], notcar),

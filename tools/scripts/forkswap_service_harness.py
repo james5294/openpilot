@@ -1,0 +1,261 @@
+#!/usr/bin/env python3
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import uuid
+from pathlib import Path
+from typing import Optional
+
+THIS_DIR = Path(__file__).resolve()
+REPO_ROOT = THIS_DIR.parents[2]
+if str(REPO_ROOT) not in sys.path:
+  sys.path.insert(0, str(REPO_ROOT))
+
+from openpilot.selfdrive.forkswap.service import ForkSwapService
+from openpilot.selfdrive.forkswap.types import ForkSwapState, ForkSwapStatus
+
+
+class FakeParams:
+  def __init__(self) -> None:
+    self._store: dict[str, str] = {}
+
+  def get(self, key: str, block: bool = False, encoding: Optional[str] = None):  # pylint: disable=unused-argument
+    value = self._store.get(key)
+    if value is None:
+      return None
+    if encoding:
+      return value if isinstance(value, str) else value.decode(encoding)
+    return value
+
+  def put_nonblocking(self, key: str, value: str) -> None:
+    self._store[key] = value
+
+  def put(self, key: str, value: str) -> None:
+    self._store[key] = value
+
+  def remove(self, key: str) -> None:
+    self._store.pop(key, None)
+
+
+def create_remote_repo(remote_path: Path, worktree_path: Path) -> None:
+  subprocess.run(["git", "init", "--bare", remote_path.as_posix()], check=True)
+  subprocess.run(["git", "init", worktree_path.as_posix()], check=True)
+  subprocess.run(["git", "-C", worktree_path.as_posix(), "config", "user.email", "forkswap-harness@example.com"], check=True)
+  subprocess.run(["git", "-C", worktree_path.as_posix(), "config", "user.name", "Forkswap Harness"], check=True)
+  (worktree_path / "README.md").write_text("Harness repository\n", encoding="utf-8")
+  subprocess.run(["git", "-C", worktree_path.as_posix(), "add", "README.md"], check=True)
+  subprocess.run(["git", "-C", worktree_path.as_posix(), "commit", "-m", "Initial commit"], check=True)
+  subprocess.run(["git", "-C", worktree_path.as_posix(), "branch", "-M", "main"], check=True)
+  subprocess.run(["git", "-C", worktree_path.as_posix(), "remote", "add", "origin", remote_path.as_posix()], check=True)
+  subprocess.run(["git", "-C", worktree_path.as_posix(), "push", "-u", "origin", "main"], check=True)
+
+
+def run_request(service: ForkSwapService, params: FakeParams, payload: dict) -> ForkSwapStatus:
+  request_id = payload.setdefault("request_id", uuid.uuid4().hex)
+  params.put("ForkSwapPayload", json.dumps(payload))
+  params.put("ForkSwapAction", request_id)
+  service.process_once()
+  status_raw = params.get("ForkSwapStatus")
+  status = ForkSwapStatus.from_raw(status_raw)
+  assert status.request_id == request_id, f"Status request_id mismatch: {status.request_id} != {request_id}"
+  return status
+
+
+def ensure(condition: bool, message: str) -> None:
+  if not condition:
+    raise AssertionError(message)
+
+
+def main() -> None:
+  tmp_root = Path(tempfile.mkdtemp(prefix="forkswap-service-"))
+  keep_tmp = os.environ.get("FORKSWAP_HARNESS_KEEP_TMP") == "1"
+  try:
+    openpilot_dir = tmp_root / "openpilot"
+    forks_dir = tmp_root / "forks"
+    params_dir = tmp_root / "params"
+    current_fork_file = tmp_root / "current_fork.txt"
+    log_file = tmp_root / "forkswap.log"
+    lock_path = tmp_root / "lock"
+
+    openpilot_dir.mkdir(parents=True, exist_ok=True)
+    forks_dir.mkdir(parents=True, exist_ok=True)
+    params_dir.mkdir(parents=True, exist_ok=True)
+    (params_dir / "params.json").write_text('{"initial_param": 1}\n', encoding="utf-8")
+    (openpilot_dir / "README.txt").write_text("Original checkout\n", encoding="utf-8")
+    current_fork_file.write_text("stock\n", encoding="utf-8")
+
+    remote_root = tmp_root / "remotes"
+    remote_root.mkdir(parents=True, exist_ok=True)
+    remote_repo = remote_root / "localfork.git"
+    worktree_path = tmp_root / "localfork-src"
+    create_remote_repo(remote_repo, worktree_path)
+
+    params = FakeParams()
+    params.put("IsOffroad", "1")
+    service = ForkSwapService(
+      params=params,
+      base_paths={
+        "openpilot_dir": openpilot_dir.as_posix(),
+        "forks_dir": forks_dir.as_posix(),
+        "params_path": params_dir.as_posix(),
+        "current_fork_file": current_fork_file.as_posix(),
+        "log_file": log_file.as_posix(),
+        "lock_path": lock_path.as_posix(),
+      },
+      env_overrides={"FORKSWAP_ALLOW_LOCAL_URLS": "1"},
+    )
+
+    # Clone new fork
+    status = run_request(
+      service,
+      params,
+      {
+        "action": "clone",
+        "fork": "localfork",
+        "url": f"file://{remote_repo.as_posix()}",
+        "branch": "main",
+        "options": {"reboot": False},
+      },
+    )
+    ensure(status.state == ForkSwapState.SUCCESS, f"Clone failed: {status.message}")
+    ensure(os.readlink(openpilot_dir) == (forks_dir / "localfork" / "openpilot").as_posix(),
+           "Symlink did not point to cloned fork.")
+
+    # Switch back to stock
+    status = run_request(
+      service,
+      params,
+      {
+        "action": "switch",
+        "fork": "stock",
+        "options": {"reboot": False},
+      },
+    )
+    ensure(status.state == ForkSwapState.SUCCESS, f"Switch failed: {status.message}")
+    ensure(os.readlink(openpilot_dir) == (forks_dir / "stock" / "openpilot").as_posix(),
+           "Symlink did not point back to stock fork.")
+
+    # Clone again, forcing rename of existing localfork
+    status = run_request(
+      service,
+      params,
+      {
+        "action": "clone",
+        "fork": "localfork",
+        "url": f"file://{remote_repo.as_posix()}",
+        "branch": "main",
+        "options": {"reboot": False, "on_exists": "rename", "rename_to": "localfork_backup"},
+      },
+    )
+    ensure(status.state == ForkSwapState.SUCCESS, f"Clone with rename failed: {status.message}")
+    ensure((forks_dir / "localfork_backup").is_dir(), "Renamed fork directory missing.")
+
+    # Switch to stock again before deleting inactive fork
+    status = run_request(
+      service,
+      params,
+      {
+        "action": "switch",
+        "fork": "stock",
+        "options": {"reboot": False},
+      },
+    )
+    ensure(status.state == ForkSwapState.SUCCESS, f"Switch before delete failed: {status.message}")
+
+    # Delete inactive fork
+    status = run_request(
+      service,
+      params,
+      {
+        "action": "delete",
+        "fork": "localfork",
+        "options": {"confirm": True},
+      },
+    )
+    ensure(status.state == ForkSwapState.SUCCESS, f"Delete failed: {status.message}")
+    ensure(not (forks_dir / "localfork").exists(), "localfork directory still present after deletion.")
+
+    # List forks
+    status = run_request(
+      service,
+      params,
+      {
+        "action": "list",
+      },
+    )
+    ensure(status.state == ForkSwapState.SUCCESS, f"List failed: {status.message}")
+    names = {fork["name"] for fork in status.detail.get("forks", [])}
+    ensure("stock" in names, "Stock fork missing from listing.")
+    ensure("localfork_backup" in names, "Renamed fork missing from listing.")
+
+    # Status check with update detection disabled by default
+    status = run_request(
+      service,
+      params,
+      {
+        "action": "status",
+      },
+    )
+    ensure(status.state == ForkSwapState.SUCCESS, f"Status refresh failed: {status.message}")
+    ensure(status.detail.get("current_fork") == "stock", "Current fork mismatch in status response.")
+    ensure("duration" in status.to_json(), "Status payload missing duration field.")
+
+    # Concurrency: queue another action while one is running
+    original_run_script = service._run_script
+    second_request_id = uuid.uuid4().hex
+    second_payload = {
+      "action": "status",
+      "options": {},
+      "request_id": second_request_id,
+    }
+
+    def delayed_run_script(request, env):
+      if request.action == "clone" and not getattr(service, "_concurrency_test", False):
+        service._concurrency_test = True
+        params.put("ForkSwapPayload", json.dumps(second_payload))
+        params.put("ForkSwapAction", second_request_id)
+      return original_run_script(request, env)
+
+    service._run_script = delayed_run_script
+    try:
+      status = run_request(
+        service,
+        params,
+        {
+          "action": "clone",
+          "fork": "localfork_concurrency",
+          "url": f"file://{remote_repo.as_posix()}",
+          "branch": "main",
+          "options": {"reboot": False},
+        },
+      )
+      ensure(status.state == ForkSwapState.SUCCESS, f"Clone during concurrency test failed: {status.message}")
+    finally:
+      service._run_script = original_run_script
+
+    ensure(params.get("ForkSwapAction") == second_request_id, "Pending request cleared prematurely during concurrency test.")
+
+    service.process_once()
+    status_obj = ForkSwapStatus.from_raw(params.get("ForkSwapStatus"))
+    ensure(status_obj.request_id == second_request_id, "Follow-up request was not processed after concurrency test.")
+    ensure(status_obj.state == ForkSwapState.SUCCESS, "Follow-up status request failed after concurrency test.")
+    ensure(params.get("ForkSwapAction") is None, "ForkSwapAction not cleared after processing queued request.")
+
+    ensure(params._store.get("ForkSwapFailureStreak", "0") == "0", "Failure streak should reset after success.")
+    ensure("ForkSwapLastResult" in params._store, "ForkSwapLastResult param missing.")
+
+    print("Forkswap service harness completed successfully.")
+    if keep_tmp:
+      print(f"Harness workspace retained at: {tmp_root}")
+    else:
+      shutil.rmtree(tmp_root, ignore_errors=True)
+  except Exception:
+    shutil.rmtree(tmp_root, ignore_errors=True)
+    raise
+
+
+if __name__ == "__main__":
+  main()

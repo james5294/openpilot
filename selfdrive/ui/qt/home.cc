@@ -1,6 +1,11 @@
 #include "selfdrive/ui/qt/home.h"
 
+#include <QByteArray>
 #include <QHBoxLayout>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonParseError>
 #include <QMouseEvent>
 #include <QStackedWidget>
 #include <QVBoxLayout>
@@ -164,6 +169,11 @@ OffroadHome::OffroadHome(QWidget* parent) : QFrame(parent) {
   QObject::connect(alert_notif, &QPushButton::clicked, [=] { center_layout->setCurrentIndex(2); });
   header_layout->addWidget(alert_notif, 0, Qt::AlignHCenter | Qt::AlignLeft);
 
+  forkswap_notif = new QPushButton(tr("FORKS"));
+  forkswap_notif->setVisible(true);
+  forkswap_notif->setStyleSheet("background-color: #2E8B57;");
+  header_layout->addWidget(forkswap_notif, 0, Qt::AlignHCenter | Qt::AlignLeft);
+
   date = new ElidedLabel();
   header_layout->addWidget(date, 0, Qt::AlignHCenter | Qt::AlignLeft);
 
@@ -233,11 +243,23 @@ OffroadHome::OffroadHome(QWidget* parent) : QFrame(parent) {
   QObject::connect(alerts_widget, &OffroadAlert::dismiss, [=]() { center_layout->setCurrentIndex(0); });
   center_layout->addWidget(alerts_widget);
 
+  forkswap_panel = new ForkSwapPanel(this);
+  QObject::connect(forkswap_panel, &ForkSwapPanel::backRequested, [=]() { center_layout->setCurrentIndex(0); });
+  center_layout->addWidget(forkswap_panel);
+  forkswap_index = center_layout->indexOf(forkswap_panel);
+
   main_layout->addLayout(center_layout, 1);
 
   // set up refresh timer
   timer = new QTimer(this);
   timer->callOnTimeout(this, &OffroadHome::refresh);
+
+  QObject::connect(forkswap_notif, &QPushButton::clicked, [=]() {
+    if (forkswap_index >= 0) {
+      center_layout->setCurrentIndex(forkswap_index);
+      forkswap_panel->manualRefresh();
+    }
+  });
 
   setStyleSheet(R"(
     * {
@@ -277,19 +299,47 @@ void OffroadHome::refresh() {
   int alerts = alerts_widget->refresh();
 
   // pop-up new notification
-  int idx = center_layout->currentIndex();
-  if (!updateAvailable && !alerts) {
-    idx = 0;
-  } else if (updateAvailable && (!update_notif->isVisible() || (!alerts && idx == 2))) {
-    idx = 1;
-  } else if (alerts && (!alert_notif->isVisible() || (!updateAvailable && idx == 1))) {
-    idx = 2;
+  int current_idx = center_layout->currentIndex();
+  bool custom_view_active = (forkswap_index >= 0) && (current_idx == forkswap_index);
+  int idx = current_idx;
+  if (!custom_view_active) {
+    if (!updateAvailable && !alerts) {
+      idx = 0;
+    } else if (updateAvailable && (!update_notif->isVisible() || (!alerts && idx == 2))) {
+      idx = 1;
+    } else if (alerts && (!alert_notif->isVisible() || (!updateAvailable && idx == 1))) {
+      idx = 2;
+    }
+    if (idx != current_idx) {
+      center_layout->setCurrentIndex(idx);
+    }
   }
-  center_layout->setCurrentIndex(idx);
 
   update_notif->setVisible(updateAvailable);
   alert_notif->setVisible(alerts);
   if (alerts) {
     alert_notif->setText(QString::number(alerts) + (alerts > 1 ? tr(" ALERTS") : tr(" ALERT")));
   }
+
+  // Update forks button appearance based on latest status
+  std::string status_raw = params.get("ForkSwapStatus");
+  QString button_color = "#2E8B57";
+  QString button_text = tr("FORKS");
+  if (!status_raw.empty()) {
+    QJsonParseError err;
+    QJsonDocument doc = QJsonDocument::fromJson(QByteArray::fromStdString(status_raw), &err);
+    if (err.error == QJsonParseError::NoError && doc.isObject()) {
+      QJsonObject obj = doc.object();
+      QString state = obj.value("state").toString("idle");
+      if (state == "error") {
+        button_color = "#E22C2C";
+        button_text = tr("FORKS (!)");
+      } else if (state == "running") {
+        button_color = "#FF8C00";
+        button_text = tr("FORKS (…)");  // ellipsis indicator
+      }
+    }
+  }
+  forkswap_notif->setText(button_text);
+  forkswap_notif->setStyleSheet(QString("background-color: %1;").arg(button_color));
 }
