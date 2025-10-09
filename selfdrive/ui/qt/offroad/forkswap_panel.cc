@@ -13,6 +13,7 @@
 #include <QJsonValue>
 #include <QJsonParseError>
 #include <QMessageBox>
+#include <QGuiApplication>
 #include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QScrollBar>
@@ -373,19 +374,13 @@ QJsonObject ForkSwapPanel::promptCloneOptions(QString *out_fork, QString *out_ur
   QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
   QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
 
-  // Position dialog in landscape mode, centered on screen
-  // Comma 3X screen is 1920x1080 in landscape
-  int dialog_width = 1400;
-  int dialog_height = 800;
-
-  // Get the window (top-level widget) geometry for positioning
-  QWidget *topWidget = window();
-  QRect screenRect = topWidget ? topWidget->geometry() : QRect(0, 0, 1920, 1080);
-
-  int x = screenRect.x() + (screenRect.width() - dialog_width) / 2;
-  int y = screenRect.y() + (screenRect.height() - dialog_height) / 2;
-
-  dialog.setGeometry(x, y, dialog_width, dialog_height);
+  // Position dialog centered on the available screen geometry
+  QRect screenRect = QGuiApplication::primaryScreen()->availableGeometry();
+  int targetWidth = std::min(screenRect.width() * 0.8, 1600.0);
+  int targetHeight = std::min(screenRect.height() * 0.8, 900.0);
+  dialog.resize(targetWidth, targetHeight);
+  QPoint centerPoint = screenRect.center() - QPoint(dialog.width() / 2, dialog.height() / 2);
+  dialog.move(centerPoint);
 
   if (dialog.exec() != QDialog::Accepted) {
     return QJsonObject();
