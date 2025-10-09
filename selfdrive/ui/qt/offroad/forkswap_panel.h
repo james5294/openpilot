@@ -37,7 +37,6 @@ private:
   void updateLogView(const QJsonArray &log_tail);
   QString selectedFork() const;
   void showToast(const QString &msg);
-  bool confirmAction(const QString &title, const QString &text);
   QJsonObject promptCloneOptions(QString *out_fork, QString *out_url, QString *out_branch);
   void updateDiskSpace();
   static QString formatSize(uint64_t bytes);

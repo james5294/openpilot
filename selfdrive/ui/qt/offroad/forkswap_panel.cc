@@ -1,27 +1,18 @@
 #include "selfdrive/ui/qt/offroad/forkswap_panel.h"
 
-#include <QCheckBox>
-#include <QComboBox>
-#include <QDialog>
-#include <QDialogButtonBox>
-#include <QFormLayout>
-#include <QBrush>
-#include <QInputDialog>
 #include <QHeaderView>
 #include <QJsonArray>
 #include <QJsonDocument>
-#include <QJsonValue>
 #include <QJsonParseError>
-#include <QMessageBox>
-#include <QGuiApplication>
-#include <QScreen>
-#include <QLineEdit>
+#include <QJsonValue>
 #include <QPlainTextEdit>
 #include <QScrollBar>
 #include <QVBoxLayout>
+#include <vector>
 #include <sys/statvfs.h>
 
 #include "common/util.h"
+#include "selfdrive/ui/qt/widgets/input.h"
 
 namespace {
 
@@ -301,111 +292,92 @@ void ForkSwapPanel::cloneFork() {
 }
 
 QJsonObject ForkSwapPanel::promptCloneOptions(QString *out_fork, QString *out_url, QString *out_branch) {
-  QDialog dialog(this);
-  dialog.setWindowTitle(tr("Clone Fork"));
-  dialog.setModal(true);
-  dialog.setWindowFlags(Qt::Dialog | Qt::FramelessWindowHint);
-
-  dialog.setStyleSheet(R"(
-    QDialog {
-      background-color: #1a1a1a;
-      color: white;
-    }
-    QLabel {
-      font-size: 32px;
-      color: white;
-    }
-    QLineEdit, QComboBox {
-      font-size: 32px;
-      padding: 12px;
-      background-color: #2a2a2a;
-      border: 2px solid #404040;
-      border-radius: 6px;
-      color: white;
-      min-height: 50px;
-    }
-    QCheckBox {
-      font-size: 32px;
-      spacing: 10px;
-    }
-    QPushButton {
-      font-size: 32px;
-      padding: 16px 32px;
-      background-color: #404040;
-      border-radius: 6px;
-      min-width: 150px;
-      min-height: 60px;
-    }
-    QPushButton:pressed {
-      background-color: #606060;
-    }
-  )");
-
-  QFormLayout *form = new QFormLayout(&dialog);
-  form->setSpacing(20);
-  form->setContentsMargins(40, 40, 40, 40);
-
-  QLineEdit *name_edit = new QLineEdit(&dialog);
-  QLineEdit *url_edit = new QLineEdit(&dialog);
-  QLineEdit *branch_edit = new QLineEdit(&dialog);
-  QCheckBox *reboot_box = new QCheckBox(tr("Reboot after clone"), &dialog);
-  reboot_box->setChecked(true);
-
-  QComboBox *exists_mode = new QComboBox(&dialog);
-  exists_mode->addItem(tr("Abort if exists"), "abort");
-  exists_mode->addItem(tr("Overwrite existing"), "overwrite");
-  exists_mode->addItem(tr("Rename existing"), "rename");
-  QLineEdit *rename_edit = new QLineEdit(&dialog);
-  rename_edit->setPlaceholderText(tr("Existing fork rename target"));
-  rename_edit->setEnabled(false);
-
-  QObject::connect(exists_mode, &QComboBox::currentTextChanged, [&](const QString &text) {
-    rename_edit->setEnabled(text.contains("Rename"));
-  });
-
-  form->addRow(tr("Fork name"), name_edit);
-  form->addRow(tr("Git URL"), url_edit);
-  form->addRow(tr("Branch (optional)"), branch_edit);
-  form->addRow(tr("If fork exists"), exists_mode);
-  form->addRow(tr("Rename target"), rename_edit);
-  form->addRow(reboot_box);
-
-  QDialogButtonBox *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
-  form->addWidget(buttons);
-  QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-  QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-
-  // Position dialog centered on the available screen geometry
-  QRect screenRect = QGuiApplication::primaryScreen()->availableGeometry();
-  int targetWidth = std::min(screenRect.width() * 0.8, 1600.0);
-  int targetHeight = std::min(screenRect.height() * 0.8, 900.0);
-  dialog.resize(targetWidth, targetHeight);
-  QPoint centerPoint = screenRect.center() - QPoint(dialog.width() / 2, dialog.height() / 2);
-  dialog.move(centerPoint);
-
-  if (dialog.exec() != QDialog::Accepted) {
+  InputDialog name_dialog(tr("Fork Name"), this, tr("Enter a short name for the fork"));
+  name_dialog.setMinLength(1);
+  if (name_dialog.exec() != QDialog::Accepted) {
+    return QJsonObject();
+  }
+  const QString fork = name_dialog.text().trimmed();
+  if (fork.isEmpty()) {
     return QJsonObject();
   }
 
-  QString name = name_edit->text().trimmed();
-  QString url = url_edit->text().trimmed();
-  if (name.isEmpty() || url.isEmpty()) {
-    showToast(tr("Fork name and URL are required."));
+  InputDialog url_dialog(tr("Git URL"), this, tr("Provide a full Git HTTPS URL"));
+  url_dialog.setMinLength(1);
+  if (url_dialog.exec() != QDialog::Accepted) {
+    return QJsonObject();
+  }
+  const QString url = url_dialog.text().trimmed();
+  if (url.isEmpty()) {
     return QJsonObject();
   }
 
-  *out_fork = name;
+  InputDialog branch_dialog(tr("Branch (optional)"), this, tr("Leave blank to use the repository default"));
+  branch_dialog.setMinLength(0);
+  if (branch_dialog.exec() != QDialog::Accepted) {
+    return QJsonObject();
+  }
+  const QString branch = branch_dialog.text().trimmed();
+
+  struct Option {
+    QString label;
+    QString value;
+  };
+  const std::vector<Option> exists_options = {
+      {tr("Abort if fork exists"), QStringLiteral("abort")},
+      {tr("Overwrite existing fork"), QStringLiteral("overwrite")},
+      {tr("Rename existing fork"), QStringLiteral("rename")} };
+  QStringList exists_labels;
+  for (const auto &opt : exists_options) {
+    exists_labels.append(opt.label);
+  }
+  const QString exists_choice = MultiOptionDialog::getSelection(tr("If a fork with this name already exists"), exists_labels, "", this);
+  if (exists_choice.isEmpty()) {
+    return QJsonObject();
+  }
+
+  const Option *selected_exists = nullptr;
+  for (const auto &opt : exists_options) {
+    if (opt.label == exists_choice) {
+      selected_exists = &opt;
+      break;
+    }
+  }
+  if (selected_exists == nullptr) {
+    return QJsonObject();
+  }
+
+  QString rename_target;
+  if (selected_exists->value == QStringLiteral("rename")) {
+    InputDialog rename_dialog(tr("Rename Target"), this, tr("Enter a name for the existing fork backup"));
+    rename_dialog.setMinLength(1);
+    if (rename_dialog.exec() != QDialog::Accepted) {
+      return QJsonObject();
+    }
+    rename_target = rename_dialog.text().trimmed();
+    if (rename_target.isEmpty()) {
+      return QJsonObject();
+    }
+  }
+
+  const QStringList reboot_labels{tr("Reboot after clone"), tr("Don't reboot")};
+  const QString reboot_choice = MultiOptionDialog::getSelection(tr("Reboot after clone completes?"), reboot_labels, "", this);
+  if (reboot_choice.isEmpty()) {
+    return QJsonObject();
+  }
+  const bool reboot = reboot_choice == reboot_labels.first();
+
+  *out_fork = fork;
   *out_url = url;
-  *out_branch = branch_edit->text().trimmed();
+  *out_branch = branch;
 
   QJsonObject options;
-  options.insert("reboot", reboot_box->isChecked());
-  QString mode = exists_mode->currentData().toString();
-  if (mode == "overwrite") {
-    options.insert("on_exists", "overwrite");
-  } else if (mode == "rename") {
-    options.insert("on_exists", "rename");
-    options.insert("rename_to", rename_edit->text().trimmed());
+  options.insert("reboot", reboot);
+  if (selected_exists->value == QStringLiteral("overwrite")) {
+    options.insert("on_exists", QStringLiteral("overwrite"));
+  } else if (selected_exists->value == QStringLiteral("rename")) {
+    options.insert("on_exists", QStringLiteral("rename"));
+    options.insert("rename_to", rename_target);
   }
   return options;
 }
@@ -416,7 +388,7 @@ void ForkSwapPanel::switchFork() {
     showToast(tr("Select a fork to switch."));
     return;
   }
-  if (!confirmAction(tr("Switch Fork"), tr("Switch to '%1'?").arg(fork))) {
+  if (!ConfirmationDialog::confirm(tr("Switch to '%1'?").arg(fork), tr("Switch"), this)) {
     return;
   }
   queueAction("switch", QJsonObject{{"reboot", true}}, fork);
@@ -428,7 +400,7 @@ void ForkSwapPanel::deleteFork() {
     showToast(tr("Select a fork to delete."));
     return;
   }
-  if (!confirmAction(tr("Delete Fork"), tr("Delete '%1'? This cannot be undone.").arg(fork))) {
+  if (!ConfirmationDialog::confirm(tr("Delete '%1'? This cannot be undone.").arg(fork), tr("Delete"), this)) {
     return;
   }
   queueAction("delete", QJsonObject{{"confirm", true}}, fork);
@@ -440,8 +412,9 @@ void ForkSwapPanel::updateFork() {
     showToast(tr("Select a fork to update."));
     return;
   }
-  bool proceed = confirmAction(tr("Update Fork"), tr("Update '%1' from origin?").arg(fork));
-  if (!proceed) return;
+  if (!ConfirmationDialog::confirm(tr("Update '%1' from origin?").arg(fork), tr("Update"), this)) {
+    return;
+  }
   queueAction("update", QJsonObject{{"accept_local_changes", false}}, fork);
 }
 
@@ -465,73 +438,8 @@ void ForkSwapPanel::queueAction(const QString &action, const QJsonObject &option
   message_label->setText(tr("Submitted request %1 (%2).").arg(request_id, action));
 }
 
-bool ForkSwapPanel::confirmAction(const QString &title, const QString &text) {
-  QMessageBox msgBox(this);
-  msgBox.setWindowTitle(title);
-  msgBox.setText(text);
-  msgBox.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
-  msgBox.setDefaultButton(QMessageBox::No);
-  msgBox.setModal(true);
-
-  msgBox.setStyleSheet(R"(
-    QMessageBox {
-      background-color: #1a1a1a;
-      color: white;
-      min-width: 800px;
-    }
-    QLabel {
-      font-size: 36px;
-      color: white;
-      min-width: 600px;
-    }
-    QPushButton {
-      font-size: 32px;
-      padding: 16px 32px;
-      background-color: #404040;
-      border-radius: 6px;
-      min-width: 180px;
-      min-height: 60px;
-    }
-    QPushButton:pressed {
-      background-color: #606060;
-    }
-  )");
-
-  return msgBox.exec() == QMessageBox::Yes;
-}
-
 void ForkSwapPanel::showToast(const QString &msg) {
-  QMessageBox msgBox(this);
-  msgBox.setWindowTitle(tr("Forkswap"));
-  msgBox.setText(msg);
-  msgBox.setStandardButtons(QMessageBox::Ok);
-  msgBox.setModal(true);
-
-  msgBox.setStyleSheet(R"(
-    QMessageBox {
-      background-color: #1a1a1a;
-      color: white;
-      min-width: 800px;
-    }
-    QLabel {
-      font-size: 36px;
-      color: white;
-      min-width: 600px;
-    }
-    QPushButton {
-      font-size: 32px;
-      padding: 16px 32px;
-      background-color: #404040;
-      border-radius: 6px;
-      min-width: 180px;
-      min-height: 60px;
-    }
-    QPushButton:pressed {
-      background-color: #606060;
-    }
-  )");
-
-  msgBox.exec();
+  ConfirmationDialog::alert(msg, this);
 }
 
 void ForkSwapPanel::back() {
