@@ -14,6 +14,7 @@
 #include <QJsonParseError>
 #include <QMessageBox>
 #include <QGuiApplication>
+#include <QScreen>
 #include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QScrollBar>
