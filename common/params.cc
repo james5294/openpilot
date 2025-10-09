@@ -133,6 +133,7 @@ std::unordered_map<std::string, uint32_t> keys = {
     {"ForkSwapStatus", CLEAR_ON_MANAGER_START},
     {"ForkSwapFailureStreak", PERSISTENT},
     {"ForkSwapLastResult", PERSISTENT},
+    {"ForkSwapServiceDisabled", CLEAR_ON_MANAGER_START},
     {"ForkSwapServiceHeartbeat", CLEAR_ON_MANAGER_START},
     {"ForkSwapServiceErrorCount", PERSISTENT},
     {"GitBranch", PERSISTENT},

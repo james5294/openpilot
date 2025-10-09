@@ -51,7 +51,10 @@ def allow_uploads(started, params, CP: car.CarParams, classic_model, tinygrad_mo
 def run_forkswap_service(started, params, CP: car.CarParams, classic_model, tinygrad_model, frogpilot_toggles) -> bool:
   # Service operates primarily offroad but may be useful onroad for status polling.
   # Allow disabling via param for diagnostics.
-  return not params.get_bool("ForkSwapServiceDisabled")
+  try:
+    return not params.get_bool("ForkSwapServiceDisabled")
+  except Exception:
+    return True
 
 def run_classic_modeld(started, params, CP: car.CarParams, classic_model, tinygrad_model, frogpilot_toggles) -> bool:
   return started and classic_model
