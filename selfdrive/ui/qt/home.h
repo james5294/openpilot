@@ -42,7 +42,6 @@ private:
   OffroadAlert* alerts_widget;
   QPushButton* alert_notif;
   QPushButton* update_notif;
-  QPushButton* forkswap_notif;
   ForkSwapPanel* forkswap_panel;
   int forkswap_index = -1;
 

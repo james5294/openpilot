@@ -169,11 +169,6 @@ OffroadHome::OffroadHome(QWidget* parent) : QFrame(parent) {
   QObject::connect(alert_notif, &QPushButton::clicked, [=] { center_layout->setCurrentIndex(2); });
   header_layout->addWidget(alert_notif, 0, Qt::AlignHCenter | Qt::AlignLeft);
 
-  forkswap_notif = new QPushButton(tr("FORKS"));
-  forkswap_notif->setVisible(true);
-  forkswap_notif->setStyleSheet("background-color: #2E8B57;");
-  header_layout->addWidget(forkswap_notif, 0, Qt::AlignHCenter | Qt::AlignLeft);
-
   date = new ElidedLabel();
   header_layout->addWidget(date, 0, Qt::AlignHCenter | Qt::AlignLeft);
 
@@ -254,12 +249,6 @@ OffroadHome::OffroadHome(QWidget* parent) : QFrame(parent) {
   timer = new QTimer(this);
   timer->callOnTimeout(this, &OffroadHome::refresh);
 
-  QObject::connect(forkswap_notif, &QPushButton::clicked, [=]() {
-    if (forkswap_index >= 0) {
-      center_layout->setCurrentIndex(forkswap_index);
-      forkswap_panel->manualRefresh();
-    }
-  });
 
   setStyleSheet(R"(
     * {
@@ -321,25 +310,5 @@ void OffroadHome::refresh() {
     alert_notif->setText(QString::number(alerts) + (alerts > 1 ? tr(" ALERTS") : tr(" ALERT")));
   }
 
-  // Update forks button appearance based on latest status
-  std::string status_raw = params.get("ForkSwapStatus");
-  QString button_color = "#2E8B57";
-  QString button_text = tr("FORKS");
-  if (!status_raw.empty()) {
-    QJsonParseError err;
-    QJsonDocument doc = QJsonDocument::fromJson(QByteArray::fromStdString(status_raw), &err);
-    if (err.error == QJsonParseError::NoError && doc.isObject()) {
-      QJsonObject obj = doc.object();
-      QString state = obj.value("state").toString("idle");
-      if (state == "error") {
-        button_color = "#E22C2C";
-        button_text = tr("FORKS (!)");
-      } else if (state == "running") {
-        button_color = "#FF8C00";
-        button_text = tr("FORKS (…)");  // ellipsis indicator
-      }
-    }
-  }
-  forkswap_notif->setText(button_text);
-  forkswap_notif->setStyleSheet(QString("background-color: %1;").arg(button_color));
+  // No forks button on home; fork management lives in Settings.
 }
