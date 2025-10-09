@@ -125,6 +125,11 @@ log_info() {
   printf '%s [INFO] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" | tee -a "$LOG_FILE" >/dev/null
 }
 
+log_warn() {
+  rotate_logs
+  printf '%s [WARN] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" | tee -a "$LOG_FILE" >/dev/null
+}
+
 log_error() {
   rotate_logs
   printf '%s [ERROR] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" | tee -a "$LOG_FILE" >/dev/null
@@ -137,6 +142,56 @@ acquire_lock() {
   mkdir -p "$parent"
 
   if ! mkdir "$desired_lock" 2>/dev/null; then
+    local pid_file="$desired_lock/pid"
+    local lock_pid=""
+    local has_pid=0
+    if [ -f "$pid_file" ]; then
+      lock_pid=$(tr -cd '0-9' <"$pid_file" 2>/dev/null || echo "")
+      if [ -n "$lock_pid" ]; then
+        has_pid=1
+      fi
+    fi
+
+    local stale_lock=0
+    if [ "$has_pid" -eq 1 ] && ! kill -0 "$lock_pid" >/dev/null 2>&1; then
+      stale_lock=1
+    fi
+
+    if [ "$stale_lock" -eq 0 ] && [ "$has_pid" -eq 0 ]; then
+      local stale_secs=${FORKSWAP_LOCK_STALE_SECONDS:-600}
+      if [ "$stale_secs" -gt 0 ]; then
+        local lock_mtime=""
+        if lock_mtime=$(stat -c %Y "$desired_lock" 2>/dev/null); then
+          :
+        elif lock_mtime=$(stat -f %m "$desired_lock" 2>/dev/null); then
+          :
+        else
+          lock_mtime=""
+        fi
+        if [ -n "$lock_mtime" ]; then
+          local now
+          now=$(date +%s)
+          if [ $((now - lock_mtime)) -ge "$stale_secs" ]; then
+            stale_lock=1
+          fi
+        fi
+      fi
+    fi
+
+    if [ "$stale_lock" -eq 1 ]; then
+      if [ "$has_pid" -eq 1 ]; then
+        log_warn "Removing stale forkswap lock (pid $lock_pid)."
+      else
+        log_warn "Removing stale forkswap lock with missing owner."
+      fi
+      rm -rf "$desired_lock"
+      if mkdir "$desired_lock" 2>/dev/null; then
+        LOCK_PATH="$desired_lock"
+        echo "$$" >"$LOCK_PATH/pid" 2>/dev/null || true
+        return 0
+      fi
+    fi
+
     log_error "Another forkswap instance appears to be running (lock: $desired_lock)."
     return 1
   fi

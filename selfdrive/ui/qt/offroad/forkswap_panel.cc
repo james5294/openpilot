@@ -9,6 +9,7 @@
 #include <QJsonValue>
 #include <QScrollBar>
 #include <QVBoxLayout>
+#include <algorithm>
 #include <vector>
 #include <sys/statvfs.h>
 
@@ -253,7 +254,7 @@ QWidget *ForkSwapPanel::buildLogCard() {
   log_view = new QTextEdit(card);
   log_view->setObjectName("forkswap_log");
   log_view->setReadOnly(true);
-  log_view->setMinimumHeight(240);
+  log_view->setMinimumHeight(720);
   log_view->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
   if (QScrollBar *scroll = log_view->verticalScrollBar()) {
     scroll->setStyleSheet(R"(
@@ -273,7 +274,7 @@ QWidget *ForkSwapPanel::buildLogCard() {
         width: 0px;
       }
     )");
-    scroll->setSingleStep(4);
+    scroll->setSingleStep(12);
   }
   layout->addWidget(log_view);
 
@@ -462,8 +463,28 @@ void ForkSwapPanel::updateLogView(const QJsonArray &log_tail) {
   } else {
     last_log_line.clear();
   }
-  log_view->setPlainText(lines.join('\n'));
-  log_view->verticalScrollBar()->setValue(log_view->verticalScrollBar()->maximum());
+  QScrollBar *scroll = log_view->verticalScrollBar();
+  int old_value = scroll->value();
+  int old_max = scroll->maximum();
+  bool slider_down = scroll->isSliderDown();
+  int threshold = std::max(10, scroll->pageStep());
+  bool was_at_bottom = !slider_down && (old_max - old_value) <= threshold;
+
+  const QString text = lines.join('\n');
+  if (log_view->toPlainText() != text) {
+    log_view->setPlainText(text);
+  }
+
+  int new_max = scroll->maximum();
+  if (was_at_bottom) {
+    scroll->setValue(new_max);
+  } else {
+    int delta = new_max - old_max;
+    int new_value = old_value + delta;
+    if (new_value < 0) new_value = 0;
+    if (new_value > new_max) new_value = new_max;
+    scroll->setValue(new_value);
+  }
 }
 
 QString ForkSwapPanel::selectedFork() const {
