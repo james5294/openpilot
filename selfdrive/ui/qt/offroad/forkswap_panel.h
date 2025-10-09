@@ -50,6 +50,7 @@ private:
   ButtonControl *back_control;
   QLabel *state_label;
   QLabel *message_label;
+  QLabel *progress_label;
   QLabel *disk_label;
   QTreeWidget *fork_tree;
   QTextEdit *log_view;
@@ -61,4 +62,5 @@ private:
   ButtonControl *clone_control;
   QTimer *timer;
   QString last_request_id;
+  QString last_log_line;
 };

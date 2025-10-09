@@ -123,6 +123,12 @@ QWidget *ForkSwapPanel::buildStatusCard() {
   message_label->setStyleSheet("font-size: 44px; color: #D0D0D0;");
   layout->addWidget(message_label);
 
+  progress_label = new QLabel(card);
+  progress_label->setWordWrap(true);
+  progress_label->setStyleSheet("font-size: 38px; color: #9E9E9E;");
+  progress_label->setVisible(false);
+  layout->addWidget(progress_label);
+
   disk_label = new QLabel(card);
   disk_label->setStyleSheet("font-size: 36px; color: #9E9E9E;");
   layout->addWidget(disk_label);
@@ -248,6 +254,27 @@ QWidget *ForkSwapPanel::buildLogCard() {
   log_view->setObjectName("forkswap_log");
   log_view->setReadOnly(true);
   log_view->setMinimumHeight(240);
+  log_view->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+  if (QScrollBar *scroll = log_view->verticalScrollBar()) {
+    scroll->setStyleSheet(R"(
+      QScrollBar:vertical {
+        width: 40px;
+        background: #1C1C1C;
+        margin: 8px 8px 8px 8px;
+        border-radius: 18px;
+      }
+      QScrollBar::handle:vertical {
+        background: #5A5A5A;
+        border-radius: 18px;
+        min-height: 80px;
+      }
+      QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+        height: 0px;
+        width: 0px;
+      }
+    )");
+    scroll->setSingleStep(4);
+  }
   layout->addWidget(log_view);
 
   return card;
@@ -294,7 +321,11 @@ void ForkSwapPanel::applyStatus(const QJsonObject &status_obj) {
   double duration = status_obj.value("duration").toDouble(-1.0);
   QString duration_text = formatDuration(duration);
 
+  QString action = status_obj.value("action").toString();
   QString header = state.toUpper();
+  if (!action.isEmpty()) {
+    header += QString(" • %1").arg(action.toUpper());
+  }
   if (!duration_text.isEmpty()) {
     header += QString(" (%1)").arg(duration_text);
   }
@@ -323,6 +354,16 @@ void ForkSwapPanel::applyStatus(const QJsonObject &status_obj) {
     last_request_id = request_id;
   }
 
+  double started_at = status_obj.value("started_at").toDouble(0.0);
+  double reported_duration = status_obj.value("duration").toDouble(-1.0);
+  double updated_at = status_obj.value("updated_at").toDouble(0.0);
+  double elapsed = reported_duration >= 0.0 ? reported_duration : ((started_at > 0.0 && updated_at > started_at) ? (updated_at - started_at) : -1.0);
+
+  QJsonObject detail = status_obj.value("detail").toObject();
+  QJsonObject request = detail.value("request").toObject();
+  QString fork = request.value("fork").toString();
+  QString branch = request.value("branch").toString();
+
   if (state == "error") {
     message_label->setStyleSheet("font-size: 44px; color: #ff6666;");
   } else if (state == "running") {
@@ -331,10 +372,50 @@ void ForkSwapPanel::applyStatus(const QJsonObject &status_obj) {
     message_label->setStyleSheet("font-size: 44px; color: #D0D0D0;");
   }
 
+  QStringList progress_bits;
+  if (!action.isEmpty()) {
+    progress_bits << tr("Action %1").arg(action);
+  }
+  if (!fork.isEmpty()) {
+    progress_bits << tr("Fork %1").arg(fork);
+  }
+  if (!branch.isEmpty()) {
+    progress_bits << tr("Branch %1").arg(branch);
+  }
+  if (elapsed >= 0.0) {
+    progress_bits << tr("Elapsed %1").arg(formatDuration(elapsed));
+  }
+  QString trimmed_log = last_log_line.trimmed();
+  if ((state == "running" || state == "error") && !trimmed_log.isEmpty()) {
+    if (trimmed_log.length() > 200) {
+      trimmed_log = trimmed_log.left(197) + QStringLiteral("…");
+    }
+    progress_bits << tr("Last log: %1").arg(trimmed_log);
+  }
+
+  if (!progress_bits.isEmpty() && progress_label != nullptr) {
+    progress_label->setText(progress_bits.join(" • "));
+    progress_label->setVisible(true);
+  } else if (progress_label != nullptr) {
+    progress_label->clear();
+    progress_label->setVisible(false);
+  }
+
   bool busy = (state == "running");
   for (ButtonControl *control : {clone_control, switch_control, delete_control, update_control}) {
     if (control != nullptr) {
       control->setEnabled(!busy);
+    }
+  }
+  for (ButtonControl *control : {refresh_control, check_updates_control}) {
+    if (control != nullptr) {
+      control->setEnabled(!busy);
+    }
+  }
+  if (timer) {
+    int target_interval = busy ? 500 : 2000;
+    if (timer->interval() != target_interval) {
+      timer->setInterval(target_interval);
     }
   }
 }
@@ -376,6 +457,11 @@ void ForkSwapPanel::updateLogView(const QJsonArray &log_tail) {
   for (const QJsonValue &val : log_tail) {
     lines.append(val.toString());
   }
+  if (!lines.isEmpty()) {
+    last_log_line = lines.constLast();
+  } else {
+    last_log_line.clear();
+  }
   log_view->setPlainText(lines.join('\n'));
   log_view->verticalScrollBar()->setValue(log_view->verticalScrollBar()->maximum());
 }
@@ -416,6 +502,13 @@ QJsonObject ForkSwapPanel::promptCloneOptions(QString *out_fork, QString *out_ur
   const QString url = url_dialog.text().trimmed();
   if (url.isEmpty()) {
     return QJsonObject();
+  }
+  QString normalized_url = url;
+  if (!normalized_url.contains("://")) {
+    normalized_url.prepend("https://");
+  }
+  if (normalized_url.startsWith("http://", Qt::CaseInsensitive)) {
+    normalized_url.replace(0, 7, "https://");
   }
 
   InputDialog branch_dialog(tr("Branch (optional)"), this, tr("Leave blank to use the repository default"));
@@ -476,7 +569,7 @@ QJsonObject ForkSwapPanel::promptCloneOptions(QString *out_fork, QString *out_ur
   const bool reboot = reboot_choice == reboot_labels.first();
 
   *out_fork = fork;
-  *out_url = url;
+  *out_url = normalized_url;
   *out_branch = branch;
 
   QJsonObject options;

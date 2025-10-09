@@ -7,7 +7,7 @@ import subprocess
 import time
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from openpilot.common.basedir import BASEDIR
 try:
@@ -185,7 +185,18 @@ class ForkSwapService:
         self._publish_status()
         return
 
-      stdout, stderr, returncode = self._run_script(request, env)
+      try:
+        progress_interval = float(request.options.get("progress_interval", 1.0))
+      except (TypeError, ValueError):
+        progress_interval = 1.0
+      if not progress_interval or progress_interval < 0:
+        progress_interval = 1.0
+      progress_interval = max(0.3, min(progress_interval, 5.0))
+
+      def progress_cb() -> None:
+        self._publish_running_progress(request, start_time, env)
+
+      stdout, stderr, returncode = self._run_script(request, env, progress_cb, progress_interval)
       log_tail = self._read_log_tail(env)
 
       if returncode == 0:
@@ -255,6 +266,15 @@ class ForkSwapService:
       self._record_outcome(success, request, duration)
       self._publish_status()
       self._clear_action_params(request.request_id)
+
+  def _publish_running_progress(self, request: ForkSwapRequest, start_time: float, env: Dict[str, str]) -> None:
+    log_tail = self._read_log_tail(env)
+    duration = time.time() - start_time
+    self.status.update(
+      log_tail=log_tail,
+      duration=duration,
+    )
+    self._publish_status()
 
   def _handle_invalid_request(self, token: str, message: str) -> None:
     self.last_request_id = token
@@ -405,6 +425,8 @@ class ForkSwapService:
     self,
     request: ForkSwapRequest,
     env: Dict[str, str],
+    progress_cb: Optional[Callable[[], None]] = None,
+    progress_interval: float = 1.0,
   ) -> Tuple[str, str, int]:
     input_lines = self._build_input_sequence(request, env)
     command_input = "\n".join(input_lines) + "\n"
@@ -420,19 +442,75 @@ class ForkSwapService:
     )
 
     try:
-      stdout, stderr = proc.communicate(command_input, timeout=timeout)
+      if proc.stdin:
+        try:
+          proc.stdin.write(command_input)
+          proc.stdin.flush()
+        except BrokenPipeError:
+          pass
+        finally:
+          proc.stdin.close()
+    except OSError:
+      pass
+
+    deadline = time.time() + timeout
+    progress_interval = max(0.25, progress_interval)
+    last_progress = 0.0
+
+    if progress_cb is not None:
+      progress_cb()
+      last_progress = time.time()
+
+    try:
+      while True:
+        retcode = proc.poll()
+        now = time.time()
+        if retcode is not None:
+          break
+
+        if now >= deadline:
+          raise subprocess.TimeoutExpired(proc.args, timeout)
+
+        if progress_cb is not None and (now - last_progress) >= progress_interval:
+          progress_cb()
+          last_progress = now
+
+        sleep_window = min(progress_interval, 0.5)
+        remaining = deadline - now
+        if remaining < sleep_window:
+          sleep_window = max(0.1, remaining)
+        time.sleep(sleep_window)
     except subprocess.TimeoutExpired:
       cloudlog.warning("forkswap.sh timed out; attempting graceful termination")
       proc.terminate()
       try:
-        stdout, stderr = proc.communicate(timeout=2)
+        proc.wait(timeout=2)
       except subprocess.TimeoutExpired:
         cloudlog.warning("forkswap.sh did not terminate after SIGTERM; killing")
         proc.kill()
-        stdout, stderr = proc.communicate()
       raise
 
-    return stdout.strip(), stderr.strip(), proc.returncode
+    exit_code = proc.returncode
+    if exit_code is None:
+      exit_code = proc.wait()
+
+    if progress_cb is not None:
+      progress_cb()
+
+    stdout = ""
+    stderr = ""
+    try:
+      if proc.stdout:
+        stdout = proc.stdout.read()
+    except OSError:
+      stdout = ""
+    try:
+      if proc.stderr:
+        stderr = proc.stderr.read()
+    except OSError:
+      stderr = ""
+
+    return stdout.strip(), stderr.strip(), exit_code
 
   def _build_input_sequence(
     self,
