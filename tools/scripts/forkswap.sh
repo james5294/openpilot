@@ -762,8 +762,8 @@ check_for_script_updates() {
 
   latest_commit_sha=$(curl -fsSL "$api_url" | grep '"sha"' | head -1 | awk -F '"' '{print $4}')
   if [ -z "$latest_commit_sha" ]; then
-    log_error "Unable to fetch the latest commit SHA for forkswap.sh."
-    return 1
+    log_warn "Unable to fetch the latest commit SHA for forkswap.sh."
+    return 0
   fi
 
   if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -774,8 +774,8 @@ check_for_script_updates() {
   local current_commit_sha
   current_commit_sha=$(git log -n 1 --pretty=format:"%H" -- "$SCRIPT_PATH" 2>/dev/null)
   if [ -z "$current_commit_sha" ]; then
-    log_error "Unable to fetch the current commit SHA for forkswap.sh."
-    return 1
+    log_warn "Unable to fetch the current commit SHA for forkswap.sh."
+    return 0
   fi
 
   if [ "$latest_commit_sha" != "$current_commit_sha" ]; then
@@ -856,11 +856,21 @@ ensure_fork_swap_script() {
     return 0
   fi
 
+  if [ -f "$target_script" ] && cmp -s "$SCRIPT_PATH" "$target_script" 2>/dev/null; then
+    chmod +x "$target_script" 2>/dev/null || true
+    log_info "forkswap.sh already up to date in the current fork."
+    return 0
+  fi
+
   log_error "Failed to copy forkswap.sh into the current fork."
   return 1
 }
 
 sync_overlay_files() {
+  if [ "${FORKSWAP_SKIP_OVERLAY:-0}" = "1" ]; then
+    log_info "Skipping overlay sync (FORKSWAP_SKIP_OVERLAY=1)."
+    return 0
+  fi
   if [ ! -f "$OVERLAY_MANIFEST" ]; then
     log_error "Overlay manifest missing: $OVERLAY_MANIFEST"
     return 1

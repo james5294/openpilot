@@ -38,6 +38,7 @@ private:
   void updateLogView(const QJsonArray &log_tail);
   QString selectedFork() const;
   void showToast(const QString &msg);
+  void showFullLog();
   QJsonObject promptCloneOptions(QString *out_fork, QString *out_url, QString *out_branch);
   QWidget *buildStatusCard();
   QWidget *buildInstructionCard();
@@ -60,6 +61,7 @@ private:
   ButtonControl *delete_control;
   ButtonControl *update_control;
   ButtonControl *clone_control;
+  ButtonControl *view_log_control;
   QTimer *timer;
   QString last_request_id;
   QString last_log_line;

@@ -41,7 +41,7 @@ ForkSwapPanel::ForkSwapPanel(QWidget *parent, bool show_back_button)
     : ListWidget(parent), back_control(nullptr), state_label(nullptr),
       message_label(nullptr), disk_label(nullptr), fork_tree(nullptr), log_view(nullptr), refresh_control(nullptr),
       check_updates_control(nullptr), switch_control(nullptr), delete_control(nullptr), update_control(nullptr),
-      clone_control(nullptr) {
+      clone_control(nullptr), view_log_control(nullptr) {
   setContentsMargins(0, 0, 0, 0);
   setSpacing(25);
 
@@ -87,6 +87,11 @@ ForkSwapPanel::ForkSwapPanel(QWidget *parent, bool show_back_button)
     refreshStatus(true, true);
     QTimer::singleShot(30000, [this]() { check_updates_control->setEnabled(true); });
   });
+
+  view_log_control = new ButtonControl(tr("View forkswap log"), tr("OPEN"),
+                                       tr("Open the full /data/fork_swap.log history."), this);
+  addItem(view_log_control);
+  connect(view_log_control, &ButtonControl::clicked, this, &ForkSwapPanel::showFullLog);
 
   addItem(buildForkListCard());
   addItem(buildLogCard());
@@ -282,7 +287,7 @@ QWidget *ForkSwapPanel::buildLogCard() {
 }
 
 void ForkSwapPanel::manualRefresh() {
-  refreshStatus(false, false);
+  refreshStatus(true, false);
   updateDiskSpace();
 }
 
@@ -487,6 +492,20 @@ void ForkSwapPanel::updateLogView(const QJsonArray &log_tail) {
   }
 }
 
+void ForkSwapPanel::showFullLog() {
+  constexpr int max_chars = 200000;
+  std::string raw = util::read_file("/data/fork_swap.log");
+  if (raw.empty()) {
+    showToast(tr("Forkswap log is empty."));
+    return;
+  }
+  if ((int)raw.size() > max_chars) {
+    raw = raw.substr(raw.size() - max_chars);
+  }
+  QString text = QString::fromStdString(raw).toHtmlEscaped();
+  ConfirmationDialog::rich(QString("<pre>%1</pre>").arg(text), this);
+}
+
 QString ForkSwapPanel::selectedFork() const {
   auto *item = fork_tree->currentItem();
   if (!item) return QString();
@@ -657,7 +676,9 @@ void ForkSwapPanel::queueAction(const QString &action, const QJsonObject &option
   params.put("ForkSwapAction", request_id.toStdString());
   last_request_id = request_id;
 
-  message_label->setText(tr("Submitted request %1 (%2).").arg(request_id, action));
+  if (action != "status") {
+    message_label->setText(tr("Submitted request %1 (%2).").arg(request_id, action));
+  }
 }
 
 void ForkSwapPanel::showToast(const QString &msg) {

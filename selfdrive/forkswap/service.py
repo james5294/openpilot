@@ -72,7 +72,13 @@ class ForkSwapService:
     self.allow_nonroot = allow_nonroot
     self.log_tail_lines = log_tail_lines
     self.base_paths = base_paths or {}
-    self.env_overrides = env_overrides or {}
+    default_env = {
+      "FORKSWAP_DISABLE_UPDATE_CHECK": "1",
+      "FORKSWAP_SKIP_OVERLAY": "1",
+    }
+    if env_overrides:
+      default_env.update(env_overrides)
+    self.env_overrides = default_env
 
     if not os.path.exists(self.script_path):
       raise FileNotFoundError(f"forkswap script not found at {self.script_path}")
