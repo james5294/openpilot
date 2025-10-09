@@ -3,19 +3,20 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QLabel>
-#include <QPushButton>
 #include <QTextEdit>
 #include <QTimer>
 #include <QTreeWidget>
-#include <QWidget>
 
 #include "common/params.h"
+#include "selfdrive/ui/qt/widgets/controls.h"
 
-class ForkSwapPanel : public QWidget {
+class ButtonControl;
+
+class ForkSwapPanel : public ListWidget {
   Q_OBJECT
 
 public:
-  explicit ForkSwapPanel(QWidget *parent = nullptr);
+  explicit ForkSwapPanel(QWidget *parent = nullptr, bool show_back_button = false);
   void manualRefresh();
 
 signals:
@@ -38,24 +39,26 @@ private:
   QString selectedFork() const;
   void showToast(const QString &msg);
   QJsonObject promptCloneOptions(QString *out_fork, QString *out_url, QString *out_branch);
+  QWidget *buildStatusCard();
+  QWidget *buildInstructionCard();
+  QWidget *buildForkListCard();
+  QWidget *buildLogCard();
   void updateDiskSpace();
   static QString formatSize(uint64_t bytes);
 
   Params params;
+  ButtonControl *back_control;
   QLabel *state_label;
   QLabel *message_label;
-  QLabel *help_label;
   QLabel *disk_label;
   QTreeWidget *fork_tree;
   QTextEdit *log_view;
-  QPushButton *refresh_button;
-  QPushButton *check_updates_button;
-  QPushButton *switch_button;
-  QPushButton *delete_button;
-  QPushButton *update_button;
-  QPushButton *clone_button;
-  QPushButton *back_button;
+  ButtonControl *refresh_control;
+  ButtonControl *check_updates_control;
+  ButtonControl *switch_control;
+  ButtonControl *delete_control;
+  ButtonControl *update_control;
+  ButtonControl *clone_control;
   QTimer *timer;
-  QString last_state;
   QString last_request_id;
 };

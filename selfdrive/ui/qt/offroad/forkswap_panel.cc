@@ -1,11 +1,12 @@
 #include "selfdrive/ui/qt/offroad/forkswap_panel.h"
 
+#include <QBrush>
+#include <QFrame>
 #include <QHeaderView>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonParseError>
 #include <QJsonValue>
-#include <QPlainTextEdit>
 #include <QScrollBar>
 #include <QVBoxLayout>
 #include <vector>
@@ -35,120 +36,221 @@ QString formatDuration(double seconds) {
 
 }  // namespace
 
-ForkSwapPanel::ForkSwapPanel(QWidget *parent) : QWidget(parent) {
-  QVBoxLayout *layout = new QVBoxLayout(this);
-  layout->setContentsMargins(20, 20, 20, 20);
-  layout->setSpacing(20);
+ForkSwapPanel::ForkSwapPanel(QWidget *parent, bool show_back_button)
+    : ListWidget(parent), back_control(nullptr), state_label(nullptr),
+      message_label(nullptr), disk_label(nullptr), fork_tree(nullptr), log_view(nullptr), refresh_control(nullptr),
+      check_updates_control(nullptr), switch_control(nullptr), delete_control(nullptr), update_control(nullptr),
+      clone_control(nullptr) {
+  setContentsMargins(0, 0, 0, 0);
+  setSpacing(25);
 
-  QHBoxLayout *header = new QHBoxLayout();
-  back_button = new QPushButton(tr("Back"));
-  back_button->setFixedWidth(200);
-  header->addWidget(back_button);
-  header->addStretch();
-
-  state_label = new QLabel(tr("Idle"));
-  state_label->setStyleSheet("font-size: 46px; font-weight: 600;");
-  header->addWidget(state_label, 0, Qt::AlignRight);
-
-  layout->addLayout(header);
-
-  message_label = new QLabel(tr("No requests pending."));
-  message_label->setWordWrap(true);
-  message_label->setStyleSheet("font-size: 36px;");
-  layout->addWidget(message_label);
-
-  help_label = new QLabel(tr("Clone adds a new fork from Git. Select a fork to Switch, Update, or Delete. Actions should be performed offroad."));
-  help_label->setWordWrap(true);
-  help_label->setStyleSheet("font-size: 28px; color: #B0B0B0;");
-  layout->addWidget(help_label);
-
-  fork_tree = new QTreeWidget(this);
-  fork_tree->setColumnCount(4);
-  QStringList headers{tr("Fork"), tr("Branch"), tr("Status"), tr("Origin")};
-  fork_tree->setHeaderLabels(headers);
-  fork_tree->setSelectionMode(QAbstractItemView::SingleSelection);
-  fork_tree->setRootIsDecorated(false);
-  fork_tree->setUniformRowHeights(true);
-  fork_tree->setMinimumHeight(400);
-  fork_tree->header()->setSectionResizeMode(QHeaderView::Stretch);
-  fork_tree->setAlternatingRowColors(true);
-  layout->addWidget(fork_tree, 1);
-
-  QHBoxLayout *button_row = new QHBoxLayout();
-  clone_button = new QPushButton(tr("Clone"));
-  switch_button = new QPushButton(tr("Switch"));
-  delete_button = new QPushButton(tr("Delete"));
-  update_button = new QPushButton(tr("Update"));
-  refresh_button = new QPushButton(tr("Refresh"));
-  check_updates_button = new QPushButton(tr("Check Updates"));
-
-  clone_button->setToolTip(tr("Clone a new fork from a Git repository"));
-  switch_button->setToolTip(tr("Switch the active fork"));
-  delete_button->setToolTip(tr("Delete the selected fork"));
-  update_button->setToolTip(tr("Fetch and merge updates for the selected fork"));
-  refresh_button->setToolTip(tr("Refresh fork list using cached status"));
-  check_updates_button->setToolTip(tr("Refresh and check each fork for remote updates"));
-
-  for (QPushButton *btn : {clone_button, switch_button, delete_button, update_button, refresh_button, check_updates_button}) {
-    btn->setMinimumWidth(180);
-    button_row->addWidget(btn);
+  if (show_back_button) {
+    back_control = new ButtonControl(tr("Return to Home"), tr("BACK"), tr("Close the fork manager and go back."), this);
+    addItem(back_control);
+    connect(back_control, &ButtonControl::clicked, this, &ForkSwapPanel::back);
   }
-  button_row->addStretch();
-  layout->addLayout(button_row);
 
-  disk_label = new QLabel(this);
-  disk_label->setStyleSheet("font-size: 28px; color: #CCCCCC;");
-  layout->addWidget(disk_label);
+  addItem(buildStatusCard());
+  addItem(buildInstructionCard());
 
-  log_view = new QTextEdit(this);
-  log_view->setReadOnly(true);
-  log_view->setMinimumHeight(180);
-  log_view->setStyleSheet("font-family: monospace;");
-  layout->addWidget(log_view);
+  clone_control = new ButtonControl(tr("Clone a new fork"), tr("CLONE"),
+                                    tr("Add a fork by cloning from a Git repository. Perform this while offroad."), this);
+  addItem(clone_control);
+  connect(clone_control, &ButtonControl::clicked, this, &ForkSwapPanel::cloneFork);
 
-  setStyleSheet(R"(
-    ForkSwapPanel {
-      background-color: black;
-      color: white;
-    }
-    QPushButton {
-      padding: 12px 24px;
-      border-radius: 6px;
-      background-color: #404040;
-      font-size: 32px;
-    }
-    QPushButton:pressed {
-      background-color: #606060;
-    }
-    QTreeWidget {
-      background-color: #202020;
-      border-radius: 6px;
-      font-size: 30px;
-    }
-    QTextEdit {
-      background-color: #202020;
-      border-radius: 6px;
-      font-size: 28px;
-    }
-  )");
+  switch_control = new ButtonControl(tr("Switch active fork"), tr("SWITCH"),
+                                     tr("Make the selected fork active and reboot when finished."), this);
+  addItem(switch_control);
+  connect(switch_control, &ButtonControl::clicked, this, &ForkSwapPanel::switchFork);
 
-  connect(back_button, &QPushButton::clicked, this, &ForkSwapPanel::back);
-  connect(refresh_button, &QPushButton::clicked, [this]() { refreshStatus(true, false); });
-  connect(check_updates_button, &QPushButton::clicked, [this]() {
-    check_updates_button->setEnabled(false);
+  update_control = new ButtonControl(tr("Update selected fork"), tr("UPDATE"),
+                                     tr("Fetch and merge changes from the origin for the selected fork."), this);
+  addItem(update_control);
+  connect(update_control, &ButtonControl::clicked, this, &ForkSwapPanel::updateFork);
+
+  delete_control = new ButtonControl(tr("Delete selected fork"), tr("DELETE"),
+                                     tr("Remove the selected fork from local storage. This cannot be undone."), this);
+  addItem(delete_control);
+  connect(delete_control, &ButtonControl::clicked, this, &ForkSwapPanel::deleteFork);
+
+  refresh_control = new ButtonControl(tr("Refresh status"), tr("REFRESH"),
+                                      tr("Fetch the latest status information for all tracked forks."), this);
+  addItem(refresh_control);
+  connect(refresh_control, &ButtonControl::clicked, [this]() { refreshStatus(true, false); });
+
+  check_updates_control = new ButtonControl(tr("Check for remote updates"), tr("CHECK"),
+                                            tr("Request a full status update and check each fork for upstream changes."), this);
+  addItem(check_updates_control);
+  connect(check_updates_control, &ButtonControl::clicked, [this]() {
+    check_updates_control->setEnabled(false);
     refreshStatus(true, true);
-    QTimer::singleShot(30000, [this]() { check_updates_button->setEnabled(true); });
+    QTimer::singleShot(30000, [this]() { check_updates_control->setEnabled(true); });
   });
-  connect(clone_button, &QPushButton::clicked, this, &ForkSwapPanel::cloneFork);
-  connect(switch_button, &QPushButton::clicked, this, &ForkSwapPanel::switchFork);
-  connect(delete_button, &QPushButton::clicked, this, &ForkSwapPanel::deleteFork);
-  connect(update_button, &QPushButton::clicked, this, &ForkSwapPanel::updateFork);
+
+  addItem(buildForkListCard());
+  addItem(buildLogCard());
 
   timer = new QTimer(this);
   connect(timer, &QTimer::timeout, this, &ForkSwapPanel::tick);
   timer->start(2000);
 
   manualRefresh();
+}
+
+QWidget *ForkSwapPanel::buildStatusCard() {
+  QFrame *card = new QFrame(this);
+  card->setObjectName("forkswap_card");
+  card->setStyleSheet(R"(
+    #forkswap_card {
+      background-color: #151515;
+      border-radius: 24px;
+    }
+    #forkswap_card QLabel {
+      color: #FFFFFF;
+    }
+  )");
+
+  QVBoxLayout *layout = new QVBoxLayout(card);
+  layout->setContentsMargins(48, 36, 48, 36);
+  layout->setSpacing(14);
+
+  state_label = new QLabel(tr("IDLE"), card);
+  state_label->setStyleSheet("font-size: 72px; font-weight: 600;");
+  layout->addWidget(state_label);
+
+  message_label = new QLabel(tr("No requests pending."), card);
+  message_label->setWordWrap(true);
+  message_label->setStyleSheet("font-size: 44px; color: #D0D0D0;");
+  layout->addWidget(message_label);
+
+  disk_label = new QLabel(card);
+  disk_label->setStyleSheet("font-size: 36px; color: #9E9E9E;");
+  layout->addWidget(disk_label);
+
+  return card;
+}
+
+QWidget *ForkSwapPanel::buildInstructionCard() {
+  QFrame *card = new QFrame(this);
+  card->setObjectName("forkswap_card");
+  card->setStyleSheet(R"(
+    #forkswap_card {
+      background-color: #151515;
+      border-radius: 24px;
+    }
+    #forkswap_card QLabel {
+      color: #BDBDBD;
+    }
+  )");
+
+  QVBoxLayout *layout = new QVBoxLayout(card);
+  layout->setContentsMargins(48, 30, 48, 30);
+  layout->setSpacing(8);
+
+  QLabel *title = new QLabel(tr("Manage forks while offroad."), card);
+  title->setStyleSheet("font-size: 48px; font-weight: 500; color: #FFFFFF;");
+  layout->addWidget(title);
+
+  QLabel *help = new QLabel(tr("Clone adds a new fork from Git. Select a fork to Switch, Update, or Delete."), card);
+  help->setWordWrap(true);
+  help->setStyleSheet("font-size: 40px;");
+  layout->addWidget(help);
+
+  return card;
+}
+
+QWidget *ForkSwapPanel::buildForkListCard() {
+  QFrame *card = new QFrame(this);
+  card->setObjectName("forkswap_card");
+  card->setStyleSheet(R"(
+    #forkswap_card {
+      background-color: #151515;
+      border-radius: 24px;
+    }
+    #forkswap_card QLabel {
+      color: #FFFFFF;
+    }
+    QTreeWidget#forkswap_tree {
+      background-color: #202020;
+      border-radius: 12px;
+      font-size: 36px;
+    }
+    QTreeWidget#forkswap_tree::item {
+      height: 72px;
+    }
+    QTreeWidget#forkswap_tree::item:alternate {
+      background-color: #272727;
+    }
+    QTreeView::item:selected {
+      background-color: #2F4F8F;
+      color: #FFFFFF;
+    }
+    QHeaderView::section {
+      background-color: transparent;
+      color: #BDBDBD;
+      font-size: 34px;
+    }
+  )");
+
+  QVBoxLayout *layout = new QVBoxLayout(card);
+  layout->setContentsMargins(48, 30, 48, 36);
+  layout->setSpacing(18);
+
+  QLabel *title = new QLabel(tr("Managed forks"), card);
+  title->setStyleSheet("font-size: 52px; font-weight: 600;");
+  layout->addWidget(title);
+
+  fork_tree = new QTreeWidget(card);
+  fork_tree->setObjectName("forkswap_tree");
+  fork_tree->setColumnCount(4);
+  QStringList headers{tr("Fork"), tr("Branch"), tr("Status"), tr("Origin")};
+  fork_tree->setHeaderLabels(headers);
+  fork_tree->setSelectionMode(QAbstractItemView::SingleSelection);
+  fork_tree->setRootIsDecorated(false);
+  fork_tree->setUniformRowHeights(true);
+  fork_tree->setMinimumHeight(500);
+  fork_tree->setAlternatingRowColors(true);
+  fork_tree->header()->setSectionResizeMode(QHeaderView::Stretch);
+  layout->addWidget(fork_tree);
+
+  return card;
+}
+
+QWidget *ForkSwapPanel::buildLogCard() {
+  QFrame *card = new QFrame(this);
+  card->setObjectName("forkswap_card");
+  card->setStyleSheet(R"(
+    #forkswap_card {
+      background-color: #151515;
+      border-radius: 24px;
+    }
+    #forkswap_card QLabel {
+      color: #FFFFFF;
+    }
+    QTextEdit#forkswap_log {
+      background-color: #202020;
+      border-radius: 12px;
+      font-size: 32px;
+      font-family: monospace;
+      color: #DADADA;
+    }
+  )");
+
+  QVBoxLayout *layout = new QVBoxLayout(card);
+  layout->setContentsMargins(48, 30, 48, 36);
+  layout->setSpacing(18);
+
+  QLabel *title = new QLabel(tr("Recent activity"), card);
+  title->setStyleSheet("font-size: 52px; font-weight: 600;");
+  layout->addWidget(title);
+
+  log_view = new QTextEdit(card);
+  log_view->setObjectName("forkswap_log");
+  log_view->setReadOnly(true);
+  log_view->setMinimumHeight(240);
+  layout->addWidget(log_view);
+
+  return card;
 }
 
 void ForkSwapPanel::manualRefresh() {
@@ -222,16 +324,18 @@ void ForkSwapPanel::applyStatus(const QJsonObject &status_obj) {
   }
 
   if (state == "error") {
-    message_label->setStyleSheet("color: #ff6666; font-size: 36px;");
+    message_label->setStyleSheet("font-size: 44px; color: #ff6666;");
   } else if (state == "running") {
-    message_label->setStyleSheet("color: #f0c674; font-size: 36px;");
+    message_label->setStyleSheet("font-size: 44px; color: #f0c674;");
   } else {
-    message_label->setStyleSheet("color: white; font-size: 36px;");
+    message_label->setStyleSheet("font-size: 44px; color: #D0D0D0;");
   }
 
   bool busy = (state == "running");
-  for (QPushButton *btn : {clone_button, switch_button, delete_button, update_button}) {
-    btn->setEnabled(!busy);
+  for (ButtonControl *control : {clone_control, switch_control, delete_control, update_control}) {
+    if (control != nullptr) {
+      control->setEnabled(!busy);
+    }
   }
 }
 
@@ -294,6 +398,7 @@ void ForkSwapPanel::cloneFork() {
 QJsonObject ForkSwapPanel::promptCloneOptions(QString *out_fork, QString *out_url, QString *out_branch) {
   InputDialog name_dialog(tr("Fork Name"), this, tr("Enter a short name for the fork"));
   name_dialog.setMinLength(1);
+  name_dialog.setMaxLength(DEFAULT_MAX_LENGTH);
   if (name_dialog.exec() != QDialog::Accepted) {
     return QJsonObject();
   }
@@ -304,6 +409,7 @@ QJsonObject ForkSwapPanel::promptCloneOptions(QString *out_fork, QString *out_ur
 
   InputDialog url_dialog(tr("Git URL"), this, tr("Provide a full Git HTTPS URL"));
   url_dialog.setMinLength(1);
+  url_dialog.setMaxLength(DEFAULT_MAX_LENGTH);
   if (url_dialog.exec() != QDialog::Accepted) {
     return QJsonObject();
   }
@@ -314,6 +420,7 @@ QJsonObject ForkSwapPanel::promptCloneOptions(QString *out_fork, QString *out_ur
 
   InputDialog branch_dialog(tr("Branch (optional)"), this, tr("Leave blank to use the repository default"));
   branch_dialog.setMinLength(0);
+  branch_dialog.setMaxLength(DEFAULT_MAX_LENGTH);
   if (branch_dialog.exec() != QDialog::Accepted) {
     return QJsonObject();
   }
@@ -351,6 +458,7 @@ QJsonObject ForkSwapPanel::promptCloneOptions(QString *out_fork, QString *out_ur
   if (selected_exists->value == QStringLiteral("rename")) {
     InputDialog rename_dialog(tr("Rename Target"), this, tr("Enter a name for the existing fork backup"));
     rename_dialog.setMinLength(1);
+    rename_dialog.setMaxLength(DEFAULT_MAX_LENGTH);
     if (rename_dialog.exec() != QDialog::Accepted) {
       return QJsonObject();
     }

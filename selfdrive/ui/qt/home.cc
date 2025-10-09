@@ -238,7 +238,7 @@ OffroadHome::OffroadHome(QWidget* parent) : QFrame(parent) {
   QObject::connect(alerts_widget, &OffroadAlert::dismiss, [=]() { center_layout->setCurrentIndex(0); });
   center_layout->addWidget(alerts_widget);
 
-  forkswap_panel = new ForkSwapPanel(this);
+  forkswap_panel = new ForkSwapPanel(this, true);
   QObject::connect(forkswap_panel, &ForkSwapPanel::backRequested, [=]() { center_layout->setCurrentIndex(0); });
   center_layout->addWidget(forkswap_panel);
   forkswap_index = center_layout->indexOf(forkswap_panel);
