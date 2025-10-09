@@ -302,16 +302,7 @@ QJsonObject ForkSwapPanel::promptCloneOptions(QString *out_fork, QString *out_ur
   QDialog dialog(this);
   dialog.setWindowTitle(tr("Clone Fork"));
   dialog.setModal(true);
-
-  // Set size and position for landscape mode (centered on screen)
-  dialog.setMinimumSize(1200, 700);
-  dialog.setMaximumSize(1600, 900);
-
-  // Center the dialog on the parent
-  if (parentWidget()) {
-    QRect parentRect = parentWidget()->geometry();
-    dialog.move(parentRect.center() - dialog.rect().center());
-  }
+  dialog.setWindowFlags(Qt::Dialog | Qt::FramelessWindowHint);
 
   dialog.setStyleSheet(R"(
     QDialog {
@@ -381,6 +372,20 @@ QJsonObject ForkSwapPanel::promptCloneOptions(QString *out_fork, QString *out_ur
   form->addWidget(buttons);
   QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
   QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+  // Position dialog in landscape mode, centered on screen
+  // Comma 3X screen is 1920x1080 in landscape
+  int dialog_width = 1400;
+  int dialog_height = 800;
+
+  // Get the window (top-level widget) geometry for positioning
+  QWidget *topWidget = window();
+  QRect screenRect = topWidget ? topWidget->geometry() : QRect(0, 0, 1920, 1080);
+
+  int x = screenRect.x() + (screenRect.width() - dialog_width) / 2;
+  int y = screenRect.y() + (screenRect.height() - dialog_height) / 2;
+
+  dialog.setGeometry(x, y, dialog_width, dialog_height);
 
   if (dialog.exec() != QDialog::Accepted) {
     return QJsonObject();
