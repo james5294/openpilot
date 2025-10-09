@@ -301,8 +301,57 @@ void ForkSwapPanel::cloneFork() {
 QJsonObject ForkSwapPanel::promptCloneOptions(QString *out_fork, QString *out_url, QString *out_branch) {
   QDialog dialog(this);
   dialog.setWindowTitle(tr("Clone Fork"));
+  dialog.setModal(true);
+
+  // Set size and position for landscape mode (centered on screen)
+  dialog.setMinimumSize(1200, 700);
+  dialog.setMaximumSize(1600, 900);
+
+  // Center the dialog on the parent
+  if (parentWidget()) {
+    QRect parentRect = parentWidget()->geometry();
+    dialog.move(parentRect.center() - dialog.rect().center());
+  }
+
+  dialog.setStyleSheet(R"(
+    QDialog {
+      background-color: #1a1a1a;
+      color: white;
+    }
+    QLabel {
+      font-size: 32px;
+      color: white;
+    }
+    QLineEdit, QComboBox {
+      font-size: 32px;
+      padding: 12px;
+      background-color: #2a2a2a;
+      border: 2px solid #404040;
+      border-radius: 6px;
+      color: white;
+      min-height: 50px;
+    }
+    QCheckBox {
+      font-size: 32px;
+      spacing: 10px;
+    }
+    QPushButton {
+      font-size: 32px;
+      padding: 16px 32px;
+      background-color: #404040;
+      border-radius: 6px;
+      min-width: 150px;
+      min-height: 60px;
+    }
+    QPushButton:pressed {
+      background-color: #606060;
+    }
+  )");
 
   QFormLayout *form = new QFormLayout(&dialog);
+  form->setSpacing(20);
+  form->setContentsMargins(40, 40, 40, 40);
+
   QLineEdit *name_edit = new QLineEdit(&dialog);
   QLineEdit *url_edit = new QLineEdit(&dialog);
   QLineEdit *branch_edit = new QLineEdit(&dialog);
@@ -416,11 +465,72 @@ void ForkSwapPanel::queueAction(const QString &action, const QJsonObject &option
 }
 
 bool ForkSwapPanel::confirmAction(const QString &title, const QString &text) {
-  return QMessageBox::question(this, title, text, QMessageBox::Yes | QMessageBox::No, QMessageBox::No) == QMessageBox::Yes;
+  QMessageBox msgBox(this);
+  msgBox.setWindowTitle(title);
+  msgBox.setText(text);
+  msgBox.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
+  msgBox.setDefaultButton(QMessageBox::No);
+  msgBox.setModal(true);
+
+  msgBox.setStyleSheet(R"(
+    QMessageBox {
+      background-color: #1a1a1a;
+      color: white;
+      min-width: 800px;
+    }
+    QLabel {
+      font-size: 36px;
+      color: white;
+      min-width: 600px;
+    }
+    QPushButton {
+      font-size: 32px;
+      padding: 16px 32px;
+      background-color: #404040;
+      border-radius: 6px;
+      min-width: 180px;
+      min-height: 60px;
+    }
+    QPushButton:pressed {
+      background-color: #606060;
+    }
+  )");
+
+  return msgBox.exec() == QMessageBox::Yes;
 }
 
 void ForkSwapPanel::showToast(const QString &msg) {
-  QMessageBox::information(this, tr("Forkswap"), msg);
+  QMessageBox msgBox(this);
+  msgBox.setWindowTitle(tr("Forkswap"));
+  msgBox.setText(msg);
+  msgBox.setStandardButtons(QMessageBox::Ok);
+  msgBox.setModal(true);
+
+  msgBox.setStyleSheet(R"(
+    QMessageBox {
+      background-color: #1a1a1a;
+      color: white;
+      min-width: 800px;
+    }
+    QLabel {
+      font-size: 36px;
+      color: white;
+      min-width: 600px;
+    }
+    QPushButton {
+      font-size: 32px;
+      padding: 16px 32px;
+      background-color: #404040;
+      border-radius: 6px;
+      min-width: 180px;
+      min-height: 60px;
+    }
+    QPushButton:pressed {
+      background-color: #606060;
+    }
+  )");
+
+  msgBox.exec();
 }
 
 void ForkSwapPanel::back() {
