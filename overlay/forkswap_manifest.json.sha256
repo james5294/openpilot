@@ -3,7 +3,7 @@
   "selfdrive/ui/forkswap_client.py": "3de292840dffedc05e9bf7beef54e65bc64a1cb8df0e3a9d5aabb3e584994629",
   "selfdrive/ui/qt/home.cc": "dcfe7ff12a4c719e2cbc693ad77cfe075f77aac172a5103d9a4e2e439cea19e9",
   "selfdrive/ui/qt/home.h": "0bf7547402c82876bcaf3486fe53fb06afe6a866374c793a60ce008ae208447e",
-  "selfdrive/ui/qt/offroad/forkswap_panel.cc": "114550eef34aa04b3ececafb71c71932d1f2ed0ef86cfbc8029d5dc64a89996c",
-  "selfdrive/ui/qt/offroad/forkswap_panel.h": "864309094aef618f6232ae67b4577feb510e873ad802c6edd8a8417f438fc5ed",
+  "selfdrive/ui/qt/offroad/forkswap_panel.cc": "2688a9c9c695940f1af46bc6c6f3e7ed967aae81fe4ffa0d822b22353efc023e",
+  "selfdrive/ui/qt/offroad/forkswap_panel.h": "aecf42bffc0ee9c595021258eeecdead72f3fed968263d8d5f7b35d85b661a28",
   "system/manager/process_config.py": "a91f86e6618c8c4c3b84024520ad582397b1525343b7f2362fc4e5e31b8b48cf"
 }
