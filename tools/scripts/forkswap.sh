@@ -1217,18 +1217,49 @@ ensure_fork_swap_script() {
 }
 
 sync_overlay_files() {
-  if [ ! -f "$OVERLAY_MANIFEST" ]; then
-    log_error "Overlay manifest missing: $OVERLAY_MANIFEST"
+  # Check for asset tarball first
+  if [ ! -f "$ASSET_TARBALL" ]; then
+    log_error "Asset tarball missing: $ASSET_TARBALL"
     return 1
   fi
-  if [ ! -f "$OVERLAY_HASHES" ]; then
-    log_error "Overlay hash manifest missing: $OVERLAY_HASHES"
+
+  # Extract tarball to temp directory
+  local extract_dir
+  extract_dir=$(mktemp -d /tmp/forkswap_extract.XXXXXX)
+  if [ -z "$extract_dir" ]; then
+    log_error "Unable to create temp directory for overlay extraction."
+    return 1
+  fi
+
+  if ! tar -xzf "$ASSET_TARBALL" -C "$extract_dir" 2>/dev/null; then
+    log_error "Failed to extract overlay asset tarball."
+    rm -rf "$extract_dir"
+    return 1
+  fi
+
+  # Load manifests from extracted directory
+  local manifest_file="$extract_dir/overlay/forkswap_manifest.json"
+  local hashes_file="$extract_dir/overlay/forkswap_manifest.json.sha256"
+
+  if [ ! -f "$manifest_file" ]; then
+    manifest_file="$OVERLAY_MANIFEST"
+  fi
+  if [ ! -f "$hashes_file" ]; then
+    hashes_file="$OVERLAY_HASHES"
+  fi
+
+  if [ ! -f "$manifest_file" ]; then
+    log_error "Overlay manifest missing after extraction."
+    rm -rf "$extract_dir"
     return 1
   fi
 
   local manifest_json hashes_json
-  manifest_json=$(cat "$OVERLAY_MANIFEST") || return 1
-  hashes_json=$(cat "$OVERLAY_HASHES") || return 1
+  manifest_json=$(cat "$manifest_file") || { rm -rf "$extract_dir"; return 1; }
+  hashes_json=""
+  if [ -f "$hashes_file" ]; then
+    hashes_json=$(cat "$hashes_file") || true
+  fi
 
   local version
   version=$(printf '%s' "$manifest_json" | jq -r '.version // "unknown"')
@@ -1236,7 +1267,9 @@ sync_overlay_files() {
   local count
   count=$(printf '%s' "$manifest_json" | jq '.files | length')
   if [ "$count" -eq 0 ]; then
-    log_error "Overlay manifest has no files."; return 1
+    log_error "Overlay manifest has no files."
+    rm -rf "$extract_dir"
+    return 1
   fi
 
   log_info "Starting overlay sync: $count items (version $version)"
@@ -1251,7 +1284,7 @@ sync_overlay_files() {
     rel=$(printf '%s' "$manifest_json" | jq -r ".files[$idx].source")
     dest=$(printf '%s' "$manifest_json" | jq -r ".files[$idx].destination")
     type=$(printf '%s' "$manifest_json" | jq -r ".files[$idx].type")
-    src="$REPO_ROOT/$rel"
+    src="$extract_dir/$dest"
     total_items=$((total_items + 1))
 
     if [ -z "$dest" ] || [[ "$dest" == /* ]] || [[ "$dest" == *".."* ]]; then
@@ -1320,6 +1353,8 @@ sync_overlay_files() {
   if [ "$total_items" -gt 0 ]; then
     success_rate=$((success_count * 100 / total_items))
   fi
+
+  rm -rf "$extract_dir"
 
   if [ "$success_rate" -ge 75 ]; then
     log_info "Overlay sync completed: $success_count/$total_items succeeded (${success_rate}%), $failed_count failed, $warned_count warnings, ${sync_duration}s"
