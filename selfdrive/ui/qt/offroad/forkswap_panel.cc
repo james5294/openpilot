@@ -446,15 +446,15 @@ void ForkSwapPanel::applyStatus(const QJsonObject &status_obj) {
         repair_overlay_control->setEnabled(false);
       }
     } else {
-      QString message;
+      QString overlay_message;
       if (overlay_state == "repair_failed") {
-        message = tr("Overlay repair failed. Tap REPAIR to retry.");
+        overlay_message = tr("Overlay repair failed. Tap REPAIR to retry.");
       } else if (overlay_state == "repair_incomplete") {
-        message = tr("Overlay may be incomplete. Tap REPAIR to attempt a fix.");
+        overlay_message = tr("Overlay may be incomplete. Tap REPAIR to attempt a fix.");
       } else {
-        message = tr("Overlay warning: %1").arg(friendlyForkText(overlay_state));
+        overlay_message = tr("Overlay warning: %1").arg(friendlyForkText(overlay_state));
       }
-      overlay_label->setText(message);
+      overlay_label->setText(overlay_message);
       overlay_label->setStyleSheet("font-size: 34px; color: #FFA726;");
       overlay_label->setVisible(true);
       if (repair_overlay_control) {
