@@ -34,6 +34,7 @@ from openpilot.selfdrive.forkswap.types import (
 
 
 DEFAULT_SCRIPT_PATH = os.path.join(BASEDIR, "tools", "scripts", "forkswap.sh")
+DEFAULT_OPENPILOT_DIR = "/data/openpilot"
 DEFAULT_FORKS_DIR = "/data/forks"
 DEFAULT_CURRENT_FORK_FILE = "/data/current_fork.txt"
 DEFAULT_LOG_FILE = "/data/fork_swap.log"
@@ -83,7 +84,14 @@ class ForkSwapService:
       raise FileNotFoundError(f"forkswap script not found at {self.script_path}")
 
     self.status = ForkSwapStatus(message="Forkswap service initialized.")
+    self.overlay_status = "ok"
+    self._set_overlay_status("ok")
     self.last_request_id: Optional[str] = None
+
+    try:
+      self._verify_overlay()
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+      cloudlog.error("ForkSwapService overlay verification failed: %s", exc)
 
   # ------------------------------------------------------------------------- #
   # Public API
@@ -98,7 +106,7 @@ class ForkSwapService:
         self.status.update(
           state=ForkSwapState.ERROR,
           message=f"Unhandled service error: {exc}",
-          detail={"exception": repr(exc)},
+          detail=self._detail_with_overlay({"exception": repr(exc)}),
         )
         self._publish_status()
         self._increment_error_counter()
@@ -142,12 +150,14 @@ class ForkSwapService:
     start_time = time.time()
     duration = 0.0
     success = False
+    if request.action == "repair_overlay":
+      self._set_overlay_status("repairing")
     self.status.update(
       state=ForkSwapState.RUNNING,
       action=request.action,
       request_id=request.request_id,
       message="Processing request.",
-      detail={"request": asdict(request)},
+      detail=self._detail_with_overlay({"request": asdict(request)}),
       log_tail=[],
       started_at=start_time,
       duration=None,
@@ -169,7 +179,7 @@ class ForkSwapService:
         self.status.update(
           state=ForkSwapState.SUCCESS,
           message=f"Found {len(forks)} fork(s).",
-          detail={"forks": [fork.to_dict() for fork in forks]},
+          detail=self._detail_with_overlay({"forks": [fork.to_dict() for fork in forks]}),
           duration=time.time() - start_time,
         )
         success = True
@@ -183,7 +193,7 @@ class ForkSwapService:
         self.status.update(
           state=ForkSwapState.SUCCESS,
           message="Status refreshed.",
-          detail={"forks": [fork.to_dict() for fork in forks], "current_fork": active},
+          detail=self._detail_with_overlay({"forks": [fork.to_dict() for fork in forks], "current_fork": active}),
           duration=time.time() - start_time,
         )
         success = True
@@ -209,62 +219,88 @@ class ForkSwapService:
         success = True
         duration = time.time() - start_time
         cloudlog.info("ForkSwapService success %s (%.2fs)", request.action, time.time() - start_time)
+        overlay_state = self.overlay_status
+        if request.action == "repair_overlay":
+          overlay_state = "ok"
+          self._set_overlay_status(overlay_state)
+        detail_payload = {
+          "request": asdict(request),
+          "stdout": stdout,
+          "stderr": stderr,
+          "returncode": returncode,
+          "overlay_status": overlay_state,
+        }
         self.status.update(
           state=ForkSwapState.SUCCESS,
           message=msg,
-          detail={
-            "request": asdict(request),
-            "stdout": stdout,
-            "stderr": stderr,
-            "returncode": returncode,
-          },
+          detail=self._detail_with_overlay(detail_payload),
           log_tail=log_tail,
           duration=time.time() - start_time,
         )
+        self._refresh_assets_bundle()
       else:
         msg = f"{request.action.capitalize()} failed (return code {returncode})."
         cloudlog.error("ForkSwapService failure %s returncode=%s", request.action, returncode)
         duration = time.time() - start_time
+        overlay_state = self.overlay_status
+        if request.action == "repair_overlay":
+          overlay_state = "repair_failed"
+          self._set_overlay_status(overlay_state)
+        detail_payload = {
+          "request": asdict(request),
+          "stdout": stdout,
+          "stderr": stderr,
+          "returncode": returncode,
+          "overlay_status": overlay_state,
+        }
         self.status.update(
           state=ForkSwapState.ERROR,
           message=msg,
-          detail={
-            "request": asdict(request),
-            "stdout": stdout,
-            "stderr": stderr,
-            "returncode": returncode,
-          },
+          detail=self._detail_with_overlay(detail_payload),
           log_tail=log_tail,
           duration=time.time() - start_time,
         )
     except subprocess.TimeoutExpired as exc:
       cloudlog.error("ForkSwapService timeout %s after %.0fs", request.action, self.timeout)
       duration = time.time() - start_time
+      overlay_state = self.overlay_status
+      if request.action == "repair_overlay":
+        overlay_state = "repair_failed"
+        self._set_overlay_status(overlay_state)
       self.status.update(
         state=ForkSwapState.ERROR,
         message=f"{request.action.capitalize()} timed out after {self.timeout:.0f}s.",
-        detail={"request": asdict(request), "exception": repr(exc)},
+        detail=self._detail_with_overlay({"request": asdict(request), "exception": repr(exc), "overlay_status": overlay_state}),
         duration=time.time() - start_time,
       )
     except FileNotFoundError as exc:
       cloudlog.error("ForkSwapService missing resource for %s: %s", request.action, exc)
       duration = time.time() - start_time
+      overlay_state = self.overlay_status
+      if request.action == "repair_overlay":
+        overlay_state = "repair_failed"
+        self._set_overlay_status(overlay_state)
       self.status.update(
         state=ForkSwapState.ERROR,
         message=f"Required resource missing: {exc}",
-        detail={"request": asdict(request)},
+        detail=self._detail_with_overlay({"request": asdict(request), "overlay_status": overlay_state}),
         duration=time.time() - start_time,
       )
     except Exception as exc:  # pylint: disable=broad-exception-caught
       cloudlog.exception("ForkSwapService unhandled exception during %s", request.action)
       duration = time.time() - start_time
+      overlay_state = self.overlay_status
+      if request.action == "repair_overlay":
+        overlay_state = "repair_failed"
+        self._set_overlay_status(overlay_state)
       self.status.update(
         state=ForkSwapState.ERROR,
         message=f"Unhandled exception during {request.action}: {exc}",
-        detail={
+        detail=self._detail_with_overlay({
           "request": asdict(request),
           "exception": repr(exc),
-        },
+          "overlay_status": overlay_state,
+        }),
         duration=time.time() - start_time,
       )
     finally:
@@ -324,6 +360,8 @@ class ForkSwapService:
         return "Invalid rename target provided."
       if str(new_name).strip().lower() == request.fork.strip().lower():
         return "New fork name must be different from the current name."
+    if request.action == "repair_overlay":
+      return None
 
     return None
 
@@ -334,7 +372,7 @@ class ForkSwapService:
       action=request.action,
       request_id=request.request_id,
       message=message,
-      detail={"request": payload},
+      detail=self._detail_with_overlay({"request": payload}),
     )
     self._record_outcome(False, request, 0.0)
     self._publish_status()
@@ -401,30 +439,43 @@ class ForkSwapService:
     except (UnknownKeyName, AttributeError):
       pass
 
-  def _build_env(self, request: ForkSwapRequest) -> Dict[str, str]:
+  PATH_ENV_MAPPING: Dict[str, str] = {
+    "openpilot_dir": "OPENPILOT_DIR",
+    "forks_dir": "FORKS_DIR",
+    "params_path": "PARAMS_PATH",
+    "current_fork_file": "CURRENT_FORK_FILE",
+    "log_file": "LOG_FILE",
+    "lock_path": "FORKSWAP_LOCK_PATH",
+  }
+
+  def _apply_paths(self, env: Dict[str, str], paths: Dict[str, Any]) -> None:
+    for key, env_key in self.PATH_ENV_MAPPING.items():
+      if key in paths and paths[key]:
+        env[env_key] = str(paths[key])
+
+  def _base_env(self) -> Dict[str, str]:
     env: Dict[str, str] = dict(os.environ)
     env.setdefault("TERM", "dumb")
-    if self.allow_nonroot or request.options.get("allow_nonroot") is True:
+    if self.allow_nonroot:
       env["FORKSWAP_ALLOW_NONROOT"] = "1"
     env.setdefault("FORKSWAP_REBOOT_CMD", ":")
 
-    # Apply base path overrides (use upper-case env names used by forkswap.sh)
-    paths = dict(self.base_paths)
+    self._apply_paths(env, self.base_paths)
+
+    env.update({str(k): str(v) for k, v in self.env_overrides.items()})
+    return env
+
+  def _build_env(self, request: ForkSwapRequest) -> Dict[str, str]:
+    env = self._base_env()
+
+    if request.options.get("allow_nonroot") is True:
+      env["FORKSWAP_ALLOW_NONROOT"] = "1"
+    elif not self.allow_nonroot and "FORKSWAP_ALLOW_NONROOT" in env:
+      env.pop("FORKSWAP_ALLOW_NONROOT", None)
+
     request_paths = request.options.get("paths")
     if isinstance(request_paths, dict):
-      paths.update(request_paths)
-
-    path_mapping = {
-      "openpilot_dir": "OPENPILOT_DIR",
-      "forks_dir": "FORKS_DIR",
-      "params_path": "PARAMS_PATH",
-      "current_fork_file": "CURRENT_FORK_FILE",
-      "log_file": "LOG_FILE",
-      "lock_path": "FORKSWAP_LOCK_PATH",
-    }
-    for key, env_key in path_mapping.items():
-      if key in paths and paths[key]:
-        env[env_key] = paths[key]
+      self._apply_paths(env, request_paths)
 
     if request.options.get("reboot") is True:
       env["FORKSWAP_REBOOT_CMD"] = request.options.get("reboot_cmd", "reboot")
@@ -432,8 +483,76 @@ class ForkSwapService:
     if isinstance(request.options.get("env"), dict):
       env.update({str(k): str(v) for k, v in request.options["env"].items()})
 
-    env.update({str(k): str(v) for k, v in self.env_overrides.items()})
+    if request.options.get("skip_overlay") is True or request.action in {"status", "list"}:
+      env["FORKSWAP_SKIP_OVERLAY"] = "1"
+    else:
+      env.pop("FORKSWAP_SKIP_OVERLAY", None)
     return env
+
+  def _set_overlay_status(self, value: str) -> None:
+    self.overlay_status = value
+    self.status.overlay_status = value
+    if isinstance(self.status.detail, dict):
+      self.status.detail["overlay_status"] = value
+    else:
+      self.status.detail = {"overlay_status": value}
+
+  def _detail_with_overlay(self, base: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    detail: Dict[str, Any] = dict(base or {})
+    detail["overlay_status"] = self.overlay_status
+    return detail
+
+  def _refresh_assets_bundle(self) -> None:
+    env = self._base_env()
+    env["FORKSWAP_SKIP_MAIN"] = "1"
+    env["FORKSWAP_DISABLE_UPDATE_CHECK"] = "1"
+    env["FORKSWAP_SKIP_OVERLAY"] = "1"
+    try:
+      result = subprocess.run(
+        [self.script_path, "--refresh-assets"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+      )
+      if result.stdout.strip():
+        cloudlog.debug("ForkSwapService asset refresh output: %s", result.stdout.strip())
+    except subprocess.CalledProcessError as exc:
+      cloudlog.error("ForkSwapService asset refresh failed (returncode=%s): %s", exc.returncode, exc.stderr.strip())
+
+  def _verify_overlay(self) -> None:
+    openpilot_dir = Path(self.base_paths.get("openpilot_dir", DEFAULT_OPENPILOT_DIR))
+    marker = openpilot_dir / "selfdrive" / "forkswap" / "__init__.py"
+    if marker.exists():
+      self._refresh_assets_bundle()
+      self._set_overlay_status("ok")
+      return
+
+    cloudlog.warning("Forkswap overlay missing; attempting repair.")
+    env = self._base_env()
+    env["FORKSWAP_SKIP_MAIN"] = "1"
+    env["FORKSWAP_DISABLE_UPDATE_CHECK"] = "1"
+
+    try:
+      result = subprocess.run(
+        [self.script_path, "--repair-overlay"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+      )
+      cloudlog.info("Overlay repair output: %s", result.stdout.strip())
+    except subprocess.CalledProcessError as exc:
+      cloudlog.error("Overlay repair failed (returncode=%s): %s", exc.returncode, exc.stderr.strip())
+      self._set_overlay_status("repair_failed")
+      return
+
+    if not marker.exists():
+      cloudlog.error("Overlay repair completed but marker still missing at %s", marker)
+      self._set_overlay_status("repair_incomplete")
+    else:
+      cloudlog.info("Overlay repair successful; marker restored at %s", marker)
+      self._set_overlay_status("ok")
 
   def _run_script(
     self,
@@ -443,11 +562,15 @@ class ForkSwapService:
     progress_interval: float = 1.0,
   ) -> Tuple[str, str, int]:
     input_lines = self._build_input_sequence(request, env)
-    command_input = "\n".join(input_lines) + "\n"
+    command_input = "\n".join(input_lines) + "\n" if input_lines else None
+    cmd = ["/bin/bash", self.script_path]
+    if request.action == "repair_overlay":
+      cmd.append("--repair-overlay")
+      command_input = None
     timeout = float(request.options.get("timeout", self.timeout))
 
     proc = subprocess.Popen(
-      ["/bin/bash", self.script_path],
+      cmd,
       stdin=subprocess.PIPE,
       stdout=subprocess.PIPE,
       stderr=subprocess.PIPE,
@@ -455,17 +578,18 @@ class ForkSwapService:
       env=env,
     )
 
-    try:
-      if proc.stdin:
-        try:
-          proc.stdin.write(command_input)
-          proc.stdin.flush()
-        except BrokenPipeError:
-          pass
-        finally:
-          proc.stdin.close()
-    except OSError:
-      pass
+    if command_input is not None:
+      try:
+        if proc.stdin:
+          try:
+            proc.stdin.write(command_input)
+            proc.stdin.flush()
+          except BrokenPipeError:
+            pass
+          finally:
+            proc.stdin.close()
+      except OSError:
+        pass
 
     deadline = time.time() + timeout
     progress_interval = max(0.25, progress_interval)
@@ -599,6 +723,9 @@ class ForkSwapService:
       lines.extend(["Rename", fork_name, str(new_name), "Exit"])
       return lines
 
+    if request.action == "repair_overlay":
+      return []
+
     raise ValueError(f"Unsupported interactive action '{request.action}'")
 
   # ------------------------------------------------------------------------- #
@@ -612,6 +739,11 @@ class ForkSwapService:
     return raw
 
   def _publish_status(self) -> None:
+    if not isinstance(self.status.detail, dict):
+      self.status.detail = {}
+    if self.status.detail.get("overlay_status") != self.overlay_status:
+      self.status.detail = self._detail_with_overlay(dict(self.status.detail))
+    self.status.overlay_status = self.overlay_status
     try:
       self.params.put_nonblocking("ForkSwapStatus", self.status.to_json())
     except UnknownKeyName:

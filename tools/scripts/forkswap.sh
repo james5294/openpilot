@@ -43,6 +43,21 @@ PARAM_BACKUP_DIR_NAME="params"
 LOCK_PATH=""
 LOCK_ROOT_DEFAULT="$FORKS_DIR/.forkswap.lock"
 
+FORKS_PARENT=$(cd "$(dirname "$FORKS_DIR")" >/dev/null 2>&1 && pwd || echo "$(dirname "$FORKS_DIR")")
+ASSETS_DIR=${ASSETS_DIR:-$FORKS_PARENT/forkswap_assets}
+ASSET_TARBALL="$ASSETS_DIR/overlay.tar.gz"
+ASSET_TARBALL_SHA="$ASSETS_DIR/overlay.tar.gz.sha256"
+ASSET_MANIFEST_COPY="$ASSETS_DIR/forkswap_manifest.json"
+ASSET_HASHES_COPY="$ASSETS_DIR/forkswap_manifest.json.sha256"
+ASSET_SCRIPT="$ASSETS_DIR/forkswap.sh"
+ASSETS_VERSION_FILE="$ASSETS_DIR/version.txt"
+ASSETS_README="$ASSETS_DIR/README.txt"
+ASSETS_METADATA_FILE="$ASSETS_DIR/metadata.json"
+
+REPAIR_OVERLAY_ONLY=0
+REFRESH_ASSETS_ONLY=0
+INITIAL_OVERLAY_STATUS=0
+
 UPDATE_AVAILABLE=0
 OPERATION_IN_PROGRESS=0
 ACTIVE_OPERATION_PREVIOUS_FORK=""
@@ -91,6 +106,46 @@ REPO_ROOT=$(resolve_repo_root)
 
 OVERLAY_MANIFEST="$REPO_ROOT/overlay/forkswap_manifest.json"
 OVERLAY_HASHES="$REPO_ROOT/overlay/forkswap_manifest.json.sha256"
+
+parse_cli_args() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --repair-overlay)
+        REPAIR_OVERLAY_ONLY=1
+        export FORKSWAP_SKIP_MAIN=1
+        shift
+        ;;
+      --refresh-assets)
+        REFRESH_ASSETS_ONLY=1
+        export FORKSWAP_SKIP_MAIN=1
+        export FORKSWAP_SKIP_OVERLAY=1
+        shift
+        ;;
+      -h|--help)
+        cat <<'EOF'
+Usage: forkswap.sh [--repair-overlay] [--refresh-assets]
+
+Options:
+  --repair-overlay   Reapply the ForkSwap overlay using the asset bundle and exit.
+  --refresh-assets   Rebuild the shared ForkSwap asset repository and exit.
+  -h, --help         Show this message and exit.
+EOF
+        exit 0
+        ;;
+      --)
+        shift
+        break
+        ;;
+      -*)
+        printf "Unknown option: %s\n" "$1" >&2
+        exit 1
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+}
 
 is_command_forced_missing() {
   local targets="${FORKSWAP_SIMULATE_MISSING_CMD:-}"
@@ -144,6 +199,201 @@ persist_overlay_metadata() {
     base=$(basename "$src")
     cp "$src" "$target_overlay_dir/$base" 2>/dev/null || true
   done
+}
+
+initialize_asset_repository() {
+  local managed_fork
+  managed_fork="${CURRENT_FORK_NAME:-}"
+  if [ -z "$managed_fork" ] && [ -f "$CURRENT_FORK_FILE" ]; then
+    managed_fork=$(tr -d '\r\n' <"$CURRENT_FORK_FILE")
+  fi
+  if [ -z "$managed_fork" ]; then
+    managed_fork="$DEFAULT_FORK_NAME"
+  fi
+
+  if [ ! -f "$OVERLAY_MANIFEST" ]; then
+    log_error "Overlay manifest missing: $OVERLAY_MANIFEST"
+    return 1
+  fi
+
+  local manifest_hash hashes_hash overlay_signature overlay_lines
+  manifest_hash=$(sha256sum "$OVERLAY_MANIFEST" | awk '{print $1}')
+  if [ -f "$OVERLAY_HASHES" ]; then
+    hashes_hash=$(sha256sum "$OVERLAY_HASHES" | awk '{print $1}')
+    overlay_lines=$(jq -r 'to_entries | sort_by(.key) | map("\(.key)=\(.value // \"null\")") | join("\n")' "$OVERLAY_HASHES" 2>/dev/null || printf '')
+    if [ -n "$overlay_lines" ]; then
+      overlay_signature=$(printf '%s\n' "$overlay_lines" | sha256sum | awk '{print $1}')
+    else
+      overlay_signature="$hashes_hash"
+    fi
+  else
+    hashes_hash="missing"
+    overlay_signature="missing"
+  fi
+
+  local git_head="nogit"
+  if command -v git >/dev/null 2>&1 && git -C "$REPO_ROOT" rev-parse HEAD >/dev/null 2>&1; then
+    git_head=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo "nogit")
+  fi
+
+  local remote_hash="noremote"
+  if command -v git >/dev/null 2>&1; then
+    local remote_url
+    remote_url=$(git -C "$REPO_ROOT" config --get remote.origin.url 2>/dev/null || printf '')
+    if [ -n "$remote_url" ]; then
+      remote_hash=$(printf '%s' "$remote_url" | sha256sum | awk '{print $1}')
+    fi
+  fi
+
+  local desired_version="${SCRIPT_VERSION}:${manifest_hash}:${hashes_hash}:${overlay_signature}:${git_head}:${remote_hash}:${managed_fork}"
+
+  local rebuild=0
+  if [ ! -d "$ASSETS_DIR" ]; then
+    if ! mkdir -p "$ASSETS_DIR"; then
+      log_error "Unable to create asset directory at $ASSETS_DIR."
+      return 1
+    fi
+    rebuild=1
+  fi
+
+  if [ $rebuild -eq 0 ]; then
+    local stored_version=""
+    if [ -f "$ASSETS_VERSION_FILE" ]; then
+      stored_version=$(cat "$ASSETS_VERSION_FILE" 2>/dev/null)
+    fi
+    local stored_signature=""
+    local stored_fork=""
+    if [ -f "$ASSETS_METADATA_FILE" ]; then
+      stored_signature=$(jq -r '.signature // empty' "$ASSETS_METADATA_FILE" 2>/dev/null || printf '')
+      stored_fork=$(jq -r '.managed_fork // empty' "$ASSETS_METADATA_FILE" 2>/dev/null || printf '')
+    fi
+    if [ "$stored_version" != "$desired_version" ] || [ "$stored_signature" != "$desired_version" ] || [ -n "$stored_fork" ] && [ "$stored_fork" != "$managed_fork" ]; then
+      rebuild=1
+    elif [ ! -f "$ASSET_TARBALL" ] || [ ! -f "$ASSET_TARBALL_SHA" ] || [ ! -f "$ASSET_SCRIPT" ]; then
+      rebuild=1
+    elif ! (cd "$ASSETS_DIR" >/dev/null 2>&1 && sha256sum -c "$(basename "$ASSET_TARBALL_SHA")" >/dev/null 2>&1); then
+      log_warn "Forkswap asset tarball checksum mismatch. Rebuilding asset repository."
+      rebuild=1
+    fi
+  fi
+
+  if [ $rebuild -eq 0 ]; then
+    return 0
+  fi
+
+  log_info "Building forkswap asset repository (managed fork: $managed_fork)."
+
+  local tmp_dir bundle_root rel_src dest type abs_src dest_path
+  tmp_dir=$(mktemp -d /tmp/forkswap_assets.XXXXXX)
+  if [ -z "$tmp_dir" ]; then
+    log_error "Unable to allocate temporary directory for asset build."
+    return 1
+  fi
+
+  bundle_root="$tmp_dir/bundle"
+  mkdir -p "$bundle_root"
+
+  while IFS=$'\t' read -r rel_src dest type; do
+    [ -n "$rel_src" ] || continue
+    abs_src="$REPO_ROOT/$rel_src"
+    dest_path="$bundle_root/$dest"
+
+    case "$type" in
+      directory)
+        if [ ! -d "$abs_src" ]; then
+          log_error "Overlay directory missing during asset build: $abs_src"
+          rm -rf "$tmp_dir"
+          return 1
+        fi
+        rm -rf "$dest_path"
+        mkdir -p "$dest_path"
+        if ! cp -a "$abs_src/." "$dest_path/"; then
+          log_error "Failed to stage overlay directory $rel_src"
+          rm -rf "$tmp_dir"
+          return 1
+        fi
+        ;;
+      file)
+        if [ ! -f "$abs_src" ]; then
+          log_error "Overlay file missing during asset build: $abs_src"
+          rm -rf "$tmp_dir"
+          return 1
+        fi
+        mkdir -p "$(dirname "$dest_path")"
+        if ! cp "$abs_src" "$dest_path"; then
+          log_error "Failed to stage overlay file $rel_src"
+          rm -rf "$tmp_dir"
+          return 1
+        fi
+        ;;
+      *)
+        log_error "Unknown overlay type '$type' in manifest."
+        rm -rf "$tmp_dir"
+        return 1
+        ;;
+    esac
+  done < <(jq -r '.files[] | "\(.source)\t\(.destination)\t\(.type)"' "$OVERLAY_MANIFEST")
+
+  if ! (cd "$bundle_root" && tar -czf "$tmp_dir/overlay.tar.gz" .); then
+    log_error "Failed to package overlay asset bundle."
+    rm -rf "$tmp_dir"
+    return 1
+  fi
+
+  if ! (cd "$tmp_dir" && sha256sum overlay.tar.gz > overlay.tar.gz.sha256); then
+    log_error "Unable to compute checksum for overlay asset bundle."
+    rm -rf "$tmp_dir"
+    return 1
+  fi
+
+  if ! cp "$tmp_dir/overlay.tar.gz" "$ASSET_TARBALL"; then
+    log_error "Unable to install overlay asset bundle."
+    rm -rf "$tmp_dir"
+    return 1
+  fi
+
+  if ! cp "$tmp_dir/overlay.tar.gz.sha256" "$ASSET_TARBALL_SHA"; then
+    log_error "Unable to install overlay asset checksum."
+    rm -rf "$tmp_dir"
+    return 1
+  fi
+
+  if ! cp "$SCRIPT_PATH" "$ASSET_SCRIPT"; then
+    log_error "Unable to copy forkswap.sh into asset repository."
+    rm -rf "$tmp_dir"
+    return 1
+  fi
+  chmod +x "$ASSET_SCRIPT" 2>/dev/null || true
+
+  cp "$OVERLAY_MANIFEST" "$ASSET_MANIFEST_COPY" 2>/dev/null || true
+  cp "$OVERLAY_HASHES" "$ASSET_HASHES_COPY" 2>/dev/null || true
+
+  printf '%s\n' "$desired_version" > "$ASSETS_VERSION_FILE"
+  local generated_at
+  generated_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date)
+  cat >"$ASSETS_METADATA_FILE" <<EOF
+{
+  "signature": "$desired_version",
+  "script_version": "$SCRIPT_VERSION",
+  "managed_fork": "$managed_fork",
+  "manifest_sha": "$manifest_hash",
+  "hashes_sha": "$hashes_hash",
+  "overlay_hash_signature": "$overlay_signature",
+  "git_head": "$git_head",
+  "git_remote_hash": "$remote_hash",
+  "generated_at": "$generated_at"
+}
+EOF
+  {
+    printf 'Forkswap asset repository generated on %s\n' "$(date)"
+    printf 'Script version: %s\n' "$SCRIPT_VERSION"
+    printf 'Managed fork: %s\n' "$managed_fork"
+    printf 'Overlay manifest hash: %s\n' "$manifest_hash"
+  } > "$ASSETS_README"
+
+  rm -rf "$tmp_dir"
+  log_info "Forkswap asset repository initialized at $ASSETS_DIR (signature $desired_version)."
+  return 0
 }
 
 acquire_lock() {
@@ -931,20 +1181,29 @@ ensure_fork_swap_script() {
 
   mkdir -p "$target_dir"
 
-  if cp "$SCRIPT_PATH" "$target_script"; then
-    chmod +x "$target_script"
+  if ! initialize_asset_repository; then
+    log_warn "Unable to refresh asset repository before copying forkswap.sh; falling back to local script."
+  fi
+
+  local source_script="$ASSET_SCRIPT"
+  if [ ! -f "$source_script" ]; then
+    source_script="$SCRIPT_PATH"
+  fi
+
+  if [ -f "$target_script" ] && cmp -s "$source_script" "$target_script" 2>/dev/null; then
+    chmod +x "$target_script" 2>/dev/null || true
+    log_info "forkswap.sh already current in this fork."
+    return 0
+  fi
+
+  if cp "$source_script" "$target_script"; then
+    chmod +x "$target_script" 2>/dev/null || true
     log_info "forkswap.sh copied/updated in the current fork."
     return 0
   fi
 
-  if [ -f "$target_script" ] && cmp -s "$SCRIPT_PATH" "$target_script" 2>/dev/null; then
-    chmod +x "$target_script" 2>/dev/null || true
-    log_info "forkswap.sh already up to date in the current fork."
-    return 0
-  fi
-
-  log_error "Failed to copy forkswap.sh into the current fork."
-  return 1
+  log_warn "Unable to update forkswap.sh in the current fork; continuing with existing version."
+  return 0
 }
 
 sync_overlay_files() {
@@ -1174,11 +1433,20 @@ initialize() {
   check_required_commands
   ensure_directories
   read_current_fork
+  if ! initialize_asset_repository; then
+    log_error "Failed to initialize forkswap asset repository."
+    exit 1
+  fi
   ensure_managed_openpilot
   read_current_fork
 
-  if ! sync_overlay_files; then
+  if [ "${FORKSWAP_SKIP_OVERLAY:-0}" = "1" ]; then
+    INITIAL_OVERLAY_STATUS=0
+  elif ! sync_overlay_files; then
     log_error "Failed to sync forkswap overlay during initialization."
+    INITIAL_OVERLAY_STATUS=1
+  else
+    INITIAL_OVERLAY_STATUS=0
   fi
 
   if [ "${FORKSWAP_HOLD_LOCK:-0}" = "1" ]; then
@@ -1191,12 +1459,20 @@ initialize() {
 trap cleanup_on_interrupt INT TERM
 trap release_lock EXIT
 
+parse_cli_args "$@"
+
 if [ "${FORKSWAP_ALLOW_NONROOT:-0}" != "1" ] && [ "$EUID" -ne 0 ]; then
   printf "This script must be run as root.\n"
   exit 1
 fi
 
 initialize
+
+if [ "$REPAIR_OVERLAY_ONLY" -eq 1 ]; then
+  exit "$INITIAL_OVERLAY_STATUS"
+elif [ "$REFRESH_ASSETS_ONLY" -eq 1 ]; then
+  exit 0
+fi
 
 if [ "${FORKSWAP_DISABLE_UPDATE_CHECK:-0}" != "1" ]; then
   check_for_script_updates

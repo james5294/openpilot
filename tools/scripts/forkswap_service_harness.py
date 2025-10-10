@@ -89,6 +89,7 @@ def main() -> None:
     current_fork_file = tmp_root / "current_fork.txt"
     log_file = tmp_root / "forkswap.log"
     lock_path = tmp_root / "lock"
+    assets_dir = tmp_root / "forkswap_assets"
 
     openpilot_dir.mkdir(parents=True, exist_ok=True)
     forks_dir.mkdir(parents=True, exist_ok=True)
@@ -105,18 +106,41 @@ def main() -> None:
 
     params = FakeParams()
     params.put("IsOffroad", "1")
-    service = ForkSwapService(
-      params=params,
-      base_paths={
-        "openpilot_dir": openpilot_dir.as_posix(),
-        "forks_dir": forks_dir.as_posix(),
-        "params_path": params_dir.as_posix(),
-        "current_fork_file": current_fork_file.as_posix(),
-        "log_file": log_file.as_posix(),
-        "lock_path": lock_path.as_posix(),
-      },
-      env_overrides={"FORKSWAP_ALLOW_LOCAL_URLS": "1"},
-    )
+    def make_service() -> ForkSwapService:
+      return ForkSwapService(
+        params=params,
+        base_paths={
+          "openpilot_dir": openpilot_dir.as_posix(),
+          "forks_dir": forks_dir.as_posix(),
+          "params_path": params_dir.as_posix(),
+          "current_fork_file": current_fork_file.as_posix(),
+          "log_file": log_file.as_posix(),
+          "lock_path": lock_path.as_posix(),
+        },
+        env_overrides={"FORKSWAP_ALLOW_LOCAL_URLS": "1"},
+      )
+
+    service = make_service()
+    metadata_file = assets_dir / "metadata.json"
+    ensure(metadata_file.is_file(), "Asset metadata was not created during initialization.")
+    asset_meta = json.loads(metadata_file.read_text(encoding="utf-8"))
+    ensure(asset_meta.get("managed_fork") == DEFAULT_MAIN_FORK,
+           f"Managed fork in asset metadata mismatch (expected {DEFAULT_MAIN_FORK}, got {asset_meta.get('managed_fork')}).")
+    ensure(asset_meta.get("signature"), "Asset metadata missing signature field.")
+
+    # Simulate managed fork change and ensure asset repository metadata updates
+    current_fork_file.write_text("alt_manager\n", encoding="utf-8")
+    service = make_service()
+    asset_meta = json.loads(metadata_file.read_text(encoding="utf-8"))
+    ensure(asset_meta.get("managed_fork") == "alt_manager",
+           "Asset metadata did not update after managed fork change.")
+
+    # Restore default managed fork before proceeding with rest of harness
+    current_fork_file.write_text(f"{DEFAULT_MAIN_FORK}\n", encoding="utf-8")
+    service = make_service()
+    asset_meta = json.loads(metadata_file.read_text(encoding="utf-8"))
+    ensure(asset_meta.get("managed_fork") == DEFAULT_MAIN_FORK,
+           "Asset metadata did not revert to default managed fork.")
 
     # Clone new fork
     status = run_request(
@@ -230,6 +254,46 @@ def main() -> None:
     ensure(status.state == ForkSwapState.SUCCESS, f"Status refresh failed: {status.message}")
     ensure(status.detail.get("current_fork") == DEFAULT_MAIN_FORK, "Current fork mismatch in status response.")
     ensure("duration" in status.to_json(), "Status payload missing duration field.")
+    ensure(status.overlay_status == service.overlay_status, "Overlay status mismatch between service and payload after status action.")
+
+    original_run_script = service._run_script
+
+    # Simulate a failed repair to ensure status surfaces the error
+    def failing_run_script(request, env, progress_cb=None, progress_interval=1.0):
+      if request.action == "repair_overlay":
+        return ("", "simulated failure", 1)
+      return original_run_script(request, env, progress_cb, progress_interval)
+
+    service._run_script = failing_run_script
+    try:
+      status = run_request(
+        service,
+        params,
+        {
+          "action": "repair_overlay",
+          "options": {},
+        },
+      )
+      ensure(status.state == ForkSwapState.ERROR, "Overlay repair should report failure when script returns non-zero.")
+      ensure(status.overlay_status == "repair_failed", "Top-level overlay status did not report repair failure.")
+      ensure(status.detail.get("overlay_status") == "repair_failed", "Detail overlay status did not report repair failure.")
+      ensure(service.overlay_status == "repair_failed", "Service overlay status not updated after repair failure.")
+    finally:
+      service._run_script = original_run_script
+
+    # Repair overlay (should succeed even if already healthy)
+    status = run_request(
+      service,
+      params,
+      {
+        "action": "repair_overlay",
+        "options": {},
+      },
+    )
+    ensure(status.state == ForkSwapState.SUCCESS, f"Overlay repair action failed: {status.message}")
+    ensure(status.overlay_status in {"ok", "repair_incomplete"}, "Unexpected overlay status after repair action.")
+    ensure(status.detail.get("overlay_status") == status.overlay_status, "Detail overlay status should match top-level value.")
+    ensure(service.overlay_status == status.overlay_status, "Service overlay status not cleared after successful repair.")
 
     # Concurrency: queue another action while one is running
     original_run_script = service._run_script

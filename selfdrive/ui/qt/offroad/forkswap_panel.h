@@ -40,6 +40,7 @@ private:
   QString selectedFork() const;
   void showToast(const QString &msg);
   void showFullLog();
+  void repairOverlay();
   QString friendlyForkName(const QString &name) const;
   QString friendlyForkText(const QString &text) const;
   QJsonObject promptCloneOptions(QString *out_fork, QString *out_url, QString *out_branch);
@@ -56,6 +57,7 @@ private:
   QLabel *message_label;
   QLabel *progress_label;
   QLabel *disk_label;
+  QLabel *overlay_label;
   QTreeWidget *fork_tree;
   QTextEdit *log_view;
   ButtonControl *refresh_control;
@@ -66,6 +68,7 @@ private:
   ButtonControl *rename_control;
   ButtonControl *clone_control;
   ButtonControl *view_log_control;
+  ButtonControl *repair_overlay_control;
   QTimer *timer;
   QString last_request_id;
   QString last_log_line;

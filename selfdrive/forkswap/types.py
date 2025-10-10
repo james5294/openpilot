@@ -7,7 +7,7 @@ from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional
 
 
-SUPPORTED_ACTIONS = {"clone", "switch", "delete", "update", "rename", "list", "status"}
+SUPPORTED_ACTIONS = {"clone", "switch", "delete", "update", "rename", "repair_overlay", "list", "status"}
 
 
 class ForkSwapState:
@@ -100,6 +100,7 @@ class ForkSwapStatus:
   action: Optional[str] = None
   request_id: Optional[str] = None
   message: str = ""
+  overlay_status: str = "ok"
   detail: Dict[str, Any] = field(default_factory=dict)
   log_tail: List[str] = field(default_factory=list)
   started_at: Optional[float] = None
@@ -117,6 +118,7 @@ class ForkSwapStatus:
     log_tail: Optional[List[str]] = None,
     started_at: Optional[float] = None,
     duration: Optional[float] = None,
+    overlay_status: Optional[str] = None,
   ) -> None:
     if state is not None:
       self.state = state
@@ -136,6 +138,8 @@ class ForkSwapStatus:
       self.started_at = started_at
     if duration is not None:
       self.duration = duration
+    if overlay_status is not None:
+      self.overlay_status = overlay_status
     self.updated_at = _now()
 
   def to_json(self) -> str:
@@ -167,7 +171,10 @@ class ForkSwapStatus:
     status.action = data.get("action")
     status.request_id = data.get("request_id")
     status.message = data.get("message", "")
+    status.overlay_status = data.get("overlay_status", "ok")
     status.detail = data.get("detail") or {}
+    if isinstance(status.detail, dict):
+      status.detail.setdefault("overlay_status", status.overlay_status)
     status.log_tail = data.get("log_tail") or []
     status.updated_at = float(data.get("updated_at", _now()))
     status.started_at = data.get("started_at")

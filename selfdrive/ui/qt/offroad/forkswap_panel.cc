@@ -75,6 +75,12 @@ ForkSwapPanel::ForkSwapPanel(QWidget *parent, bool show_back_button)
   addItem(rename_control);
   connect(rename_control, &ButtonControl::clicked, this, &ForkSwapPanel::renameFork);
 
+  repair_overlay_control = new ButtonControl(tr("Repair overlay"), tr("REPAIR"),
+                                             tr("Reapply the ForkSwap overlay files to the current fork."), this);
+  addItem(repair_overlay_control);
+  repair_overlay_control->setVisible(false);
+  connect(repair_overlay_control, &ButtonControl::clicked, this, &ForkSwapPanel::repairOverlay);
+
   delete_control = new ButtonControl(tr("Delete selected fork"), tr("DELETE"),
                                      tr("Remove the selected fork from local storage. This cannot be undone."), this);
   addItem(delete_control);
@@ -140,6 +146,12 @@ QWidget *ForkSwapPanel::buildStatusCard() {
   progress_label->setStyleSheet("font-size: 38px; color: #9E9E9E;");
   progress_label->setVisible(false);
   layout->addWidget(progress_label);
+
+  overlay_label = new QLabel(card);
+  overlay_label->setWordWrap(true);
+  overlay_label->setStyleSheet("font-size: 34px; color: #AA8800;");
+  overlay_label->setVisible(false);
+  layout->addWidget(overlay_label);
 
   disk_label = new QLabel(card);
   disk_label->setStyleSheet("font-size: 36px; color: #9E9E9E;");
@@ -344,8 +356,9 @@ void ForkSwapPanel::applyStatus(const QJsonObject &status_obj) {
   state_label->setText(header);
   message_label->setText(message.isEmpty() ? tr("Ready.") : friendlyForkText(message));
 
-  if (status_obj.contains("detail")) {
-    QJsonObject detail = status_obj.value("detail").toObject();
+  QJsonObject detail = status_obj.value("detail").toObject();
+
+  if (!detail.isEmpty()) {
     if (detail.contains("forks")) {
       updateForkList(detail.value("forks").toArray());
     }
@@ -371,7 +384,6 @@ void ForkSwapPanel::applyStatus(const QJsonObject &status_obj) {
   double updated_at = status_obj.value("updated_at").toDouble(0.0);
   double elapsed = reported_duration >= 0.0 ? reported_duration : ((started_at > 0.0 && updated_at > started_at) ? (updated_at - started_at) : -1.0);
 
-  QJsonObject detail = status_obj.value("detail").toObject();
   QJsonObject request = detail.value("request").toObject();
   QString fork = request.value("fork").toString();
   QString branch = request.value("branch").toString();
@@ -413,8 +425,47 @@ void ForkSwapPanel::applyStatus(const QJsonObject &status_obj) {
     progress_label->setVisible(false);
   }
 
+  if (overlay_label != nullptr) {
+    QString overlay_state = status_obj.value("overlay_status").toString();
+    if (overlay_state.isEmpty()) {
+      overlay_state = detail.value("overlay_status").toString();
+    }
+    if (overlay_state == "ok" || overlay_state.isEmpty()) {
+      overlay_label->setVisible(false);
+      overlay_label->clear();
+      if (repair_overlay_control) {
+        repair_overlay_control->setVisible(false);
+        repair_overlay_control->setEnabled(true);
+      }
+    } else if (overlay_state == "repairing") {
+      overlay_label->setText(tr("Overlay: attempting repair..."));
+      overlay_label->setStyleSheet("font-size: 34px; color: #FFA726;");
+      overlay_label->setVisible(true);
+      if (repair_overlay_control) {
+        repair_overlay_control->setVisible(false);
+        repair_overlay_control->setEnabled(false);
+      }
+    } else {
+      QString message;
+      if (overlay_state == "repair_failed") {
+        message = tr("Overlay repair failed. Tap REPAIR to retry.");
+      } else if (overlay_state == "repair_incomplete") {
+        message = tr("Overlay may be incomplete. Tap REPAIR to attempt a fix.");
+      } else {
+        message = tr("Overlay warning: %1").arg(friendlyForkText(overlay_state));
+      }
+      overlay_label->setText(message);
+      overlay_label->setStyleSheet("font-size: 34px; color: #FFA726;");
+      overlay_label->setVisible(true);
+      if (repair_overlay_control) {
+        repair_overlay_control->setVisible(true);
+        repair_overlay_control->setEnabled(true);
+      }
+    }
+  }
+
   bool busy = (state == "running");
-  for (ButtonControl *control : {clone_control, switch_control, delete_control, update_control, rename_control}) {
+  for (ButtonControl *control : {clone_control, switch_control, delete_control, update_control, rename_control, repair_overlay_control}) {
     if (control != nullptr) {
       control->setEnabled(!busy);
     }
@@ -656,6 +707,18 @@ void ForkSwapPanel::deleteFork() {
     return;
   }
   queueAction("delete", QJsonObject{{"confirm", true}}, fork);
+}
+
+void ForkSwapPanel::repairOverlay() {
+  if (repair_overlay_control != nullptr) {
+    repair_overlay_control->setEnabled(false);
+  }
+  if (overlay_label != nullptr) {
+    overlay_label->setText(tr("Overlay: attempting repair..."));
+    overlay_label->setStyleSheet("font-size: 34px; color: #FFA726;");
+    overlay_label->setVisible(true);
+  }
+  queueAction("repair_overlay");
 }
 
 void ForkSwapPanel::updateFork() {
