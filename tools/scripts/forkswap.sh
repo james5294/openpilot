@@ -135,6 +135,17 @@ log_error() {
   printf '%s [ERROR] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" | tee -a "$LOG_FILE" >/dev/null
 }
 
+persist_overlay_metadata() {
+  local target_overlay_dir="$OPENPILOT_DIR/overlay"
+  mkdir -p "$target_overlay_dir" 2>/dev/null || true
+  local src base
+  for src in "$OVERLAY_MANIFEST" "$OVERLAY_HASHES"; do
+    [ -f "$src" ] || continue
+    base=$(basename "$src")
+    cp "$src" "$target_overlay_dir/$base" 2>/dev/null || true
+  done
+}
+
 acquire_lock() {
   local desired_lock="${FORKSWAP_LOCK_PATH:-$LOCK_ROOT_DEFAULT}"
   local parent
@@ -867,10 +878,6 @@ ensure_fork_swap_script() {
 }
 
 sync_overlay_files() {
-  if [ "${FORKSWAP_SKIP_OVERLAY:-0}" = "1" ]; then
-    log_info "Skipping overlay sync (FORKSWAP_SKIP_OVERLAY=1)."
-    return 0
-  fi
   if [ ! -f "$OVERLAY_MANIFEST" ]; then
     log_error "Overlay manifest missing: $OVERLAY_MANIFEST"
     return 1
@@ -952,6 +959,7 @@ sync_overlay_files() {
   done
 
   log_info "Forkswap overlay v${version} synced into current fork."
+  persist_overlay_metadata
   return 0
 }
 

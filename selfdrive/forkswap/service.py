@@ -74,7 +74,6 @@ class ForkSwapService:
     self.base_paths = base_paths or {}
     default_env = {
       "FORKSWAP_DISABLE_UPDATE_CHECK": "1",
-      "FORKSWAP_SKIP_OVERLAY": "1",
     }
     if env_overrides:
       default_env.update(env_overrides)
