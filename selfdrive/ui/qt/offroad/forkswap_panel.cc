@@ -70,6 +70,11 @@ ForkSwapPanel::ForkSwapPanel(QWidget *parent, bool show_back_button)
   addItem(update_control);
   connect(update_control, &ButtonControl::clicked, this, &ForkSwapPanel::updateFork);
 
+  rename_control = new ButtonControl(tr("Rename selected fork"), tr("RENAME"),
+                                     tr("Rename the selected fork."), this);
+  addItem(rename_control);
+  connect(rename_control, &ButtonControl::clicked, this, &ForkSwapPanel::renameFork);
+
   delete_control = new ButtonControl(tr("Delete selected fork"), tr("DELETE"),
                                      tr("Remove the selected fork from local storage. This cannot be undone."), this);
   addItem(delete_control);
@@ -409,7 +414,7 @@ void ForkSwapPanel::applyStatus(const QJsonObject &status_obj) {
   }
 
   bool busy = (state == "running");
-  for (ButtonControl *control : {clone_control, switch_control, delete_control, update_control}) {
+  for (ButtonControl *control : {clone_control, switch_control, delete_control, update_control, rename_control}) {
     if (control != nullptr) {
       control->setEnabled(!busy);
     }
@@ -663,6 +668,44 @@ void ForkSwapPanel::updateFork() {
     return;
   }
   queueAction("update", QJsonObject{{"accept_local_changes", false}}, fork);
+}
+
+void ForkSwapPanel::renameFork() {
+  QString fork = selectedFork();
+  if (fork.isEmpty()) {
+    showToast(tr("Select a fork to rename."));
+    return;
+  }
+
+  InputDialog rename_dialog(tr("Rename Fork"), this, tr("Enter a new name for %1").arg(friendlyForkName(fork)));
+  rename_dialog.setMinLength(1);
+  rename_dialog.setMaxLength(DEFAULT_MAX_LENGTH);
+  if (rename_dialog.exec() != QDialog::Accepted) {
+    return;
+  }
+
+  QString new_name = rename_dialog.text().trimmed();
+  if (new_name.isEmpty()) {
+    return;
+  }
+  if (new_name.compare(fork, Qt::CaseInsensitive) == 0) {
+    showToast(tr("Fork name unchanged."));
+    return;
+  }
+
+  static QRegularExpression valid_pattern(QStringLiteral("^[A-Za-z0-9_-]+$"));
+  if (!valid_pattern.match(new_name).hasMatch()) {
+    showToast(tr("Fork names may only use letters, numbers, hyphen, and underscore."));
+    return;
+  }
+
+  if (!ConfirmationDialog::confirm(tr("Rename '%1' to '%2'?").arg(friendlyForkName(fork), friendlyForkName(new_name)), tr("Rename"), this)) {
+    return;
+  }
+
+  QJsonObject options;
+  options.insert("rename_to", new_name);
+  queueAction("rename", options, fork);
 }
 
 void ForkSwapPanel::queueAction(const QString &action, const QJsonObject &options, const QString &fork, const QString &url, const QString &branch) {

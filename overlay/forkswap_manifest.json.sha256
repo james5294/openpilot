@@ -1,9 +1,9 @@
 {
   "selfdrive/forkswap": null,
   "selfdrive/ui/forkswap_client.py": "3de292840dffedc05e9bf7beef54e65bc64a1cb8df0e3a9d5aabb3e584994629",
-  "selfdrive/ui/qt/home.cc": "979590fb7d8f971f2157435ebb19b3f2dba7e30c1885a6c8224c468cefa89cd3",
-  "selfdrive/ui/qt/home.h": "00128387b9f56565eb9b9dd3c28c2cb669c0fadec606953d78d890bf60cccb86",
-  "selfdrive/ui/qt/offroad/forkswap_panel.cc": "f442ff97ead2a5335e7a7a53c884cc65e029514325fa0973c97816e5650845ac",
-  "selfdrive/ui/qt/offroad/forkswap_panel.h": "424dd2547077761c68c4b83a7f431a4f263640f2a90898c2e4543ba74226c7c6",
-  "system/manager/process_config.py": "23f49140d883855fc911b29ed3b8192a1c4364d0d1a5ffc9efbc02033bbdffd1"
+  "selfdrive/ui/qt/home.cc": "dcfe7ff12a4c719e2cbc693ad77cfe075f77aac172a5103d9a4e2e439cea19e9",
+  "selfdrive/ui/qt/home.h": "0bf7547402c82876bcaf3486fe53fb06afe6a866374c793a60ce008ae208447e",
+  "selfdrive/ui/qt/offroad/forkswap_panel.cc": "114550eef34aa04b3ececafb71c71932d1f2ed0ef86cfbc8029d5dc64a89996c",
+  "selfdrive/ui/qt/offroad/forkswap_panel.h": "864309094aef618f6232ae67b4577feb510e873ad802c6edd8a8417f438fc5ed",
+  "system/manager/process_config.py": "a91f86e6618c8c4c3b84024520ad582397b1525343b7f2362fc4e5e31b8b48cf"
 }

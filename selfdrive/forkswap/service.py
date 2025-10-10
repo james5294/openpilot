@@ -299,7 +299,7 @@ class ForkSwapService:
     if request.action in {"clone", "switch", "delete", "update"} and not self._is_offroad():
       return "Cannot modify forks while vehicle is engaged."
 
-    if request.action in {"clone", "switch", "delete", "update"}:
+    if request.action in {"clone", "switch", "delete", "update", "rename"}:
       if not request.fork or not self._validate_fork_name(request.fork):
         return "Invalid fork name provided."
 
@@ -315,6 +315,15 @@ class ForkSwapService:
           return "Invalid rename target for existing fork."
       elif exists_mode and exists_mode not in {"overwrite", "abort", None}:
         return "Invalid on_exists option."
+
+    if request.action == "rename":
+      new_name = None
+      if isinstance(request.options, dict):
+        new_name = request.options.get("rename_to")
+      if not new_name or not self._validate_fork_name(str(new_name)):
+        return "Invalid rename target provided."
+      if str(new_name).strip().lower() == request.fork.strip().lower():
+        return "New fork name must be different from the current name."
 
     return None
 
@@ -579,6 +588,15 @@ class ForkSwapService:
         answer = "y" if request.options.get("accept_local_changes", True) else "n"
         lines.append(answer)
       lines.append("Exit")
+      return lines
+
+    if request.action == "rename":
+      if not fork_name:
+        raise ValueError("Rename request requires 'fork'.")
+      new_name = request.options.get("rename_to") if isinstance(request.options, dict) else None
+      if not new_name:
+        raise ValueError("Rename request requires options.rename_to.")
+      lines.extend(["Rename", fork_name, str(new_name), "Exit"])
       return lines
 
     raise ValueError(f"Unsupported interactive action '{request.action}'")

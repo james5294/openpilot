@@ -29,6 +29,7 @@ private slots:
   void switchFork();
   void deleteFork();
   void updateFork();
+  void renameFork();
   void back();
 
 private:
@@ -62,6 +63,7 @@ private:
   ButtonControl *switch_control;
   ButtonControl *delete_control;
   ButtonControl *update_control;
+  ButtonControl *rename_control;
   ButtonControl *clone_control;
   ButtonControl *view_log_control;
   QTimer *timer;

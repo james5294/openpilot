@@ -7,7 +7,7 @@ from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional
 
 
-SUPPORTED_ACTIONS = {"clone", "switch", "delete", "update", "list", "status"}
+SUPPORTED_ACTIONS = {"clone", "switch", "delete", "update", "rename", "list", "status"}
 
 
 class ForkSwapState:

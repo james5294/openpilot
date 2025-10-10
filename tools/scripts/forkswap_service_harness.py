@@ -72,6 +72,13 @@ def ensure(condition: bool, message: str) -> None:
     raise AssertionError(message)
 
 
+def resolved_link(path: Path) -> Path:
+  target = Path(os.readlink(path))
+  if not target.is_absolute():
+    target = path.parent / target
+  return target.resolve()
+
+
 def main() -> None:
   tmp_root = Path(tempfile.mkdtemp(prefix="forkswap-service-"))
   keep_tmp = os.environ.get("FORKSWAP_HARNESS_KEEP_TMP") == "1"
@@ -124,8 +131,10 @@ def main() -> None:
       },
     )
     ensure(status.state == ForkSwapState.SUCCESS, f"Clone failed: {status.message}")
-    ensure(os.readlink(openpilot_dir) == (forks_dir / "localfork" / "openpilot").as_posix(),
-           "Symlink did not point to cloned fork.")
+    actual_target = resolved_link(openpilot_dir)
+    expected_target = (forks_dir / "localfork" / "openpilot").resolve()
+    ensure(actual_target == expected_target,
+           f"Symlink did not point to cloned fork (actual={actual_target}, expected={expected_target}).")
 
     # Switch back to main fork
     status = run_request(
@@ -138,8 +147,10 @@ def main() -> None:
       },
     )
     ensure(status.state == ForkSwapState.SUCCESS, f"Switch failed: {status.message}")
-    ensure(os.readlink(openpilot_dir) == (forks_dir / DEFAULT_MAIN_FORK / "openpilot").as_posix(),
-           "Symlink did not point back to main fork.")
+    actual_target = resolved_link(openpilot_dir)
+    expected_target = (forks_dir / DEFAULT_MAIN_FORK / "openpilot").resolve()
+    ensure(actual_target == expected_target,
+           f"Symlink did not point back to main fork (actual={actual_target}, expected={expected_target}).")
 
     # Clone again, forcing rename of existing localfork
     status = run_request(
@@ -181,6 +192,20 @@ def main() -> None:
     ensure(status.state == ForkSwapState.SUCCESS, f"Delete failed: {status.message}")
     ensure(not (forks_dir / "localfork").exists(), "localfork directory still present after deletion.")
 
+    # Rename remaining fork
+    status = run_request(
+      service,
+      params,
+      {
+        "action": "rename",
+        "fork": "localfork_backup",
+        "options": {"rename_to": "localfork_archive"},
+      },
+    )
+    ensure(status.state == ForkSwapState.SUCCESS, f"Rename failed: {status.message}")
+    ensure((forks_dir / "localfork_archive").is_dir(), "Renamed fork directory missing after rename action.")
+    ensure(not (forks_dir / "localfork_backup").exists(), "Original fork directory still exists after rename.")
+
     # List forks
     status = run_request(
       service,
@@ -192,7 +217,7 @@ def main() -> None:
     ensure(status.state == ForkSwapState.SUCCESS, f"List failed: {status.message}")
     names = {fork["name"] for fork in status.detail.get("forks", [])}
     ensure(DEFAULT_MAIN_FORK in names, "Main fork missing from listing.")
-    ensure("localfork_backup" in names, "Renamed fork missing from listing.")
+    ensure("localfork_archive" in names, "Renamed fork missing from listing.")
 
     # Status check with update detection disabled by default
     status = run_request(
@@ -215,12 +240,12 @@ def main() -> None:
       "request_id": second_request_id,
     }
 
-    def delayed_run_script(request, env):
+    def delayed_run_script(request, env, progress_cb=None, progress_interval=1.0):
       if request.action == "clone" and not getattr(service, "_concurrency_test", False):
         service._concurrency_test = True
         params.put("ForkSwapPayload", json.dumps(second_payload))
         params.put("ForkSwapAction", second_request_id)
-      return original_run_script(request, env)
+      return original_run_script(request, env, progress_cb, progress_interval)
 
     service._run_script = delayed_run_script
     try:
@@ -256,7 +281,10 @@ def main() -> None:
     else:
       shutil.rmtree(tmp_root, ignore_errors=True)
   except Exception:
-    shutil.rmtree(tmp_root, ignore_errors=True)
+    if keep_tmp:
+      print(f"Preserving failed workspace at: {tmp_root}")
+    else:
+      shutil.rmtree(tmp_root, ignore_errors=True)
     raise
 
 

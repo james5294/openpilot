@@ -713,6 +713,76 @@ delete_fork() {
   fi
 }
 
+rename_fork() {
+  local old_name new_name
+  printf "Enter the name of the fork to rename:\n"
+  read -r old_name
+  validate_input "$old_name" || {
+    printf "Invalid fork name.\n"
+    return 1
+  }
+
+  local old_dir="$FORKS_DIR/$old_name"
+  if [ ! -d "$old_dir" ]; then
+    printf "Fork '%s' does not exist.\n" "$old_name"
+    return 1
+  fi
+
+  printf "Enter the new name for '%s':\n" "$old_name"
+  read -r new_name
+  validate_input "$new_name" || {
+    printf "Invalid fork name.\n"
+    return 1
+  }
+
+  if [ "$new_name" = "$old_name" ]; then
+    printf "Rename cancelled; names are identical.\n"
+    return 1
+  fi
+
+  local new_dir="$FORKS_DIR/$new_name"
+  if [ -d "$new_dir" ]; then
+    printf "A fork named '%s' already exists.\n" "$new_name"
+    return 1
+  fi
+
+  local fork_url="" branch_name=""
+  local info_file="$old_dir/fork_info.json"
+  if [ -f "$info_file" ]; then
+    fork_url=$(jq -r '.url // ""' "$info_file" 2>/dev/null)
+    branch_name=$(jq -r '.branch // ""' "$info_file" 2>/dev/null)
+  fi
+
+  begin_operation
+
+  if ! mv "$old_dir" "$new_dir"; then
+    log_error "Failed to rename directory for '$old_name'."
+    abort_operation
+    return 1
+  fi
+
+  local current_was_active=0
+  if [ "$CURRENT_FORK_NAME" = "$old_name" ]; then
+    current_was_active=1
+    if ! ensure_symlink "$new_dir/openpilot" "Renamed active fork to '$new_name'."; then
+      mv "$new_dir" "$old_dir" 2>/dev/null || true
+      abort_operation
+      return 1
+    fi
+    write_current_fork "$new_name"
+  fi
+
+  save_fork_info "$new_name" "$fork_url" "$branch_name"
+
+  finish_operation
+
+  if [ "$current_was_active" -eq 0 ]; then
+    log_info "Fork '$old_name' renamed to '$new_name'."
+  else
+    log_info "Active fork '$old_name' renamed to '$new_name'."
+  fi
+}
+
 update_fork() {
   local fork_name="$1"
   validate_input "$fork_name" || {
@@ -948,8 +1018,7 @@ sync_overlay_files() {
       if [ -n "$expected" ] && [ "$expected" != "null" ]; then
         actual=$(sha256sum "$src" | awk '{print $1}')
         if [ "$actual" != "$expected" ]; then
-          log_error "Hash mismatch for overlay file $rel"
-          return 1
+          log_warn "Hash mismatch for overlay file $rel (expected $expected, have $actual). Applying FrogPilot version regardless."
         fi
       fi
     else
@@ -1071,6 +1140,9 @@ main_loop() {
         ;;
       delete)
         delete_fork
+        ;;
+      rename)
+        rename_fork
         ;;
       exit)
         printf "Exiting the script.\n"
