@@ -321,7 +321,16 @@ initialize_asset_repository() {
     case "$type" in
       directory)
         if [ ! -d "$abs_src" ]; then
-          log_error "Overlay directory missing during asset build: $abs_src"
+          log_warn "Overlay directory missing during asset build: $abs_src"
+          # Check if existing assets are valid - if so, use them instead of failing
+          if [ -f "$ASSET_TARBALL" ] && [ -f "$ASSET_TARBALL_SHA" ]; then
+            if (cd "$ASSETS_DIR" >/dev/null 2>&1 && sha256sum -c "$(basename "$ASSET_TARBALL_SHA")" >/dev/null 2>&1); then
+              log_info "Source files missing but existing asset repository is valid. Using existing assets."
+              rm -rf "$tmp_dir"
+              return 0
+            fi
+          fi
+          log_error "Cannot build asset repository: source files missing and no valid existing assets."
           rm -rf "$tmp_dir"
           return 1
         fi
@@ -335,7 +344,16 @@ initialize_asset_repository() {
         ;;
       file)
         if [ ! -f "$abs_src" ]; then
-          log_error "Overlay file missing during asset build: $abs_src"
+          log_warn "Overlay file missing during asset build: $abs_src"
+          # Check if existing assets are valid - if so, use them instead of failing
+          if [ -f "$ASSET_TARBALL" ] && [ -f "$ASSET_TARBALL_SHA" ]; then
+            if (cd "$ASSETS_DIR" >/dev/null 2>&1 && sha256sum -c "$(basename "$ASSET_TARBALL_SHA")" >/dev/null 2>&1); then
+              log_info "Source files missing but existing asset repository is valid. Using existing assets."
+              rm -rf "$tmp_dir"
+              return 0
+            fi
+          fi
+          log_error "Cannot build asset repository: source files missing and no valid existing assets."
           rm -rf "$tmp_dir"
           return 1
         fi
