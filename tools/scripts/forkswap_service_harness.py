@@ -18,6 +18,9 @@ from openpilot.selfdrive.forkswap.service import ForkSwapService
 from openpilot.selfdrive.forkswap.types import ForkSwapState, ForkSwapStatus
 
 
+DEFAULT_MAIN_FORK = "james5294"
+
+
 class FakeParams:
   def __init__(self) -> None:
     self._store: dict[str, str] = {}
@@ -85,7 +88,7 @@ def main() -> None:
     params_dir.mkdir(parents=True, exist_ok=True)
     (params_dir / "params.json").write_text('{"initial_param": 1}\n', encoding="utf-8")
     (openpilot_dir / "README.txt").write_text("Original checkout\n", encoding="utf-8")
-    current_fork_file.write_text("stock\n", encoding="utf-8")
+    current_fork_file.write_text(f"{DEFAULT_MAIN_FORK}\n", encoding="utf-8")
 
     remote_root = tmp_root / "remotes"
     remote_root.mkdir(parents=True, exist_ok=True)
@@ -124,19 +127,19 @@ def main() -> None:
     ensure(os.readlink(openpilot_dir) == (forks_dir / "localfork" / "openpilot").as_posix(),
            "Symlink did not point to cloned fork.")
 
-    # Switch back to stock
+    # Switch back to main fork
     status = run_request(
       service,
       params,
       {
         "action": "switch",
-        "fork": "stock",
+        "fork": DEFAULT_MAIN_FORK,
         "options": {"reboot": False},
       },
     )
     ensure(status.state == ForkSwapState.SUCCESS, f"Switch failed: {status.message}")
-    ensure(os.readlink(openpilot_dir) == (forks_dir / "stock" / "openpilot").as_posix(),
-           "Symlink did not point back to stock fork.")
+    ensure(os.readlink(openpilot_dir) == (forks_dir / DEFAULT_MAIN_FORK / "openpilot").as_posix(),
+           "Symlink did not point back to main fork.")
 
     # Clone again, forcing rename of existing localfork
     status = run_request(
@@ -153,13 +156,13 @@ def main() -> None:
     ensure(status.state == ForkSwapState.SUCCESS, f"Clone with rename failed: {status.message}")
     ensure((forks_dir / "localfork_backup").is_dir(), "Renamed fork directory missing.")
 
-    # Switch to stock again before deleting inactive fork
+    # Switch to main fork again before deleting inactive fork
     status = run_request(
       service,
       params,
       {
         "action": "switch",
-        "fork": "stock",
+        "fork": DEFAULT_MAIN_FORK,
         "options": {"reboot": False},
       },
     )
@@ -188,7 +191,7 @@ def main() -> None:
     )
     ensure(status.state == ForkSwapState.SUCCESS, f"List failed: {status.message}")
     names = {fork["name"] for fork in status.detail.get("forks", [])}
-    ensure("stock" in names, "Stock fork missing from listing.")
+    ensure(DEFAULT_MAIN_FORK in names, "Main fork missing from listing.")
     ensure("localfork_backup" in names, "Renamed fork missing from listing.")
 
     # Status check with update detection disabled by default
@@ -200,7 +203,7 @@ def main() -> None:
       },
     )
     ensure(status.state == ForkSwapState.SUCCESS, f"Status refresh failed: {status.message}")
-    ensure(status.detail.get("current_fork") == "stock", "Current fork mismatch in status response.")
+    ensure(status.detail.get("current_fork") == DEFAULT_MAIN_FORK, "Current fork mismatch in status response.")
     ensure("duration" in status.to_json(), "Status payload missing duration field.")
 
     # Concurrency: queue another action while one is running

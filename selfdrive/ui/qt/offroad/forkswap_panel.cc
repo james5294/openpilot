@@ -3,6 +3,7 @@
 #include <QBrush>
 #include <QFrame>
 #include <QHeaderView>
+#include <QRegularExpression>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonParseError>
@@ -41,7 +42,7 @@ ForkSwapPanel::ForkSwapPanel(QWidget *parent, bool show_back_button)
     : ListWidget(parent), back_control(nullptr), state_label(nullptr),
       message_label(nullptr), disk_label(nullptr), fork_tree(nullptr), log_view(nullptr), refresh_control(nullptr),
       check_updates_control(nullptr), switch_control(nullptr), delete_control(nullptr), update_control(nullptr),
-      clone_control(nullptr), view_log_control(nullptr) {
+      clone_control(nullptr), view_log_control(nullptr), status_refresh_pending(false) {
   setContentsMargins(0, 0, 0, 0);
   setSpacing(25);
 
@@ -336,7 +337,7 @@ void ForkSwapPanel::applyStatus(const QJsonObject &status_obj) {
     header += QString(" (%1)").arg(duration_text);
   }
   state_label->setText(header);
-  message_label->setText(message.isEmpty() ? tr("Ready.") : message);
+  message_label->setText(message.isEmpty() ? tr("Ready.") : friendlyForkText(message));
 
   if (status_obj.contains("detail")) {
     QJsonObject detail = status_obj.value("detail").toObject();
@@ -383,7 +384,7 @@ void ForkSwapPanel::applyStatus(const QJsonObject &status_obj) {
     progress_bits << tr("Action %1").arg(action);
   }
   if (!fork.isEmpty()) {
-    progress_bits << tr("Fork %1").arg(fork);
+    progress_bits << tr("Fork %1").arg(friendlyForkName(fork));
   }
   if (!branch.isEmpty()) {
     progress_bits << tr("Branch %1").arg(branch);
@@ -396,7 +397,7 @@ void ForkSwapPanel::applyStatus(const QJsonObject &status_obj) {
     if (trimmed_log.length() > 200) {
       trimmed_log = trimmed_log.left(197) + QStringLiteral("…");
     }
-    progress_bits << tr("Last log: %1").arg(trimmed_log);
+    progress_bits << tr("Last log: %1").arg(friendlyForkText(trimmed_log));
   }
 
   if (!progress_bits.isEmpty() && progress_label != nullptr) {
@@ -424,6 +425,11 @@ void ForkSwapPanel::applyStatus(const QJsonObject &status_obj) {
       timer->setInterval(target_interval);
     }
   }
+
+  if (status_refresh_pending && state != "running" && action != "status" && request_id == last_request_id) {
+    status_refresh_pending = false;
+    QTimer::singleShot(0, this, [this]() { refreshStatus(true, false); });
+  }
 }
 
 void ForkSwapPanel::updateForkList(const QJsonArray &forks) {
@@ -442,7 +448,7 @@ void ForkSwapPanel::updateForkList(const QJsonArray &forks) {
     }
 
     auto *item = new QTreeWidgetItem(fork_tree);
-    item->setText(0, name);
+    item->setText(0, friendlyForkName(name));
     item->setText(1, branch);
     item->setText(2, status);
     item->setText(3, origin);
@@ -629,7 +635,7 @@ void ForkSwapPanel::switchFork() {
     showToast(tr("Select a fork to switch."));
     return;
   }
-  if (!ConfirmationDialog::confirm(tr("Switch to '%1'?").arg(fork), tr("Switch"), this)) {
+  if (!ConfirmationDialog::confirm(tr("Switch to '%1'?").arg(friendlyForkName(fork)), tr("Switch"), this)) {
     return;
   }
   queueAction("switch", QJsonObject{{"reboot", true}}, fork);
@@ -641,7 +647,7 @@ void ForkSwapPanel::deleteFork() {
     showToast(tr("Select a fork to delete."));
     return;
   }
-  if (!ConfirmationDialog::confirm(tr("Delete '%1'? This cannot be undone.").arg(fork), tr("Delete"), this)) {
+  if (!ConfirmationDialog::confirm(tr("Delete '%1'? This cannot be undone.").arg(friendlyForkName(fork)), tr("Delete"), this)) {
     return;
   }
   queueAction("delete", QJsonObject{{"confirm", true}}, fork);
@@ -653,7 +659,7 @@ void ForkSwapPanel::updateFork() {
     showToast(tr("Select a fork to update."));
     return;
   }
-  if (!ConfirmationDialog::confirm(tr("Update '%1' from origin?").arg(fork), tr("Update"), this)) {
+  if (!ConfirmationDialog::confirm(tr("Update '%1' from origin?").arg(friendlyForkName(fork)), tr("Update"), this)) {
     return;
   }
   queueAction("update", QJsonObject{{"accept_local_changes", false}}, fork);
@@ -678,6 +684,9 @@ void ForkSwapPanel::queueAction(const QString &action, const QJsonObject &option
 
   if (action != "status") {
     message_label->setText(tr("Submitted request %1 (%2).").arg(request_id, action));
+    status_refresh_pending = true;
+  } else {
+    status_refresh_pending = false;
   }
 }
 
@@ -698,6 +707,20 @@ void ForkSwapPanel::updateDiskSpace() {
   } else {
     disk_label->setText(tr("Unable to read disk usage."));
   }
+}
+
+QString ForkSwapPanel::friendlyForkName(const QString &name) const {
+  if (name.compare(QStringLiteral("stock"), Qt::CaseInsensitive) == 0) {
+    return QStringLiteral("james5294");
+  }
+  return name;
+}
+
+QString ForkSwapPanel::friendlyForkText(const QString &text) const {
+  QString result = text;
+  static QRegularExpression stock_re(QStringLiteral("\\bstock\\b"), QRegularExpression::CaseInsensitiveOption);
+  result.replace(stock_re, QStringLiteral("james5294"));
+  return result;
 }
 
 QString ForkSwapPanel::formatSize(uint64_t bytes) {

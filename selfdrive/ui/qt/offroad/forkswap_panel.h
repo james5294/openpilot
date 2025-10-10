@@ -39,6 +39,8 @@ private:
   QString selectedFork() const;
   void showToast(const QString &msg);
   void showFullLog();
+  QString friendlyForkName(const QString &name) const;
+  QString friendlyForkText(const QString &text) const;
   QJsonObject promptCloneOptions(QString *out_fork, QString *out_url, QString *out_branch);
   QWidget *buildStatusCard();
   QWidget *buildInstructionCard();
@@ -65,4 +67,5 @@ private:
   QTimer *timer;
   QString last_request_id;
   QString last_log_line;
+  bool status_refresh_pending;
 };
