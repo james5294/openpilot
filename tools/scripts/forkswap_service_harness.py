@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -295,6 +296,19 @@ def main() -> None:
     ensure(status.detail.get("overlay_status") == status.overlay_status, "Detail overlay status should match top-level value.")
     ensure(service.overlay_status == status.overlay_status, "Service overlay status not cleared after successful repair.")
 
+    # Validate comprehensive logging output from Task 8
+    if log_file.exists():
+      log_contents = log_file.read_text(encoding="utf-8")
+      # Verify log contains the new statistics format: "X/Y succeeded (Z%), A failed, B warnings, Cs"
+      stats_pattern = r"Overlay sync completed: \d+/\d+ succeeded \(\d+%\), \d+ failed, \d+ warnings, \d+s"
+      ensure(re.search(stats_pattern, log_contents),
+             "Log file missing expected overlay sync statistics pattern from Task 8.")
+      # Verify timing information appears
+      ensure("Overlay sync completed:" in log_contents,
+             "Log file missing overlay sync completion message with timing.")
+    else:
+      print("Warning: Log file not found for logging validation test.")
+
     # Concurrency: queue another action while one is running
     original_run_script = service._run_script
     second_request_id = uuid.uuid4().hex
@@ -338,6 +352,20 @@ def main() -> None:
 
     ensure(params._store.get("ForkSwapFailureStreak", "0") == "0", "Failure streak should reset after success.")
     ensure("ForkSwapLastResult" in params._store, "ForkSwapLastResult param missing.")
+
+    # Test migration path (Task 10): delete assets directory and verify migration logging
+    if assets_dir.exists():
+      shutil.rmtree(assets_dir)
+    ensure(not assets_dir.exists(), "Asset directory should be deleted for migration test.")
+
+    service = make_service()
+    ensure(assets_dir.exists(), "Asset directory should be recreated during migration.")
+    ensure(metadata_file.is_file(), "Asset metadata should exist after migration.")
+
+    if log_file.exists():
+      log_contents = log_file.read_text(encoding="utf-8")
+      ensure("First-time migration:" in log_contents or "Migration complete:" in log_contents,
+             "Log file missing migration message after first-time asset repository creation.")
 
     print("Forkswap service harness completed successfully.")
     if keep_tmp:

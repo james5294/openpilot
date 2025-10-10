@@ -248,12 +248,14 @@ initialize_asset_repository() {
   local desired_version="${SCRIPT_VERSION}:${manifest_hash}:${hashes_hash}:${overlay_signature}:${git_head}:${remote_hash}:${managed_fork}"
 
   local rebuild=0
+  local is_migration=0
   if [ ! -d "$ASSETS_DIR" ]; then
     if ! mkdir -p "$ASSETS_DIR"; then
       log_error "Unable to create asset directory at $ASSETS_DIR."
       return 1
     fi
     rebuild=1
+    is_migration=1
   fi
 
   if [ $rebuild -eq 0 ]; then
@@ -281,7 +283,11 @@ initialize_asset_repository() {
     return 0
   fi
 
-  log_info "Building forkswap asset repository (managed fork: $managed_fork)."
+  if [ $is_migration -eq 1 ]; then
+    log_info "First-time migration: Initializing forkswap asset repository (managed fork: $managed_fork)."
+  else
+    log_info "Building forkswap asset repository (managed fork: $managed_fork)."
+  fi
 
   local tmp_dir bundle_root rel_src dest type abs_src dest_path
   tmp_dir=$(mktemp -d /tmp/forkswap_assets.XXXXXX)
@@ -392,7 +398,11 @@ EOF
   } > "$ASSETS_README"
 
   rm -rf "$tmp_dir"
-  log_info "Forkswap asset repository initialized at $ASSETS_DIR (signature $desired_version)."
+  if [ $is_migration -eq 1 ]; then
+    log_info "Migration complete: Forkswap asset repository created at $ASSETS_DIR (signature $desired_version)."
+  else
+    log_info "Forkswap asset repository initialized at $ASSETS_DIR (signature $desired_version)."
+  fi
   return 0
 }
 
@@ -1229,6 +1239,12 @@ sync_overlay_files() {
     log_error "Overlay manifest has no files."; return 1
   fi
 
+  log_info "Starting overlay sync: $count items (version $version)"
+
+  local total_items=0 success_count=0 failed_count=0 warned_count=0
+  local sync_start_time
+  sync_start_time=$(date +%s)
+
   local idx
   for idx in $(seq 0 $((count - 1))); do
     local src dest type rel
@@ -1236,10 +1252,12 @@ sync_overlay_files() {
     dest=$(printf '%s' "$manifest_json" | jq -r ".files[$idx].destination")
     type=$(printf '%s' "$manifest_json" | jq -r ".files[$idx].type")
     src="$REPO_ROOT/$rel"
+    total_items=$((total_items + 1))
 
     if [ -z "$dest" ] || [[ "$dest" == /* ]] || [[ "$dest" == *".."* ]]; then
       log_error "Invalid overlay destination: $dest"
-      return 1
+      failed_count=$((failed_count + 1))
+      continue
     fi
 
     local dest_abs="$OPENPILOT_DIR/$dest"
@@ -1247,48 +1265,70 @@ sync_overlay_files() {
       "$OPENPILOT_DIR"/*) ;;
       *)
         log_error "Overlay destination escapes openpilot directory: $dest"
-        return 1
+        failed_count=$((failed_count + 1))
+        continue
         ;;
     esac
 
     if [ "$type" = "directory" ]; then
       if [ ! -d "$src" ]; then
-        log_error "Overlay directory missing: $src"
-        return 1
+        log_warn "Overlay directory missing: $src"
+        failed_count=$((failed_count + 1))
+        continue
       fi
       rm -rf "$dest_abs"
       mkdir -p "$(dirname "$dest_abs")"
-      if ! cp -rp "$src" "$dest_abs"; then
-        log_error "Failed to copy overlay directory $rel"
-        return 1
+      if cp -rp "$src" "$dest_abs"; then
+        success_count=$((success_count + 1))
+      else
+        log_warn "Failed to copy overlay directory $rel"
+        failed_count=$((failed_count + 1))
       fi
     elif [ "$type" = "file" ]; then
       if [ ! -f "$src" ]; then
-        log_error "Overlay file missing: $src"
-        return 1
+        log_warn "Overlay file missing: $src"
+        failed_count=$((failed_count + 1))
+        continue
       fi
       mkdir -p "$(dirname "$dest_abs")"
-      if ! cp "$src" "$dest_abs"; then
-        log_error "Failed to copy overlay file $rel"
-        return 1
-      fi
-      local expected actual
-      expected=$(printf '%s' "$hashes_json" | jq -r --arg key "$rel" '.[$key] // ""')
-      if [ -n "$expected" ] && [ "$expected" != "null" ]; then
-        actual=$(sha256sum "$src" | awk '{print $1}')
-        if [ "$actual" != "$expected" ]; then
-          log_warn "Hash mismatch for overlay file $rel (expected $expected, have $actual). Applying FrogPilot version regardless."
+      if cp "$src" "$dest_abs"; then
+        success_count=$((success_count + 1))
+        local expected actual
+        expected=$(printf '%s' "$hashes_json" | jq -r --arg key "$rel" '.[$key] // ""')
+        if [ -n "$expected" ] && [ "$expected" != "null" ]; then
+          actual=$(sha256sum "$src" | awk '{print $1}')
+          if [ "$actual" != "$expected" ]; then
+            log_warn "Hash mismatch for overlay file $rel (expected $expected, have $actual). Applied anyway."
+            warned_count=$((warned_count + 1))
+          fi
         fi
+      else
+        log_warn "Failed to copy overlay file $rel"
+        failed_count=$((failed_count + 1))
       fi
     else
       log_error "Unknown overlay item type for $rel: $type"
-      return 1
+      failed_count=$((failed_count + 1))
+      continue
     fi
   done
 
-  log_info "Forkswap overlay v${version} synced into current fork."
-  persist_overlay_metadata
-  return 0
+  local sync_end_time
+  sync_end_time=$(date +%s)
+  local sync_duration=$((sync_end_time - sync_start_time))
+  local success_rate=0
+  if [ "$total_items" -gt 0 ]; then
+    success_rate=$((success_count * 100 / total_items))
+  fi
+
+  if [ "$success_rate" -ge 75 ]; then
+    log_info "Overlay sync completed: $success_count/$total_items succeeded (${success_rate}%), $failed_count failed, $warned_count warnings, ${sync_duration}s"
+    persist_overlay_metadata
+    return 0
+  else
+    log_error "Overlay sync failed: only $success_count/$total_items succeeded (${success_rate}% < 75% threshold), ${sync_duration}s"
+    return 1
+  fi
 }
 
 validate_input() {
