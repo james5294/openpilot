@@ -211,8 +211,22 @@ initialize_asset_repository() {
     managed_fork="$DEFAULT_FORK_NAME"
   fi
 
+  # Check if we can source overlay files from REPO_ROOT, or if we need to use existing assets
+  local can_source_from_repo=1
   if [ ! -f "$OVERLAY_MANIFEST" ]; then
-    log_error "Overlay manifest missing: $OVERLAY_MANIFEST"
+    can_source_from_repo=0
+    log_warn "Overlay manifest not found in current fork: $OVERLAY_MANIFEST"
+
+    # If existing assets are valid, we can continue without rebuilding
+    if [ -f "$ASSET_TARBALL" ] && [ -f "$ASSET_TARBALL_SHA" ]; then
+      if (cd "$ASSETS_DIR" >/dev/null 2>&1 && sha256sum -c "$(basename "$ASSET_TARBALL_SHA")" >/dev/null 2>&1); then
+        log_info "Using existing asset repository (current fork lacks overlay files)."
+        return 0
+      fi
+    fi
+
+    # No valid existing assets and can't source from repo - this is an error
+    log_error "Cannot build asset repository: overlay files missing from current fork and no valid existing assets."
     return 1
   fi
 
