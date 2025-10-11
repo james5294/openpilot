@@ -612,6 +612,13 @@ ensure_managed_openpilot() {
   fi
 
   if [ -d "$OPENPILOT_DIR" ]; then
+    # Extract git metadata before migration
+    local git_url="" git_branch=""
+    if git -C "$OPENPILOT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+      git_url=$(git -C "$OPENPILOT_DIR" config --get remote.origin.url 2>/dev/null || echo "")
+      git_branch=$(git -C "$OPENPILOT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+    fi
+
     local default_fork="${CURRENT_FORK_NAME:-$DEFAULT_FORK_NAME}"
     local target_dir="$FORKS_DIR/$default_fork"
     local target="$target_dir/openpilot"
@@ -626,6 +633,14 @@ ensure_managed_openpilot() {
 
     if mv "$OPENPILOT_DIR" "$target"; then
       log_info "Migrated existing OpenPilot checkout to managed fork '$default_fork'."
+
+      # Save fork metadata if git info was available
+      if [ -n "$git_url" ] || [ -n "$git_branch" ]; then
+        save_fork_info "$default_fork" "$git_url" "$git_branch"
+      else
+        log_warn "Could not extract git metadata during migration; fork info incomplete."
+      fi
+
       write_current_fork "$default_fork"
       ensure_symlink "$target" "Current fork now linked to '$default_fork'."
     else
@@ -707,6 +722,38 @@ EOF
   else
     log_error "Failed to record fork metadata for '$fork_name'."
   fi
+}
+
+repair_fork_metadata() {
+  local fork_name="$1"
+  local fork_dir="$FORKS_DIR/$fork_name/openpilot"
+  local info_file="$FORKS_DIR/$fork_name/fork_info.json"
+
+  # Skip if metadata already exists and is complete
+  if [ -f "$info_file" ]; then
+    local existing_url existing_branch
+    existing_url=$(jq -r '.url // ""' "$info_file" 2>/dev/null)
+    existing_branch=$(jq -r '.branch // ""' "$info_file" 2>/dev/null)
+    if [ -n "$existing_url" ] && [ -n "$existing_branch" ]; then
+      return 0
+    fi
+  fi
+
+  # Try to extract git metadata from the fork directory
+  if [ -d "$fork_dir" ] && git -C "$fork_dir" rev-parse --git-dir >/dev/null 2>&1; then
+    local git_url git_branch
+    git_url=$(git -C "$fork_dir" config --get remote.origin.url 2>/dev/null || echo "")
+    git_branch=$(git -C "$fork_dir" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+
+    if [ -n "$git_url" ] || [ -n "$git_branch" ]; then
+      save_fork_info "$fork_name" "$git_url" "$git_branch"
+      log_info "Repaired metadata for fork '$fork_name'."
+      return 0
+    fi
+  fi
+
+  log_warn "Could not repair metadata for fork '$fork_name' - no git information available."
+  return 1
 }
 
 check_for_fork_updates() {
@@ -1570,6 +1617,16 @@ initialize() {
   fi
   ensure_managed_openpilot
   read_current_fork
+
+  # Repair metadata for any existing forks missing fork_info.json
+  if [ -d "$FORKS_DIR" ]; then
+    for fork_path in "$FORKS_DIR"/*; do
+      [ -d "$fork_path" ] || continue
+      local fork_name
+      fork_name=$(basename "$fork_path")
+      repair_fork_metadata "$fork_name" || true
+    done
+  fi
 
   if [ "${FORKSWAP_SKIP_OVERLAY:-0}" = "1" ]; then
     INITIAL_OVERLAY_STATUS=0
