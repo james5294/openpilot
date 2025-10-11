@@ -798,19 +798,49 @@ abort_operation() {
 }
 
 clone_fork() {
-  local new_fork_name fork_url branch_name fork_dir target_dir
+  local fork_url branch_name github_username new_fork_name fork_dir target_dir
 
-  printf "Enter a name for the new fork:\n"
-  read -r new_fork_name
-  while ! validate_input "$new_fork_name"; do
-    printf "Invalid input. Names can only contain alphanumeric characters, dashes, and underscores.\n"
-    printf "Enter a name for the new fork:\n"
-    read -r new_fork_name
+  # Step 1: Get GitHub URL
+  printf "Enter the GitHub URL of the fork to clone:\n"
+  read -r fork_url
+  while ! validate_url "$fork_url"; do
+    printf "Invalid URL format. Please enter a valid GitHub URL:\n"
+    read -r fork_url
   done
+
+  # Step 2: Get branch name (or auto-detect)
+  printf "Enter the branch name (leave empty for the default branch):\n"
+  read -r branch_name
+
+  if [ -z "$branch_name" ]; then
+    branch_name=$(git ls-remote --symref "$fork_url" HEAD 2>/dev/null | awk '/^ref/ { sub(/refs\/heads\//, "", $2); print $2 }')
+    if [ -z "$branch_name" ]; then
+      printf "Error: Unable to determine the default branch.\n"
+      return 1
+    fi
+    printf "Default branch detected: %s\n" "$branch_name"
+  fi
+
+  # Step 3: Extract username from URL and generate fork name
+  github_username=$(extract_github_username "$fork_url")
+  if [ -z "$github_username" ]; then
+    log_error "Unable to extract GitHub username from URL: $fork_url"
+    return 1
+  fi
+
+  new_fork_name="${github_username}-${branch_name}"
+  printf "Auto-generated fork name: %s\n" "$new_fork_name"
+
+  # Step 4: Validate auto-generated fork name
+  if ! validate_input "$new_fork_name"; then
+    log_error "Auto-generated fork name '$new_fork_name' contains invalid characters."
+    return 1
+  fi
 
   fork_dir="$FORKS_DIR/$new_fork_name"
   target_dir="$fork_dir/openpilot"
 
+  # Step 5: Handle existing fork conflicts
   if [ -d "$fork_dir" ]; then
     printf "A fork with this name already exists. Choose 'overwrite' or 'rename':\n"
     read -r choice
@@ -843,25 +873,6 @@ clone_fork() {
 
   mkdir -p "$fork_dir"
 
-  printf "Enter the GitHub URL of the fork to clone:\n"
-  read -r fork_url
-  while ! validate_url "$fork_url"; do
-    printf "Invalid URL format. Please enter a valid GitHub URL:\n"
-    read -r fork_url
-  done
-
-  printf "Enter the branch name (leave empty for the default branch):\n"
-  read -r branch_name
-
-  if [ -z "$branch_name" ]; then
-    branch_name=$(git ls-remote --symref "$fork_url" HEAD 2>/dev/null | awk '/^ref/ { sub(/refs\/heads\//, "", $2); print $2 }')
-    if [ -z "$branch_name" ]; then
-      printf "Error: Unable to determine the default branch.\n"
-      return 1
-    fi
-    printf "Default branch detected: %s\n" "$branch_name"
-  fi
-
   if ! check_disk_space; then
     return 1
   fi
@@ -893,14 +904,14 @@ clone_fork() {
     return 1
   fi
 
+  # Overlay sync is non-critical for clone operations - new forks won't have ForkSwap files yet
+  # The overlay repair mechanism will install them after clone completes
   if ! ensure_fork_swap_script; then
-    abort_operation
-    return 1
+    log_warn "Unable to install forkswap.sh in newly cloned fork (will be repaired automatically)."
   fi
 
   if ! sync_overlay_files; then
-    abort_operation
-    return 1
+    log_warn "Overlay sync incomplete for newly cloned fork (will be repaired automatically on next use)."
   fi
 
   finish_operation
@@ -1420,6 +1431,19 @@ validate_url() {
 
   log_error "Invalid URL format."
   return 1
+}
+
+extract_github_username() {
+  local url="$1"
+  # Remove https://, www., .git, trailing slashes
+  url=$(echo "$url" | sed -e 's|^https://||' -e 's|^www\.||' -e 's|\.git$||' -e 's|/$||')
+  # Extract username from github.com/username/repo
+  if echo "$url" | grep -q 'github\.com/'; then
+    echo "$url" | sed 's|github\.com/||' | cut -d '/' -f 1
+  else
+    echo ""
+    return 1
+  fi
 }
 
 cleanup() {

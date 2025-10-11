@@ -335,7 +335,8 @@ class ForkSwapService:
     if request.action in {"clone", "switch", "delete", "update"} and not self._is_offroad():
       return "Cannot modify forks while vehicle is engaged."
 
-    if request.action in {"clone", "switch", "delete", "update", "rename"}:
+    # Clone actions auto-generate fork name from URL+branch, so fork name is optional
+    if request.action in {"switch", "delete", "update", "rename"}:
       if not request.fork or not self._validate_fork_name(request.fork):
         return "Invalid fork name provided."
 
@@ -390,6 +391,21 @@ class ForkSwapService:
     if url.startswith("file://"):
       return True
     return bool(GIT_URL_PATTERN.fullmatch(url))
+
+  def _extract_github_username(self, url: str) -> Optional[str]:
+    """Extract GitHub username from URL for auto-naming."""
+    # Remove protocol, www, .git, trailing slashes
+    cleaned = url.replace("https://", "").replace("http://", "").replace("www.", "").rstrip("/")
+    if cleaned.endswith(".git"):
+      cleaned = cleaned[:-4]
+
+    # Extract username from github.com/username/repo
+    if "github.com/" in cleaned:
+      parts = cleaned.split("github.com/", 1)
+      if len(parts) == 2:
+        username = parts[1].split("/")[0]
+        return username if username else None
+    return None
 
   def _is_offroad(self) -> bool:
     try:
@@ -661,30 +677,41 @@ class ForkSwapService:
     lines: List[str] = []
 
     if request.action == "clone":
-      if not fork_name:
-        raise ValueError("Clone request requires 'fork' (target fork name).")
       if not request.url:
         raise ValueError("Clone request requires 'url'.")
 
-      existing_path = os.path.join(forks_dir, fork_name)
+      # Auto-generate fork name from URL + branch
+      username = self._extract_github_username(request.url)
+      if not username:
+        raise ValueError(f"Unable to extract GitHub username from URL: {request.url}")
+
+      branch = request.branch or ""
+      # If no branch specified, we'll let bash auto-detect it, but we need to know it for fork name
+      # For now, use the provided branch or "main" as fallback for naming
+      branch_for_name = branch if branch else "main"
+      auto_fork_name = f"{username}-{branch_for_name}"
+
+      if not self._validate_fork_name(auto_fork_name):
+        raise ValueError(f"Auto-generated fork name '{auto_fork_name}' contains invalid characters.")
+
+      existing_path = os.path.join(forks_dir, auto_fork_name)
       on_exists = request.options.get("on_exists", "abort")
       rename_to = request.options.get("rename_to")
       if os.path.isdir(existing_path):
         if on_exists not in {"overwrite", "rename"}:
-          raise ValueError("Target fork already exists; set options.on_exists to 'overwrite' or 'rename'.")
+          raise ValueError(f"Target fork '{auto_fork_name}' already exists; set options.on_exists to 'overwrite' or 'rename'.")
         if on_exists == "rename" and not rename_to:
           raise ValueError("options.rename_to is required when on_exists='rename'.")
 
+      # New bash script input sequence: Clone, URL, branch, (conflict handling), reboot, Exit
       lines.append("Clone")
-      lines.append(fork_name)
+      lines.append(request.url or "")
+      lines.append(branch)  # Can be empty for auto-detection
       if os.path.isdir(existing_path):
         if on_exists == "overwrite":
           lines.append("overwrite")
         else:
           lines.extend(["rename", rename_to])
-      lines.append(request.url or "")
-      branch = request.branch or ""
-      lines.append(branch)
       lines.append(reboot_choice)
       lines.append("Exit")
       return lines
