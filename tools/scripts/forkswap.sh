@@ -43,6 +43,15 @@ PARAM_BACKUP_DIR_NAME="params"
 LOCK_PATH=""
 LOCK_ROOT_DEFAULT="$FORKS_DIR/.forkswap.lock"
 
+# MANAGED FORK ARCHITECTURE
+# The managed fork is the stable source of overlay files for the asset repository
+# It should always have overlay files available and serves as the source of truth
+# Default: james5294 (the reference implementation fork)
+MANAGED_FORK_NAME=${MANAGED_FORK_NAME:-$DEFAULT_FORK_NAME}
+MANAGED_FORK_PATH="$FORKS_DIR/$MANAGED_FORK_NAME/openpilot"
+MANAGED_OVERLAY_MANIFEST="$MANAGED_FORK_PATH/overlay/forkswap_manifest.json"
+MANAGED_OVERLAY_HASHES="$MANAGED_FORK_PATH/overlay/forkswap_manifest.json.sha256"
+
 FORKS_PARENT=$(cd "$(dirname "$FORKS_DIR")" >/dev/null 2>&1 && pwd || echo "$(dirname "$FORKS_DIR")")
 ASSETS_DIR=${ASSETS_DIR:-$FORKS_PARENT/forkswap_assets}
 ASSET_TARBALL="$ASSETS_DIR/overlay.tar.gz"
@@ -56,6 +65,7 @@ ASSETS_METADATA_FILE="$ASSETS_DIR/metadata.json"
 
 REPAIR_OVERLAY_ONLY=0
 REFRESH_ASSETS_ONLY=0
+VERIFY_OVERLAY_ONLY=0
 INITIAL_OVERLAY_STATUS=0
 
 UPDATE_AVAILABLE=0
@@ -121,13 +131,20 @@ parse_cli_args() {
         export FORKSWAP_SKIP_OVERLAY=1
         shift
         ;;
+      --verify-overlay)
+        VERIFY_OVERLAY_ONLY=1
+        export FORKSWAP_SKIP_MAIN=1
+        export FORKSWAP_SKIP_OVERLAY=1
+        shift
+        ;;
       -h|--help)
         cat <<'EOF'
-Usage: forkswap.sh [--repair-overlay] [--refresh-assets]
+Usage: forkswap.sh [--repair-overlay] [--refresh-assets] [--verify-overlay]
 
 Options:
   --repair-overlay   Reapply the ForkSwap overlay using the asset bundle and exit.
   --refresh-assets   Rebuild the shared ForkSwap asset repository and exit.
+  --verify-overlay   Verify the integrity of the overlay deployment and exit.
   -h, --help         Show this message and exit.
 EOF
         exit 0
@@ -190,6 +207,33 @@ log_error() {
   printf '%s [ERROR] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" | tee -a "$LOG_FILE" >/dev/null
 }
 
+log_debug() {
+  # Only log debug messages if FORKSWAP_DEBUG is set
+  if [ "${FORKSWAP_DEBUG:-0}" != "1" ]; then
+    return 0
+  fi
+  rotate_logs
+  printf '%s [DEBUG] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" | tee -a "$LOG_FILE" >/dev/null
+}
+
+log_operation_start() {
+  local operation="$1"
+  rotate_logs
+  printf '%s [OPERATION] START: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$operation" | tee -a "$LOG_FILE" >/dev/null
+}
+
+log_operation_end() {
+  local operation="$1"
+  local status="${2:-SUCCESS}"
+  local duration="${3:-}"
+  rotate_logs
+  if [ -n "$duration" ]; then
+    printf '%s [OPERATION] END: %s - %s (duration: %ss)\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$operation" "$status" "$duration" | tee -a "$LOG_FILE" >/dev/null
+  else
+    printf '%s [OPERATION] END: %s - %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$operation" "$status" | tee -a "$LOG_FILE" >/dev/null
+  fi
+}
+
 persist_overlay_metadata() {
   local target_overlay_dir="$OPENPILOT_DIR/overlay"
   mkdir -p "$target_overlay_dir" 2>/dev/null || true
@@ -201,40 +245,508 @@ persist_overlay_metadata() {
   done
 }
 
-initialize_asset_repository() {
-  local managed_fork
-  managed_fork="${CURRENT_FORK_NAME:-}"
-  if [ -z "$managed_fork" ] && [ -f "$CURRENT_FORK_FILE" ]; then
-    managed_fork=$(tr -d '\r\n' <"$CURRENT_FORK_FILE")
-  fi
-  if [ -z "$managed_fork" ]; then
-    managed_fork="$DEFAULT_FORK_NAME"
-  fi
+# ========== AGNOS COMPATIBILITY CHECKING ==========
+# These functions implement AGNOS version compatibility checking to prevent
+# fork switches from triggering unexpected firmware updates that could brick the device.
 
-  # Check if we can source overlay files from REPO_ROOT, or if we need to use existing assets
-  local can_source_from_repo=1
-  if [ ! -f "$OVERLAY_MANIFEST" ]; then
-    can_source_from_repo=0
-    log_warn "Overlay manifest not found in current fork: $OVERLAY_MANIFEST"
-
-    # If existing assets are valid, we can continue without rebuilding
-    if [ -f "$ASSET_TARBALL" ] && [ -f "$ASSET_TARBALL_SHA" ]; then
-      if (cd "$ASSETS_DIR" >/dev/null 2>&1 && sha256sum -c "$(basename "$ASSET_TARBALL_SHA")" >/dev/null 2>&1); then
-        log_info "Using existing asset repository (current fork lacks overlay files)."
-        return 0
-      fi
+get_current_agnos_version() {
+  # Try to get AGNOS version from hardware
+  # Method 1: Check /VERSION file (standard AGNOS location)
+  if [ -f /VERSION ]; then
+    local version
+    version=$(cat /VERSION 2>/dev/null | tr -d '\r\n' | tr -d ' ')
+    if [ -n "$version" ]; then
+      echo "$version"
+      return 0
     fi
+  fi
 
-    # No valid existing assets and can't source from repo - this is an error
-    log_error "Cannot build asset repository: overlay files missing from current fork and no valid existing assets."
+  # Method 2: Check system params (openpilot may store it)
+  if [ -d "$PARAMS_PATH" ] && [ -f "$PARAMS_PATH/OsVersion" ]; then
+    local version
+    version=$(cat "$PARAMS_PATH/OsVersion" 2>/dev/null | tr -d '\r\n' | tr -d ' ')
+    if [ -n "$version" ]; then
+      echo "$version"
+      return 0
+    fi
+  fi
+
+  # Method 3: Try Python hardware module (if available)
+  if command -v python3 >/dev/null 2>&1; then
+    local version
+    version=$(python3 -c "from openpilot.system.hardware import HARDWARE; print(HARDWARE.get_os_version())" 2>/dev/null | tr -d '\r\n' | tr -d ' ')
+    if [ -n "$version" ]; then
+      echo "$version"
+      return 0
+    fi
+  fi
+
+  # Unable to determine AGNOS version
+  echo "unknown"
+  return 1
+}
+
+get_fork_agnos_version() {
+  local fork_name="$1"
+  local fork_path="$FORKS_DIR/$fork_name/openpilot"
+
+  # Check if fork directory exists
+  if [ ! -d "$fork_path" ]; then
+    log_error "Fork directory not found: $fork_path"
+    echo "unknown"
     return 1
   fi
 
+  # Read AGNOS_VERSION from launch_env.sh
+  local launch_env="$fork_path/launch_env.sh"
+  if [ ! -f "$launch_env" ]; then
+    log_debug "launch_env.sh not found for fork: $fork_name"
+    echo "none"
+    return 0  # Not an error - fork may not specify AGNOS version
+  fi
+
+  # Extract AGNOS_VERSION from launch_env.sh
+  # Use a subshell to safely source the file and extract the variable
+  local version
+  version=$(bash -c "unset AGNOS_VERSION; source '$launch_env' >/dev/null 2>&1 && echo -n \$AGNOS_VERSION" 2>/dev/null | tr -d '\r\n' | tr -d ' ')
+
+  if [ -z "$version" ]; then
+    log_debug "AGNOS_VERSION not set in launch_env.sh for fork: $fork_name"
+    echo "none"
+    return 0
+  fi
+
+  echo "$version"
+  return 0
+}
+
+check_agnos_compatibility() {
+  local target_fork="$1"
+  local force_check="${2:-0}"  # 0=normal check, 1=force check even if current AGNOS unknown
+
+  log_debug "Checking AGNOS compatibility for fork: $target_fork"
+
+  # Get current AGNOS version
+  local current_agnos
+  current_agnos=$(get_current_agnos_version)
+  local current_status=$?
+
+  # Get target fork's required AGNOS version
+  local target_agnos
+  target_agnos=$(get_fork_agnos_version "$target_fork")
+
+  log_debug "Current AGNOS: $current_agnos"
+  log_debug "Target fork AGNOS: $target_agnos"
+
+  # If current AGNOS is unknown and we're not forcing, skip check
+  if [ "$current_agnos" = "unknown" ] && [ "$force_check" -eq 0 ]; then
+    log_warn "Unable to determine current AGNOS version - skipping compatibility check"
+    log_warn "This could be risky if the target fork requires a different AGNOS version"
+    return 0  # Allow switch but warn
+  fi
+
+  # If target fork doesn't specify AGNOS version, it's probably compatible
+  if [ "$target_agnos" = "none" ] || [ -z "$target_agnos" ]; then
+    log_debug "Target fork does not specify AGNOS version - assuming compatible"
+    return 0
+  fi
+
+  # Compare versions
+  if [ "$current_agnos" != "$target_agnos" ]; then
+    log_warn "AGNOS version mismatch detected!"
+    log_warn "Current AGNOS: $current_agnos"
+    log_warn "Target fork requires: $target_agnos"
+    return 1  # Incompatible
+  fi
+
+  log_debug "AGNOS versions match - fork is compatible"
+  return 0  # Compatible
+}
+
+display_agnos_compatibility_warning() {
+  local target_fork="$1"
+  local current_agnos="$2"
+  local target_agnos="$3"
+
+  printf "\n"
+  printf "%s════════════════════════════════════════════════════════════%s\n" "$RED" "$RESET"
+  printf "%s⚠️  AGNOS VERSION MISMATCH DETECTED%s\n" "$RED" "$RESET"
+  printf "%s════════════════════════════════════════════════════════════%s\n" "$RED" "$RESET"
+  printf "\n"
+  printf "Current AGNOS version:  %s%s%s\n" "$YELLOW" "$current_agnos" "$RESET"
+  printf "Target fork requires:   %s%s%s\n" "$YELLOW" "$target_agnos" "$RESET"
+  printf "\n"
+  printf "%sWARNING:%s This fork may not be compatible with your device's firmware.\n" "$RED" "$RESET"
+  printf "Switching could trigger a firmware update and %sBRICK YOUR DEVICE%s.\n" "$RED" "$RESET"
+  printf "\n"
+  printf "Options:\n"
+  printf "  %s1)%s Cancel switch (RECOMMENDED)\n" "$GREEN" "$RESET"
+  printf "  %s2)%s Force switch anyway (DANGEROUS - may brick device)\n" "$RED" "$RESET"
+  printf "\n"
+  printf "%s════════════════════════════════════════════════════════════%s\n" "$RED" "$RESET"
+  printf "\n"
+}
+
+# ========== UPDATED.PY DAEMON PROTECTION ==========
+# These functions implement protection against updated.py daemon during fork switches
+# to prevent firmware update triggers during the critical switching period.
+
+FORKSWAP_PROTECTION_FLAG=${FORKSWAP_PROTECTION_FLAG:-/data/.forkswap_protection}
+UPDATED_SERVICE_NAME=${UPDATED_SERVICE_NAME:-updated}
+
+stop_updated_daemon() {
+  local target_fork="$1"
+  log_info "Stopping updated.py daemon to prevent firmware update triggers"
+
+  # Check if systemctl is available (comma devices use systemd)
+  if command -v systemctl >/dev/null 2>&1; then
+    # Check if service exists and is active
+    if systemctl is-active --quiet "$UPDATED_SERVICE_NAME" 2>/dev/null; then
+      log_debug "Stopping $UPDATED_SERVICE_NAME service"
+      if systemctl stop "$UPDATED_SERVICE_NAME" 2>/dev/null; then
+        log_info "Successfully stopped $UPDATED_SERVICE_NAME daemon"
+        # Give it a moment to fully stop
+        sleep 2
+      else
+        log_warn "Failed to stop $UPDATED_SERVICE_NAME daemon via systemctl"
+        # Try killall as fallback
+        if command -v killall >/dev/null 2>&1; then
+          killall -q updated.py 2>/dev/null || true
+          sleep 1
+        fi
+      fi
+    else
+      log_debug "$UPDATED_SERVICE_NAME service not active or not found"
+    fi
+  else
+    log_warn "systemctl not available - attempting direct process termination"
+    # Fallback for non-systemd systems
+    if command -v killall >/dev/null 2>&1; then
+      killall -q updated.py 2>/dev/null || true
+      sleep 1
+    fi
+  fi
+
+  # Set post-reboot protection flag
+  set_forkswap_protection_flag "$target_fork"
+}
+
+set_forkswap_protection_flag() {
+  local target_fork="$1"
+  local current_agnos target_agnos
+
+  current_agnos=$(get_current_agnos_version)
+  target_agnos=$(get_fork_agnos_version "$target_fork")
+
+  log_debug "Setting ForkSwap protection flag for post-reboot verification"
+
+  # Write protection metadata
+  cat >"$FORKSWAP_PROTECTION_FLAG" <<EOF
+{
+  "target_fork": "$target_fork",
+  "switch_timestamp": $(date +%s),
+  "current_agnos": "$current_agnos",
+  "target_agnos": "$target_agnos",
+  "script_version": "$SCRIPT_VERSION",
+  "switched_by": "$$"
+}
+EOF
+
+  if [ $? -eq 0 ]; then
+    log_info "Post-reboot protection flag set for fork: $target_fork"
+    return 0
+  else
+    log_warn "Failed to set post-reboot protection flag"
+    return 1
+  fi
+}
+
+clear_forkswap_protection_flag() {
+  if [ -f "$FORKSWAP_PROTECTION_FLAG" ]; then
+    log_debug "Clearing ForkSwap protection flag"
+    rm -f "$FORKSWAP_PROTECTION_FLAG"
+    return 0
+  fi
+  return 1
+}
+
+check_forkswap_protection_status() {
+  # This function should be called during initialization to check if we're
+  # in a protected post-reboot state. If so, perform verification before
+  # allowing updated.py to run.
+
+  if [ ! -f "$FORKSWAP_PROTECTION_FLAG" ]; then
+    return 0  # No protection active
+  fi
+
+  log_info "ForkSwap protection flag detected - performing post-reboot verification"
+
+  # Read protection metadata
+  local target_fork switch_timestamp
+  if command -v jq >/dev/null 2>&1; then
+    target_fork=$(jq -r '.target_fork // ""' "$FORKSWAP_PROTECTION_FLAG" 2>/dev/null)
+    switch_timestamp=$(jq -r '.switch_timestamp // ""' "$FORKSWAP_PROTECTION_FLAG" 2>/dev/null)
+  else
+    # Fallback if jq not available
+    target_fork=$(grep -o '"target_fork": *"[^"]*"' "$FORKSWAP_PROTECTION_FLAG" 2>/dev/null | cut -d'"' -f4)
+    switch_timestamp=$(grep -o '"switch_timestamp": *[0-9]*' "$FORKSWAP_PROTECTION_FLAG" 2>/dev/null | awk '{print $2}')
+  fi
+
+  log_debug "Protected fork switch detected: $target_fork (switched at timestamp: $switch_timestamp)"
+
+  # Check how long ago the switch happened
+  local current_time
+  current_time=$(date +%s)
+  local elapsed=$((current_time - switch_timestamp))
+
+  log_debug "Time since fork switch: ${elapsed}s"
+
+  # If switch was more than 10 minutes ago, protection may be stale
+  if [ "$elapsed" -gt 600 ]; then
+    log_warn "Protection flag is older than 10 minutes - may be stale"
+    log_warn "Clearing stale protection flag"
+    clear_forkswap_protection_flag
+    return 0
+  fi
+
+  # Verify current fork matches protected fork
+  if [ -n "$target_fork" ] && [ "$CURRENT_FORK_NAME" != "$target_fork" ]; then
+    log_warn "Protected fork mismatch: expected $target_fork, current is $CURRENT_FORK_NAME"
+    log_warn "Clearing mismatched protection flag"
+    clear_forkswap_protection_flag
+    return 0
+  fi
+
+  # Perform overlay verification
+  log_info "Verifying overlay deployment for protected fork: $target_fork"
+  if ! verify_overlay_deployment "$target_fork" "$OPENPILOT_DIR"; then
+    log_error "Post-reboot overlay verification failed!"
+    log_error "ForkSwap overlay may be corrupted. Run --repair-overlay to fix."
+    # Don't clear flag yet - leave it as evidence of the problem
+    return 1
+  fi
+
+  log_info "Post-reboot verification passed - fork switch completed successfully"
+  clear_forkswap_protection_flag
+  return 0
+}
+
+restart_updated_daemon() {
+  log_info "Restarting updated.py daemon"
+
+  if command -v systemctl >/dev/null 2>&1; then
+    if systemctl start "$UPDATED_SERVICE_NAME" 2>/dev/null; then
+      log_info "Successfully restarted $UPDATED_SERVICE_NAME daemon"
+      return 0
+    else
+      log_warn "Failed to restart $UPDATED_SERVICE_NAME daemon via systemctl"
+      return 1
+    fi
+  else
+    log_warn "systemctl not available - cannot restart updated.py daemon"
+    log_warn "Daemon will restart automatically on reboot"
+    return 0
+  fi
+}
+
+verify_overlay_deployment() {
+  local fork_name="${1:-${CURRENT_FORK_NAME:-unknown}}"
+  local target_dir="${2:-$OPENPILOT_DIR}"
+
+  log_debug "Verifying overlay deployment in $target_dir for fork $fork_name"
+
+  # PHASE 1.5 FIX: Comprehensive verification - check all manifest files, not just 2
+
+  # First check critical files
+  if [ ! -f "$target_dir/tools/scripts/forkswap.sh" ]; then
+    log_error "Verification failed: forkswap.sh missing"
+    return 1
+  fi
+
+  if [ ! -x "$target_dir/tools/scripts/forkswap.sh" ]; then
+    log_warn "Verification warning: forkswap.sh exists but is not executable"
+    chmod +x "$target_dir/tools/scripts/forkswap.sh" 2>/dev/null || \
+      log_error "Cannot make forkswap.sh executable"
+  fi
+
+  # Check overlay directory exists
+  if [ ! -d "$target_dir/overlay" ]; then
+    log_error "Verification failed: Overlay directory missing: $target_dir/overlay"
+    return 1
+  fi
+
+  # Load and verify against manifest
+  local manifest_file="$target_dir/overlay/forkswap_manifest.json"
+  if [ ! -f "$manifest_file" ]; then
+    log_error "Verification failed: Manifest missing at $manifest_file"
+    return 1
+  fi
+
+  local manifest_json
+  manifest_json=$(cat "$manifest_file" 2>/dev/null) || {
+    log_error "Verification failed: Cannot read manifest"
+    return 1
+  }
+
+  # Verify all files from manifest
+  local total_files missing_files
+  total_files=$(printf '%s' "$manifest_json" | jq '.files | length' 2>/dev/null || echo "0")
+  missing_files=0
+
+  if [ "$total_files" -eq 0 ]; then
+    log_warn "Verification: Manifest has no files listed"
+  else
+    local idx
+    for idx in $(seq 0 $((total_files - 1))); do
+      local dest type
+      dest=$(printf '%s' "$manifest_json" | jq -r ".files[$idx].destination" 2>/dev/null)
+      type=$(printf '%s' "$manifest_json" | jq -r ".files[$idx].type" 2>/dev/null)
+
+      local dest_abs="$target_dir/$dest"
+
+      if [ "$type" = "file" ]; then
+        if [ ! -f "$dest_abs" ]; then
+          log_warn "Verification: File missing: $dest"
+          missing_files=$((missing_files + 1))
+        fi
+      elif [ "$type" = "directory" ]; then
+        if [ ! -d "$dest_abs" ]; then
+          log_warn "Verification: Directory missing: $dest"
+          missing_files=$((missing_files + 1))
+        fi
+      fi
+    done
+  fi
+
+  # Calculate results
+  local verified_files=$((total_files - missing_files))
+  local success_threshold=$((total_files * 75 / 100))
+
+  log_info "Overlay verification: $verified_files/$total_files files present"
+
+  # Allow up to 25% missing (consistent with deployment 75% threshold)
+  if [ $verified_files -lt $success_threshold ]; then
+    log_error "Overlay verification failed: only $verified_files/$total_files present (< 75% threshold)"
+    return 1
+  fi
+
+  if [ $missing_files -gt 0 ]; then
+    log_warn "Overlay verification passed with warnings: $missing_files files missing"
+  else
+    log_info "Overlay verification passed: all $total_files files present"
+  fi
+
+  return 0
+}
+
+repair_overlay_deployment() {
+  local fork_name="${1:-${CURRENT_FORK_NAME:-unknown}}"
+  local target_dir="${2:-$OPENPILOT_DIR}"
+
+  log_info "Attempting automatic overlay repair for fork '$fork_name'"
+  log_operation_start "Overlay Repair for $fork_name"
+
+  local repair_start_time
+  repair_start_time=$(date +%s)
+
+  # First, ensure asset repository is available
+  if ! initialize_asset_repository; then
+    log_error "Overlay repair failed: Cannot initialize asset repository"
+    local repair_end_time
+    repair_end_time=$(date +%s)
+    local repair_duration=$((repair_end_time - repair_start_time))
+    log_operation_end "Overlay Repair" "FAILED - Asset repository unavailable" "$repair_duration"
+    return 1
+  fi
+
+  # Ensure forkswap.sh is present
+  if ! ensure_fork_swap_script; then
+    log_error "Overlay repair failed: Cannot install forkswap.sh"
+    local repair_end_time
+    repair_end_time=$(date +%s)
+    local repair_duration=$((repair_end_time - repair_start_time))
+    log_operation_end "Overlay Repair" "FAILED - Script installation failed" "$repair_duration"
+    return 1
+  fi
+
+  # Redeploy overlay files
+  if ! sync_overlay_files; then
+    log_error "Overlay repair failed: Cannot sync overlay files"
+    local repair_end_time
+    repair_end_time=$(date +%s)
+    local repair_duration=$((repair_end_time - repair_start_time))
+    log_operation_end "Overlay Repair" "FAILED - Overlay sync failed" "$repair_duration"
+    return 1
+  fi
+
+  # Verify repair succeeded
+  if ! verify_overlay_deployment "$fork_name" "$target_dir"; then
+    log_error "Overlay repair failed: Verification failed after repair"
+    local repair_end_time
+    repair_end_time=$(date +%s)
+    local repair_duration=$((repair_end_time - repair_start_time))
+    log_operation_end "Overlay Repair" "FAILED - Verification failed" "$repair_duration"
+    return 1
+  fi
+
+  local repair_end_time
+  repair_end_time=$(date +%s)
+  local repair_duration=$((repair_end_time - repair_start_time))
+  log_info "Overlay repair succeeded for fork '$fork_name'"
+  log_operation_end "Overlay Repair" "SUCCESS" "$repair_duration"
+  return 0
+}
+
+initialize_asset_repository() {
+  # MANAGED FORK ARCHITECTURE: Always build from the managed fork (source of truth)
+  # This separates the stable source (managed fork) from dynamic targets (any fork)
+  local source_fork="$MANAGED_FORK_NAME"
+  local source_path="$MANAGED_FORK_PATH"
+  local source_manifest="$MANAGED_OVERLAY_MANIFEST"
+  local source_hashes="$MANAGED_OVERLAY_HASHES"
+
+  # Check if managed fork exists and has overlay files
+  local can_source_from_managed=1
+  if [ ! -d "$source_path" ]; then
+    can_source_from_managed=0
+    log_warn "Managed fork not found: $source_path"
+  elif [ ! -f "$source_manifest" ]; then
+    can_source_from_managed=0
+    log_warn "Overlay manifest not found in managed fork: $source_manifest"
+  fi
+
+  # Fallback: If managed fork unavailable, try current fork (legacy behavior)
+  if [ $can_source_from_managed -eq 0 ]; then
+    log_warn "Managed fork unavailable, attempting fallback to current fork"
+    source_fork="${CURRENT_FORK_NAME:-$DEFAULT_FORK_NAME}"
+    source_path="$REPO_ROOT"
+    source_manifest="$OVERLAY_MANIFEST"
+    source_hashes="$OVERLAY_HASHES"
+
+    if [ ! -f "$source_manifest" ]; then
+      # If existing assets are valid, we can continue without rebuilding
+      if [ -f "$ASSET_TARBALL" ] && [ -f "$ASSET_TARBALL_SHA" ]; then
+        if (cd "$ASSETS_DIR" >/dev/null 2>&1 && sha256sum -c "$(basename "$ASSET_TARBALL_SHA")" >/dev/null 2>&1); then
+          log_info "Using existing asset repository (no source fork available)."
+          return 0
+        fi
+      fi
+
+      # No valid existing assets and can't source from any fork - this is an error
+      log_error "Cannot build asset repository: overlay files missing from all sources and no valid existing assets."
+      log_error "Expected managed fork at: $MANAGED_FORK_PATH"
+      log_error "Or current fork overlay at: $OVERLAY_MANIFEST"
+      return 1
+    fi
+  fi
+
+  log_debug "Asset repository will be built from source fork: $source_fork at $source_path"
+
   local manifest_hash hashes_hash overlay_signature overlay_lines
-  manifest_hash=$(sha256sum "$OVERLAY_MANIFEST" | awk '{print $1}')
-  if [ -f "$OVERLAY_HASHES" ]; then
-    hashes_hash=$(sha256sum "$OVERLAY_HASHES" | awk '{print $1}')
-    overlay_lines=$(jq -r 'to_entries | sort_by(.key) | map("\(.key)=\(.value // \"null\")") | join("\n")' "$OVERLAY_HASHES" 2>/dev/null || printf '')
+  manifest_hash=$(sha256sum "$source_manifest" | awk '{print $1}')
+  if [ -f "$source_hashes" ]; then
+    hashes_hash=$(sha256sum "$source_hashes" | awk '{print $1}')
+    overlay_lines=$(jq -r 'to_entries | sort_by(.key) | map("\(.key)=\(.value // \"null\")") | join("\n")' "$source_hashes" 2>/dev/null || printf '')
     if [ -n "$overlay_lines" ]; then
       overlay_signature=$(printf '%s\n' "$overlay_lines" | sha256sum | awk '{print $1}')
     else
@@ -245,21 +757,23 @@ initialize_asset_repository() {
     overlay_signature="missing"
   fi
 
+  # FORK-INDEPENDENT VERSIONING: Use managed fork git info, not current fork
   local git_head="nogit"
-  if command -v git >/dev/null 2>&1 && git -C "$REPO_ROOT" rev-parse HEAD >/dev/null 2>&1; then
-    git_head=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo "nogit")
+  if command -v git >/dev/null 2>&1 && git -C "$source_path" rev-parse HEAD >/dev/null 2>&1; then
+    git_head=$(git -C "$source_path" rev-parse HEAD 2>/dev/null || echo "nogit")
   fi
 
   local remote_hash="noremote"
   if command -v git >/dev/null 2>&1; then
     local remote_url
-    remote_url=$(git -C "$REPO_ROOT" config --get remote.origin.url 2>/dev/null || printf '')
+    remote_url=$(git -C "$source_path" config --get remote.origin.url 2>/dev/null || printf '')
     if [ -n "$remote_url" ]; then
       remote_hash=$(printf '%s' "$remote_url" | sha256sum | awk '{print $1}')
     fi
   fi
 
-  local desired_version="${SCRIPT_VERSION}:${manifest_hash}:${hashes_hash}:${overlay_signature}:${git_head}:${remote_hash}:${managed_fork}"
+  # Version string now uses source_fork (managed fork) instead of current fork
+  local desired_version="${SCRIPT_VERSION}:${manifest_hash}:${hashes_hash}:${overlay_signature}:${git_head}:${remote_hash}:${source_fork}"
 
   local rebuild=0
   local is_migration=0
@@ -281,9 +795,10 @@ initialize_asset_repository() {
     local stored_fork=""
     if [ -f "$ASSETS_METADATA_FILE" ]; then
       stored_signature=$(jq -r '.signature // empty' "$ASSETS_METADATA_FILE" 2>/dev/null || printf '')
-      stored_fork=$(jq -r '.managed_fork // empty' "$ASSETS_METADATA_FILE" 2>/dev/null || printf '')
+      stored_fork=$(jq -r '.source_fork // empty' "$ASSETS_METADATA_FILE" 2>/dev/null || printf '')
     fi
-    if [ "$stored_version" != "$desired_version" ] || [ "$stored_signature" != "$desired_version" ] || [ -n "$stored_fork" ] && [ "$stored_fork" != "$managed_fork" ]; then
+    # Rebuild if version changed OR source fork changed
+    if [ "$stored_version" != "$desired_version" ] || [ "$stored_signature" != "$desired_version" ] || [ -n "$stored_fork" ] && [ "$stored_fork" != "$source_fork" ]; then
       rebuild=1
     elif [ ! -f "$ASSET_TARBALL" ] || [ ! -f "$ASSET_TARBALL_SHA" ] || [ ! -f "$ASSET_SCRIPT" ]; then
       rebuild=1
@@ -297,25 +812,46 @@ initialize_asset_repository() {
     return 0
   fi
 
+  local build_start_time
+  build_start_time=$(date +%s)
+
   if [ $is_migration -eq 1 ]; then
-    log_info "First-time migration: Initializing forkswap asset repository (managed fork: $managed_fork)."
+    log_operation_start "Asset Repository Initialization (Migration) from $source_fork"
+    log_info "First-time migration: Initializing forkswap asset repository (source fork: $source_fork)."
   else
-    log_info "Building forkswap asset repository (managed fork: $managed_fork)."
+    log_operation_start "Asset Repository Build from $source_fork"
+    log_info "Building forkswap asset repository (source fork: $source_fork)."
   fi
+
+  log_debug "Source fork: $source_fork"
+  log_debug "Source path: $source_path"
+  log_debug "Asset destination: $ASSETS_DIR"
+  log_debug "Overlay manifest: $source_manifest"
 
   local tmp_dir bundle_root rel_src dest type abs_src dest_path
   tmp_dir=$(mktemp -d /tmp/forkswap_assets.XXXXXX)
   if [ -z "$tmp_dir" ]; then
     log_error "Unable to allocate temporary directory for asset build."
+    local build_end_time
+    build_end_time=$(date +%s)
+    local build_duration=$((build_end_time - build_start_time))
+    log_operation_end "Asset Repository Build" "FAILED - Temp directory allocation failed" "$build_duration"
     return 1
   fi
 
   bundle_root="$tmp_dir/bundle"
   mkdir -p "$bundle_root"
 
+  local files_processed=0
+  local files_total=0
+  # Count total files to process
+  files_total=$(jq -r '.files[] | "\(.source)\t\(.destination)\t\(.type)"' "$source_manifest" | wc -l | tr -d ' ')
+  log_debug "Processing $files_total overlay items from manifest"
+
   while IFS=$'\t' read -r rel_src dest type; do
+    files_processed=$((files_processed + 1))
     [ -n "$rel_src" ] || continue
-    abs_src="$REPO_ROOT/$rel_src"
+    abs_src="$source_path/$rel_src"
     dest_path="$bundle_root/$dest"
 
     case "$type" in
@@ -326,11 +862,19 @@ initialize_asset_repository() {
           if [ -f "$ASSET_TARBALL" ] && [ -f "$ASSET_TARBALL_SHA" ]; then
             if (cd "$ASSETS_DIR" >/dev/null 2>&1 && sha256sum -c "$(basename "$ASSET_TARBALL_SHA")" >/dev/null 2>&1); then
               log_info "Source files missing but existing asset repository is valid. Using existing assets."
+              local build_end_time
+              build_end_time=$(date +%s)
+              local build_duration=$((build_end_time - build_start_time))
+              log_operation_end "Asset Repository Build" "SUCCESS - Using existing assets (source unavailable)" "$build_duration"
               rm -rf "$tmp_dir"
               return 0
             fi
           fi
           log_error "Cannot build asset repository: source files missing and no valid existing assets."
+          local build_end_time
+          build_end_time=$(date +%s)
+          local build_duration=$((build_end_time - build_start_time))
+          log_operation_end "Asset Repository Build" "FAILED - Source files missing, processed $files_processed/$files_total items" "$build_duration"
           rm -rf "$tmp_dir"
           return 1
         fi
@@ -338,6 +882,10 @@ initialize_asset_repository() {
         mkdir -p "$dest_path"
         if ! cp -a "$abs_src/." "$dest_path/"; then
           log_error "Failed to stage overlay directory $rel_src"
+          local build_end_time
+          build_end_time=$(date +%s)
+          local build_duration=$((build_end_time - build_start_time))
+          log_operation_end "Asset Repository Build" "FAILED - Directory copy failed, processed $files_processed/$files_total items" "$build_duration"
           rm -rf "$tmp_dir"
           return 1
         fi
@@ -349,62 +897,100 @@ initialize_asset_repository() {
           if [ -f "$ASSET_TARBALL" ] && [ -f "$ASSET_TARBALL_SHA" ]; then
             if (cd "$ASSETS_DIR" >/dev/null 2>&1 && sha256sum -c "$(basename "$ASSET_TARBALL_SHA")" >/dev/null 2>&1); then
               log_info "Source files missing but existing asset repository is valid. Using existing assets."
+              local build_end_time
+              build_end_time=$(date +%s)
+              local build_duration=$((build_end_time - build_start_time))
+              log_operation_end "Asset Repository Build" "SUCCESS - Using existing assets (source unavailable)" "$build_duration"
               rm -rf "$tmp_dir"
               return 0
             fi
           fi
           log_error "Cannot build asset repository: source files missing and no valid existing assets."
+          local build_end_time
+          build_end_time=$(date +%s)
+          local build_duration=$((build_end_time - build_start_time))
+          log_operation_end "Asset Repository Build" "FAILED - Source files missing, processed $files_processed/$files_total items" "$build_duration"
           rm -rf "$tmp_dir"
           return 1
         fi
         mkdir -p "$(dirname "$dest_path")"
         if ! cp "$abs_src" "$dest_path"; then
           log_error "Failed to stage overlay file $rel_src"
+          local build_end_time
+          build_end_time=$(date +%s)
+          local build_duration=$((build_end_time - build_start_time))
+          log_operation_end "Asset Repository Build" "FAILED - File copy failed, processed $files_processed/$files_total items" "$build_duration"
           rm -rf "$tmp_dir"
           return 1
         fi
         ;;
       *)
         log_error "Unknown overlay type '$type' in manifest."
+        local build_end_time
+        build_end_time=$(date +%s)
+        local build_duration=$((build_end_time - build_start_time))
+        log_operation_end "Asset Repository Build" "FAILED - Unknown type, processed $files_processed/$files_total items" "$build_duration"
         rm -rf "$tmp_dir"
         return 1
         ;;
     esac
-  done < <(jq -r '.files[] | "\(.source)\t\(.destination)\t\(.type)"' "$OVERLAY_MANIFEST")
+  done < <(jq -r '.files[] | "\(.source)\t\(.destination)\t\(.type)"' "$source_manifest")
+
+  log_debug "Processed $files_processed overlay items successfully"
 
   if ! (cd "$bundle_root" && tar -czf "$tmp_dir/overlay.tar.gz" .); then
     log_error "Failed to package overlay asset bundle."
+    local build_end_time
+    build_end_time=$(date +%s)
+    local build_duration=$((build_end_time - build_start_time))
+    log_operation_end "Asset Repository Build" "FAILED - Tarball packaging failed" "$build_duration"
     rm -rf "$tmp_dir"
     return 1
   fi
 
   if ! (cd "$tmp_dir" && sha256sum overlay.tar.gz > overlay.tar.gz.sha256); then
     log_error "Unable to compute checksum for overlay asset bundle."
+    local build_end_time
+    build_end_time=$(date +%s)
+    local build_duration=$((build_end_time - build_start_time))
+    log_operation_end "Asset Repository Build" "FAILED - Checksum computation failed" "$build_duration"
     rm -rf "$tmp_dir"
     return 1
   fi
 
   if ! cp "$tmp_dir/overlay.tar.gz" "$ASSET_TARBALL"; then
     log_error "Unable to install overlay asset bundle."
+    local build_end_time
+    build_end_time=$(date +%s)
+    local build_duration=$((build_end_time - build_start_time))
+    log_operation_end "Asset Repository Build" "FAILED - Asset installation failed" "$build_duration"
     rm -rf "$tmp_dir"
     return 1
   fi
 
   if ! cp "$tmp_dir/overlay.tar.gz.sha256" "$ASSET_TARBALL_SHA"; then
     log_error "Unable to install overlay asset checksum."
+    local build_end_time
+    build_end_time=$(date +%s)
+    local build_duration=$((build_end_time - build_start_time))
+    log_operation_end "Asset Repository Build" "FAILED - Checksum installation failed" "$build_duration"
     rm -rf "$tmp_dir"
     return 1
   fi
 
   if ! cp "$SCRIPT_PATH" "$ASSET_SCRIPT"; then
     log_error "Unable to copy forkswap.sh into asset repository."
+    local build_end_time
+    build_end_time=$(date +%s)
+    local build_duration=$((build_end_time - build_start_time))
+    log_operation_end "Asset Repository Build" "FAILED - Script copy failed" "$build_duration"
     rm -rf "$tmp_dir"
     return 1
   fi
   chmod +x "$ASSET_SCRIPT" 2>/dev/null || true
 
-  cp "$OVERLAY_MANIFEST" "$ASSET_MANIFEST_COPY" 2>/dev/null || true
-  cp "$OVERLAY_HASHES" "$ASSET_HASHES_COPY" 2>/dev/null || true
+  cp "$source_manifest" "$ASSET_MANIFEST_COPY" 2>/dev/null || true
+  cp "$source_hashes" "$ASSET_HASHES_COPY" 2>/dev/null || true
 
   printf '%s\n' "$desired_version" > "$ASSETS_VERSION_FILE"
   local generated_at
@@ -413,7 +999,8 @@ initialize_asset_repository() {
 {
   "signature": "$desired_version",
   "script_version": "$SCRIPT_VERSION",
-  "managed_fork": "$managed_fork",
+  "source_fork": "$source_fork",
+  "source_path": "$source_path",
   "manifest_sha": "$manifest_hash",
   "hashes_sha": "$hashes_hash",
   "overlay_hash_signature": "$overlay_signature",
@@ -425,15 +1012,23 @@ EOF
   {
     printf 'Forkswap asset repository generated on %s\n' "$(date)"
     printf 'Script version: %s\n' "$SCRIPT_VERSION"
-    printf 'Managed fork: %s\n' "$managed_fork"
+    printf 'Source fork: %s\n' "$source_fork"
+    printf 'Source path: %s\n' "$source_path"
     printf 'Overlay manifest hash: %s\n' "$manifest_hash"
   } > "$ASSETS_README"
 
   rm -rf "$tmp_dir"
+
+  local build_end_time
+  build_end_time=$(date +%s)
+  local build_duration=$((build_end_time - build_start_time))
+
   if [ $is_migration -eq 1 ]; then
     log_info "Migration complete: Forkswap asset repository created at $ASSETS_DIR (signature $desired_version)."
+    log_operation_end "Asset Repository Initialization (Migration)" "SUCCESS - Processed $files_processed items" "$build_duration"
   else
     log_info "Forkswap asset repository initialized at $ASSETS_DIR (signature $desired_version)."
+    log_operation_end "Asset Repository Build" "SUCCESS - Processed $files_processed items" "$build_duration"
   fi
   return 0
 }
@@ -951,14 +1546,28 @@ clone_fork() {
     return 1
   fi
 
-  # Overlay sync is non-critical for clone operations - new forks won't have ForkSwap files yet
-  # The overlay repair mechanism will install them after clone completes
+  # CRITICAL: Overlay deployment must succeed during clone operations
+  # The asset repository should have been built from the managed fork (james5294)
+  # If overlay deployment fails here, the clone is broken and should be aborted
   if ! ensure_fork_swap_script; then
-    log_warn "Unable to install forkswap.sh in newly cloned fork (will be repaired automatically)."
+    log_error "CRITICAL: Unable to install forkswap.sh in newly cloned fork. Clone operation failed."
+    abort_operation
+    return 1
   fi
 
   if ! sync_overlay_files; then
-    log_warn "Overlay sync incomplete for newly cloned fork (will be repaired automatically on next use)."
+    log_error "CRITICAL: Overlay deployment failed for newly cloned fork. Clone operation failed."
+    log_error "This likely means the asset repository could not be built from the source fork."
+    log_error "Verify that the managed fork (${DEFAULT_FORK_NAME}) has overlay files, or use --refresh-assets to rebuild."
+    abort_operation
+    return 1
+  fi
+
+  # Verify overlay deployment succeeded
+  if ! verify_overlay_deployment "$new_fork_name" "$target_dir"; then
+    log_error "CRITICAL: Overlay deployment verification failed for newly cloned fork."
+    abort_operation
+    return 1
   fi
 
   finish_operation
@@ -993,6 +1602,55 @@ switch_fork() {
       ;;
   esac
 
+  # ========== AGNOS COMPATIBILITY CHECK ==========
+  # Check if target fork requires a different AGNOS version
+  # This prevents firmware update triggers that could brick the device
+  if ! check_agnos_compatibility "$fork"; then
+    local current_agnos target_agnos
+    current_agnos=$(get_current_agnos_version)
+    target_agnos=$(get_fork_agnos_version "$fork")
+
+    # Display detailed warning to user
+    display_agnos_compatibility_warning "$fork" "$current_agnos" "$target_agnos"
+
+    # Get user choice
+    printf "Your choice (1-2): "
+    read -r agnos_choice
+    case "$agnos_choice" in
+      1)
+        log_info "Fork switch cancelled by user due to AGNOS version mismatch"
+        printf "Fork switch cancelled. No changes made.\n"
+        return 0
+        ;;
+      2)
+        log_warn "⚠️  USER FORCED FORK SWITCH DESPITE AGNOS MISMATCH"
+        log_warn "Current AGNOS: $current_agnos, Target requires: $target_agnos"
+        log_warn "Device may brick if firmware update is triggered"
+        printf "\n%sTYPE 'I UNDERSTAND THE RISK' TO CONTINUE:%s " "$RED" "$RESET"
+        read -r confirmation
+        if [ "$confirmation" != "I UNDERSTAND THE RISK" ]; then
+          log_info "Fork switch cancelled - incorrect confirmation phrase"
+          printf "Fork switch cancelled. No changes made.\n"
+          return 0
+        fi
+        printf "Proceeding with fork switch...\n"
+        ;;
+      *)
+        log_info "Fork switch cancelled - invalid choice"
+        printf "Invalid choice. Fork switch cancelled.\n"
+        return 0
+        ;;
+    esac
+  else
+    log_debug "AGNOS compatibility check passed for fork: $fork"
+  fi
+
+  # ========== STOP UPDATED.PY DAEMON ==========
+  # Stop updated.py daemon to prevent firmware update triggers during the switch
+  # This is a critical safety measure to prevent the daemon from detecting the
+  # BASEDIR change and triggering handle_agnos_update() before we're ready
+  stop_updated_daemon "$fork"
+
   begin_operation
 
   if ! backup_params "$CURRENT_FORK_NAME"; then
@@ -1018,6 +1676,13 @@ switch_fork() {
   fi
 
   if ! sync_overlay_files; then
+    abort_operation
+    return 1
+  fi
+
+  # Verify overlay deployment succeeded
+  if ! verify_overlay_deployment "$fork" "$fork_dir"; then
+    log_error "CRITICAL: Overlay deployment verification failed for fork '$fork'."
     abort_operation
     return 1
   fi
@@ -1302,14 +1967,28 @@ ensure_fork_swap_script() {
     return 0
   fi
 
-  log_warn "Unable to update forkswap.sh in the current fork; continuing with existing version."
-  return 0
+  # PHASE 1.1 FIX: Only soft-fail if an existing functional script is present
+  # Check if target script exists and is executable before soft-failing
+  if [ -f "$target_script" ] && [ -x "$target_script" ]; then
+    log_warn "Unable to update forkswap.sh, but existing version present. Continuing with existing version."
+    return 0
+  else
+    log_error "CRITICAL: Unable to install forkswap.sh and no existing version available."
+    log_error "Source: $source_script"
+    log_error "Target: $target_script"
+    return 1
+  fi
 }
 
 sync_overlay_files() {
+  log_operation_start "Overlay Deployment to ${CURRENT_FORK_NAME:-unknown}"
+  log_debug "Target fork: ${CURRENT_FORK_NAME:-unknown}, Target dir: $OPENPILOT_DIR"
+  log_debug "Asset tarball: $ASSET_TARBALL"
+
   # Check for asset tarball first
   if [ ! -f "$ASSET_TARBALL" ]; then
     log_error "Asset tarball missing: $ASSET_TARBALL"
+    log_operation_end "Overlay Deployment" "FAILED - Asset tarball missing"
     return 1
   fi
 
@@ -1318,6 +1997,7 @@ sync_overlay_files() {
   extract_dir=$(mktemp -d /tmp/forkswap_extract.XXXXXX)
   if [ -z "$extract_dir" ]; then
     log_error "Unable to create temp directory for overlay extraction."
+    log_operation_end "Overlay Deployment" "FAILED - Temp directory allocation failed"
     return 1
   fi
 
@@ -1415,16 +2095,22 @@ sync_overlay_files() {
       fi
       mkdir -p "$(dirname "$dest_abs")"
       if cp "$src" "$dest_abs"; then
-        success_count=$((success_count + 1))
+        # PHASE 1.4 FIX: Enforce hash verification - reject files with mismatches
         local expected actual
         expected=$(printf '%s' "$hashes_json" | jq -r --arg key "$rel" '.[$key] // ""')
         if [ -n "$expected" ] && [ "$expected" != "null" ]; then
           actual=$(sha256sum "$src" | awk '{print $1}')
           if [ "$actual" != "$expected" ]; then
-            log_warn "Hash mismatch for overlay file $rel (expected $expected, have $actual). Applied anyway."
-            warned_count=$((warned_count + 1))
+            log_error "Hash mismatch for overlay file $rel (expected $expected, have $actual). REJECTING file."
+            log_error "This indicates asset corruption or tampering. Run --refresh-assets to rebuild."
+            # Remove the corrupted file that was just copied
+            rm -f "$dest_abs"
+            failed_count=$((failed_count + 1))
+            continue
           fi
         fi
+        # Hash verified or no hash available - count as success
+        success_count=$((success_count + 1))
       else
         log_warn "Failed to copy overlay file $rel"
         failed_count=$((failed_count + 1))
@@ -1448,10 +2134,12 @@ sync_overlay_files() {
 
   if [ "$success_rate" -ge 75 ]; then
     log_info "Overlay sync completed: $success_count/$total_items succeeded (${success_rate}%), $failed_count failed, $warned_count warnings, ${sync_duration}s"
+    log_operation_end "Overlay Deployment" "SUCCESS" "$sync_duration"
     persist_overlay_metadata
     return 0
   else
     log_error "Overlay sync failed: only $success_count/$total_items succeeded (${success_rate}% < 75% threshold), ${sync_duration}s"
+    log_operation_end "Overlay Deployment" "FAILED - Success rate ${success_rate}% below threshold" "$sync_duration"
     return 1
   fi
 }
@@ -1618,6 +2306,16 @@ initialize() {
   ensure_managed_openpilot
   read_current_fork
 
+  # ========== CHECK POST-REBOOT PROTECTION STATUS ==========
+  # Check if we're coming back from a fork switch that set a protection flag
+  # If so, perform verification before allowing updated.py to run
+  if ! check_forkswap_protection_status; then
+    log_error "Post-reboot protection check failed!"
+    log_error "ForkSwap overlay may be corrupted after fork switch."
+    log_error "Please run: sudo $SCRIPT_PATH --repair-overlay"
+    # Don't exit - let the script continue so user can repair
+  fi
+
   # Repair metadata for any existing forks missing fork_info.json
   if [ -d "$FORKS_DIR" ]; then
     for fork_path in "$FORKS_DIR"/*; do
@@ -1634,7 +2332,13 @@ initialize() {
     log_error "Failed to sync forkswap overlay during initialization."
     INITIAL_OVERLAY_STATUS=1
   else
-    INITIAL_OVERLAY_STATUS=0
+    # Verify overlay deployment succeeded
+    if ! verify_overlay_deployment "$CURRENT_FORK_NAME" "$OPENPILOT_DIR"; then
+      log_error "Overlay deployment verification failed during initialization."
+      INITIAL_OVERLAY_STATUS=1
+    else
+      INITIAL_OVERLAY_STATUS=0
+    fi
   fi
 
   if [ "${FORKSWAP_HOLD_LOCK:-0}" = "1" ]; then
@@ -1660,6 +2364,22 @@ if [ "$REPAIR_OVERLAY_ONLY" -eq 1 ]; then
   exit "$INITIAL_OVERLAY_STATUS"
 elif [ "$REFRESH_ASSETS_ONLY" -eq 1 ]; then
   exit 0
+elif [ "$VERIFY_OVERLAY_ONLY" -eq 1 ]; then
+  printf "Running overlay deployment health check...\n"
+  printf "Current fork: %s\n" "${CURRENT_FORK_NAME:-none}"
+  printf "Target directory: %s\n\n" "$OPENPILOT_DIR"
+
+  if verify_overlay_deployment "$CURRENT_FORK_NAME" "$OPENPILOT_DIR"; then
+    printf "\n%s✓ Overlay deployment health check PASSED%s\n" "$GREEN" "$RESET"
+    printf "All critical overlay files are present and verified.\n"
+    exit 0
+  else
+    printf "\n%s✗ Overlay deployment health check FAILED%s\n" "$RED" "$RESET"
+    printf "Critical overlay files are missing or corrupted.\n"
+    printf "\nTo repair automatically, run:\n"
+    printf "  %s\n\n" "sudo $SCRIPT_PATH --repair-overlay"
+    exit 1
+  fi
 fi
 
 if [ "${FORKSWAP_DISABLE_UPDATE_CHECK:-0}" != "1" ]; then
