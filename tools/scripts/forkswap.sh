@@ -234,6 +234,109 @@ log_operation_end() {
   fi
 }
 
+# ========== PHASE 4: STRUCTURED ERROR REPORTING ==========
+
+# Error code constants
+readonly ERR_ASSET_MISSING="ASSET_MISSING"
+readonly ERR_MANIFEST_MISSING="MANIFEST_MISSING"
+readonly ERR_HASH_MISMATCH="HASH_MISMATCH"
+readonly ERR_COPY_FAILED="COPY_FAILED"
+readonly ERR_PERMISSION_DENIED="PERMISSION_DENIED"
+readonly ERR_DISK_FULL="DISK_FULL"
+readonly ERR_VERIFICATION_FAILED="VERIFICATION_FAILED"
+readonly ERR_SCRIPT_MISSING="SCRIPT_MISSING"
+
+# Deployment error and warning tracking
+declare -a DEPLOYMENT_ERRORS=()
+declare -a DEPLOYMENT_WARNINGS=()
+
+add_deployment_error() {
+  local error_code="$1"
+  local error_message="$2"
+  local error_context="${3:-}"
+
+  if [ -n "$error_context" ]; then
+    DEPLOYMENT_ERRORS+=("[$error_code] $error_message | Context: $error_context")
+  else
+    DEPLOYMENT_ERRORS+=("[$error_code] $error_message")
+  fi
+  log_error "[$error_code] $error_message"
+}
+
+add_deployment_warning() {
+  local warning_message="$1"
+  DEPLOYMENT_WARNINGS+=("$warning_message")
+  log_warn "$warning_message"
+}
+
+print_deployment_summary() {
+  local operation="$1"
+  local fork="$2"
+  local status="$3"  # "SUCCESS" or "FAILED"
+
+  printf "\n"
+  printf "=================================================\n"
+  printf " DEPLOYMENT SUMMARY: %s\n" "$operation"
+  printf "=================================================\n"
+  printf "Fork: %s\n" "$fork"
+  printf "Status: %s\n" "$status"
+  printf "Timestamp: %s\n" "$(date '+%Y-%m-%d %H:%M:%S')"
+
+  if [ "$status" = "FAILED" ] && [ ${#DEPLOYMENT_ERRORS[@]} -gt 0 ]; then
+    printf "\nErrors (%d):\n" "${#DEPLOYMENT_ERRORS[@]}"
+    for error in "${DEPLOYMENT_ERRORS[@]}"; do
+      printf "  - %s\n" "$error"
+    done
+  fi
+
+  if [ ${#DEPLOYMENT_WARNINGS[@]} -gt 0 ]; then
+    printf "\nWarnings (%d):\n" "${#DEPLOYMENT_WARNINGS[@]}"
+    for warning in "${DEPLOYMENT_WARNINGS[@]}"; do
+      printf "  - %s\n" "$warning"
+    done
+  fi
+
+  if [ "$status" = "FAILED" ]; then
+    printf "\nRecommended Actions:\n"
+    if [[ " ${DEPLOYMENT_ERRORS[*]} " =~ "ASSET_MISSING" ]]; then
+      printf "  - Run: sudo %s --refresh-assets\n" "$SCRIPT_PATH"
+    fi
+    if [[ " ${DEPLOYMENT_ERRORS[*]} " =~ "MANIFEST_MISSING" ]]; then
+      printf "  - Verify managed fork has overlay files: %s\n" "$MANAGED_OVERLAY_MANIFEST"
+    fi
+    if [[ " ${DEPLOYMENT_ERRORS[*]} " =~ "HASH_MISMATCH" ]]; then
+      printf "  - Asset corruption detected. Run: sudo %s --refresh-assets\n" "$SCRIPT_PATH"
+    fi
+    printf "  - For detailed logs: tail -100 %s\n" "$LOG_FILE"
+  fi
+
+  printf "=================================================\n"
+  printf "\n"
+}
+
+# Clear error/warning arrays at start of deployment
+clear_deployment_diagnostics() {
+  DEPLOYMENT_ERRORS=()
+  DEPLOYMENT_WARNINGS=()
+}
+
+# ========== PHASE 4: PROGRESS INDICATORS ==========
+
+show_deployment_progress() {
+  local current="$1"
+  local total="$2"
+  local operation="$3"
+
+  local percent=$((current * 100 / total))
+  local bar_length=50
+  local filled=$((percent * bar_length / 100))
+
+  printf "\r[%-${bar_length}s] %d%% - %s" \
+    "$(printf '%*s' "$filled" | tr ' ' '=')" \
+    "$percent" \
+    "$operation"
+}
+
 persist_overlay_metadata() {
   local target_overlay_dir="$OPENPILOT_DIR/overlay"
   mkdir -p "$target_overlay_dir" 2>/dev/null || true
