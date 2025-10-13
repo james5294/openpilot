@@ -782,35 +782,59 @@ repair_overlay_deployment() {
   local fork_name="${1:-${CURRENT_FORK_NAME:-unknown}}"
   local target_dir="${2:-$OPENPILOT_DIR}"
 
-  log_info "Attempting automatic overlay repair for fork '$fork_name'"
-  log_operation_start "Overlay Repair for $fork_name"
+  log_info "Starting comprehensive overlay repair for fork '$fork_name'"
+  log_operation_start "Comprehensive Overlay Repair for $fork_name"
 
   local repair_start_time
   repair_start_time=$(date +%s)
 
-  # First, ensure asset repository is available
+  # PHASE 5.2: Step 1/4 - Diagnose the problem
+  log_info "Step 1/4: Diagnosing overlay state..."
+  local issues_found=0
+
+  if [ ! -f "$target_dir/tools/scripts/forkswap.sh" ]; then
+    log_warn "Diagnostic: forkswap.sh missing"
+    issues_found=$((issues_found + 1))
+  fi
+
+  if [ ! -f "$target_dir/overlay/forkswap_manifest.json" ]; then
+    log_warn "Diagnostic: Overlay manifest missing"
+    issues_found=$((issues_found + 1))
+  fi
+
+  if [ ! -d "$target_dir/overlay" ]; then
+    log_warn "Diagnostic: Overlay directory missing"
+    issues_found=$((issues_found + 1))
+  fi
+
+  log_info "Diagnosis complete: $issues_found issues found"
+
+  # PHASE 5.2: Step 2/4 - Ensure asset repository is fresh
+  log_info "Step 2/4: Rebuilding asset repository..."
   if ! initialize_asset_repository; then
-    log_error "Overlay repair failed: Cannot initialize asset repository"
+    log_error "Repair failed: Cannot rebuild asset repository"
     local repair_end_time
     repair_end_time=$(date +%s)
     local repair_duration=$((repair_end_time - repair_start_time))
-    log_operation_end "Overlay Repair" "FAILED - Asset repository unavailable" "$repair_duration"
+    log_operation_end "Overlay Repair" "FAILED - Asset rebuild failed" "$repair_duration"
     return 1
   fi
 
-  # Ensure forkswap.sh is present
+  # PHASE 5.2: Step 3/4 - Deploy script
+  log_info "Step 3/4: Deploying forkswap.sh..."
   if ! ensure_fork_swap_script; then
-    log_error "Overlay repair failed: Cannot install forkswap.sh"
+    log_error "Repair failed: Cannot install forkswap.sh"
     local repair_end_time
     repair_end_time=$(date +%s)
     local repair_duration=$((repair_end_time - repair_start_time))
-    log_operation_end "Overlay Repair" "FAILED - Script installation failed" "$repair_duration"
+    log_operation_end "Overlay Repair" "FAILED - Script deployment failed" "$repair_duration"
     return 1
   fi
 
-  # Redeploy overlay files
+  # PHASE 5.2: Step 4/4 - Deploy overlay files
+  log_info "Step 4/4: Deploying overlay files..."
   if ! sync_overlay_files; then
-    log_error "Overlay repair failed: Cannot sync overlay files"
+    log_error "Repair failed: Cannot sync overlay files"
     local repair_end_time
     repair_end_time=$(date +%s)
     local repair_duration=$((repair_end_time - repair_start_time))
@@ -818,9 +842,9 @@ repair_overlay_deployment() {
     return 1
   fi
 
-  # Verify repair succeeded
-  if ! verify_overlay_deployment "$fork_name" "$target_dir"; then
-    log_error "Overlay repair failed: Verification failed after repair"
+  # PHASE 5.2: Verify repair with strict mode
+  if ! verify_overlay_deployment "$fork_name" "$target_dir" 1; then  # Strict verification
+    log_error "Repair failed: Verification failed after repair"
     local repair_end_time
     repair_end_time=$(date +%s)
     local repair_duration=$((repair_end_time - repair_start_time))
@@ -831,7 +855,7 @@ repair_overlay_deployment() {
   local repair_end_time
   repair_end_time=$(date +%s)
   local repair_duration=$((repair_end_time - repair_start_time))
-  log_info "Overlay repair succeeded for fork '$fork_name'"
+  log_info "Overlay repair completed successfully"
   log_operation_end "Overlay Repair" "SUCCESS" "$repair_duration"
   return 0
 }
@@ -1686,6 +1710,13 @@ clone_fork() {
     export OPENPILOT_DIR="$old_openpilot_dir"  # Restore
     log_error "CRITICAL: Unable to install forkswap.sh in newly cloned fork. Clone operation failed."
     log_error "System remains on previous fork: $CURRENT_FORK_NAME"
+
+    # PHASE 5.1: Automatic rollback - clean up failed clone
+    if [ -d "$fork_dir" ]; then
+      log_info "Cleaning up failed clone: $fork_dir"
+      rm -rf "$fork_dir" || log_warn "Failed to remove clone directory"
+    fi
+
     abort_operation
     return 1
   fi
@@ -1696,6 +1727,13 @@ clone_fork() {
     log_error "This likely means the asset repository could not be built from the source fork."
     log_error "Verify that the managed fork (${DEFAULT_FORK_NAME}) has overlay files, or use --refresh-assets to rebuild."
     log_error "System remains on previous fork: $CURRENT_FORK_NAME"
+
+    # PHASE 5.1: Automatic rollback - clean up failed clone
+    if [ -d "$fork_dir" ]; then
+      log_info "Cleaning up failed clone: $fork_dir"
+      rm -rf "$fork_dir" || log_warn "Failed to remove clone directory"
+    fi
+
     abort_operation
     return 1
   fi
@@ -1705,6 +1743,13 @@ clone_fork() {
     export OPENPILOT_DIR="$old_openpilot_dir"  # Restore
     log_error "CRITICAL: Overlay deployment verification failed for newly cloned fork."
     log_error "System remains on previous fork: $CURRENT_FORK_NAME"
+
+    # PHASE 5.1: Automatic rollback - clean up failed clone
+    if [ -d "$fork_dir" ]; then
+      log_info "Cleaning up failed clone: $fork_dir"
+      rm -rf "$fork_dir" || log_warn "Failed to remove clone directory"
+    fi
+
     abort_operation
     return 1
   fi
