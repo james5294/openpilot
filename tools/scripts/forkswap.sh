@@ -2245,6 +2245,90 @@ sync_overlay_files() {
   fi
 }
 
+# ========== PHASE 3.1: ATOMIC DEPLOYMENT WITH STAGING ==========
+
+sync_overlay_files_atomic() {
+  local target_fork="$1"
+  local final_dir="${2:-$OPENPILOT_DIR}"
+
+  log_operation_start "Atomic Overlay Deployment to $target_fork"
+
+  # Create staging directory
+  local staging_dir
+  staging_dir=$(mktemp -d "${final_dir}.staging.XXXXXX")
+  if [ -z "$staging_dir" ]; then
+    log_error "Cannot create staging directory for atomic deployment"
+    log_operation_end "Atomic Overlay Deployment" "FAILED - Staging allocation failed"
+    return 1
+  fi
+
+  log_debug "Staging directory: $staging_dir"
+
+  # Copy target fork to staging
+  log_info "Copying fork to staging area..."
+  if ! cp -a "$final_dir/." "$staging_dir/"; then
+    log_error "Failed to copy fork to staging"
+    rm -rf "$staging_dir"
+    log_operation_end "Atomic Overlay Deployment" "FAILED - Staging copy failed"
+    return 1
+  fi
+
+  # Temporarily point OPENPILOT_DIR to staging for deployment
+  local original_dir="$OPENPILOT_DIR"
+  export OPENPILOT_DIR="$staging_dir"
+
+  # Deploy to staging
+  local deploy_success=0
+  if ensure_fork_swap_script && sync_overlay_files; then
+    # Verify in staging with strict mode
+    if verify_overlay_deployment "$target_fork" "$staging_dir" 1; then
+      deploy_success=1
+    else
+      log_error "Verification failed in staging"
+    fi
+  else
+    log_error "Deployment failed in staging"
+  fi
+
+  # Restore OPENPILOT_DIR
+  export OPENPILOT_DIR="$original_dir"
+
+  if [ $deploy_success -eq 0 ]; then
+    log_error "Atomic deployment failed - cleaning up staging"
+    rm -rf "$staging_dir"
+    log_operation_end "Atomic Overlay Deployment" "FAILED - Deployment or verification failed"
+    return 1
+  fi
+
+  # Atomic switch: rename staging to final
+  log_info "Deployment verified in staging - committing changes"
+
+  # Backup current fork
+  local backup_dir="${final_dir}.backup.$$"
+  if ! mv "$final_dir" "$backup_dir"; then
+    log_error "Cannot backup current fork for atomic switch"
+    rm -rf "$staging_dir"
+    log_operation_end "Atomic Overlay Deployment" "FAILED - Backup failed"
+    return 1
+  fi
+
+  # Move staging to final location
+  if ! mv "$staging_dir" "$final_dir"; then
+    log_error "Cannot move staging to final location - restoring backup"
+    mv "$backup_dir" "$final_dir"
+    rm -rf "$staging_dir"
+    log_operation_end "Atomic Overlay Deployment" "FAILED - Commit failed"
+    return 1
+  fi
+
+  # Success - remove backup
+  rm -rf "$backup_dir"
+
+  log_info "Atomic deployment committed successfully"
+  log_operation_end "Atomic Overlay Deployment" "SUCCESS"
+  return 0
+}
+
 validate_input() {
   if [ -z "$1" ]; then
     log_error "Input cannot be empty."
