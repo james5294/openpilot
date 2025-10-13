@@ -2011,11 +2011,13 @@ sync_overlay_files() {
   local manifest_file="$extract_dir/overlay/forkswap_manifest.json"
   local hashes_file="$extract_dir/overlay/forkswap_manifest.json.sha256"
 
+  # BUG FIX: Use MANAGED fork manifest as fallback, not target fork manifest
+  # The target fork doesn't have the overlay yet, so we need to use the stable source
   if [ ! -f "$manifest_file" ]; then
-    manifest_file="$OVERLAY_MANIFEST"
+    manifest_file="$MANAGED_OVERLAY_MANIFEST"
   fi
   if [ ! -f "$hashes_file" ]; then
-    hashes_file="$OVERLAY_HASHES"
+    hashes_file="$MANAGED_OVERLAY_HASHES"
   fi
 
   if [ ! -f "$manifest_file" ]; then
