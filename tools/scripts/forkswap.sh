@@ -1570,7 +1570,48 @@ clone_fork() {
     return 1
   fi
 
+  # PHASE 3.2: Deploy overlay BEFORE symlink switch
+  # If deployment fails, system stays on old fork (cleaner recovery)
+  log_info "Deploying overlay to newly cloned fork before activation..."
+
+  # Temporarily point OPENPILOT_DIR to new fork for deployment
+  local old_openpilot_dir="$OPENPILOT_DIR"
+  export OPENPILOT_DIR="$target_dir"
+
+  # CRITICAL: Overlay deployment must succeed during clone operations
+  if ! ensure_fork_swap_script; then
+    export OPENPILOT_DIR="$old_openpilot_dir"  # Restore
+    log_error "CRITICAL: Unable to install forkswap.sh in newly cloned fork. Clone operation failed."
+    log_error "System remains on previous fork: $CURRENT_FORK_NAME"
+    abort_operation
+    return 1
+  fi
+
+  if ! sync_overlay_files; then
+    export OPENPILOT_DIR="$old_openpilot_dir"  # Restore
+    log_error "CRITICAL: Overlay deployment failed for newly cloned fork. Clone operation failed."
+    log_error "This likely means the asset repository could not be built from the source fork."
+    log_error "Verify that the managed fork (${DEFAULT_FORK_NAME}) has overlay files, or use --refresh-assets to rebuild."
+    log_error "System remains on previous fork: $CURRENT_FORK_NAME"
+    abort_operation
+    return 1
+  fi
+
+  # Verify overlay deployment succeeded
+  if ! verify_overlay_deployment "$new_fork_name" "$target_dir"; then
+    export OPENPILOT_DIR="$old_openpilot_dir"  # Restore
+    log_error "CRITICAL: Overlay deployment verification failed for newly cloned fork."
+    log_error "System remains on previous fork: $CURRENT_FORK_NAME"
+    abort_operation
+    return 1
+  fi
+
+  export OPENPILOT_DIR="$old_openpilot_dir"  # Restore
+  log_info "Overlay deployed and verified in new fork. Activating fork..."
+
+  # NOW switch symlink - overlay is already deployed and verified
   if ! ensure_symlink "$target_dir" "Switched to fork '$new_fork_name' via symbolic link."; then
+    log_error "Symlink switch failed, but overlay was deployed successfully"
     abort_operation
     return 1
   fi
@@ -1578,32 +1619,8 @@ clone_fork() {
   write_current_fork "$new_fork_name"
 
   if ! restore_params "$new_fork_name"; then
-    abort_operation
-    return 1
-  fi
-
-  # CRITICAL: Overlay deployment must succeed during clone operations
-  # The asset repository should have been built from the managed fork (james5294)
-  # If overlay deployment fails here, the clone is broken and should be aborted
-  if ! ensure_fork_swap_script; then
-    log_error "CRITICAL: Unable to install forkswap.sh in newly cloned fork. Clone operation failed."
-    abort_operation
-    return 1
-  fi
-
-  if ! sync_overlay_files; then
-    log_error "CRITICAL: Overlay deployment failed for newly cloned fork. Clone operation failed."
-    log_error "This likely means the asset repository could not be built from the source fork."
-    log_error "Verify that the managed fork (${DEFAULT_FORK_NAME}) has overlay files, or use --refresh-assets to rebuild."
-    abort_operation
-    return 1
-  fi
-
-  # Verify overlay deployment succeeded
-  if ! verify_overlay_deployment "$new_fork_name" "$target_dir"; then
-    log_error "CRITICAL: Overlay deployment verification failed for newly cloned fork."
-    abort_operation
-    return 1
+    log_warn "Parameter restoration failed, but fork switch completed"
+    # Don't abort - fork switch is complete, just params didn't restore
   fi
 
   finish_operation
