@@ -2228,14 +2228,18 @@ ensure_fork_swap_script() {
 }
 
 sync_overlay_files() {
+  # PHASE 4 INTEGRATION: Clear diagnostics at operation start
+  clear_deployment_diagnostics
+
   log_operation_start "Overlay Deployment to ${CURRENT_FORK_NAME:-unknown}"
   log_debug "Target fork: ${CURRENT_FORK_NAME:-unknown}, Target dir: $OPENPILOT_DIR"
   log_debug "Asset tarball: $ASSET_TARBALL"
 
   # Check for asset tarball first
   if [ ! -f "$ASSET_TARBALL" ]; then
-    log_error "Asset tarball missing: $ASSET_TARBALL"
+    add_deployment_error "$ERR_ASSET_MISSING" "Asset tarball missing: $ASSET_TARBALL" "Check --refresh-assets"
     log_operation_end "Overlay Deployment" "FAILED - Asset tarball missing"
+    print_deployment_summary "Overlay Deployment" "${CURRENT_FORK_NAME:-unknown}" "FAILED"
     return 1
   fi
 
@@ -2268,8 +2272,9 @@ sync_overlay_files() {
   fi
 
   if [ ! -f "$manifest_file" ]; then
-    log_error "Overlay manifest missing after extraction."
+    add_deployment_error "$ERR_MANIFEST_MISSING" "Overlay manifest missing after extraction" "Source: $MANAGED_FORK_NAME"
     rm -rf "$extract_dir"
+    print_deployment_summary "Overlay Deployment" "${CURRENT_FORK_NAME:-unknown}" "FAILED"
     return 1
   fi
 
@@ -2305,6 +2310,9 @@ sync_overlay_files() {
     type=$(printf '%s' "$manifest_json" | jq -r ".files[$idx].type")
     src="$extract_dir/$dest"
     total_items=$((total_items + 1))
+
+    # PHASE 4 INTEGRATION: Show progress for each file
+    show_deployment_progress "$((idx + 1))" "$count" "Deploying: $dest"
 
     if [ -z "$dest" ] || [[ "$dest" == /* ]] || [[ "$dest" == *".."* ]]; then
       log_error "Invalid overlay destination: $dest"
@@ -2350,6 +2358,7 @@ sync_overlay_files() {
         if [ -n "$expected" ] && [ "$expected" != "null" ]; then
           actual=$(sha256sum "$src" | awk '{print $1}')
           if [ "$actual" != "$expected" ]; then
+            add_deployment_error "$ERR_HASH_MISMATCH" "Hash mismatch for overlay file $rel" "Expected: $expected, Have: $actual"
             log_error "Hash mismatch for overlay file $rel (expected $expected, have $actual). REJECTING file."
             log_error "This indicates asset corruption or tampering. Run --refresh-assets to rebuild."
             # Remove the corrupted file that was just copied
@@ -2381,14 +2390,22 @@ sync_overlay_files() {
 
   rm -rf "$extract_dir"
 
+  # Clear progress line before final summary
+  printf "\n"
+
   if [ "$success_rate" -ge 75 ]; then
     log_info "Overlay sync completed: $success_count/$total_items succeeded (${success_rate}%), $failed_count failed, $warned_count warnings, ${sync_duration}s"
     log_operation_end "Overlay Deployment" "SUCCESS" "$sync_duration"
+    # PHASE 4 INTEGRATION: Print deployment summary
+    print_deployment_summary "Overlay Deployment" "${CURRENT_FORK_NAME:-unknown}" "SUCCESS"
     persist_overlay_metadata
     return 0
   else
+    add_deployment_error "$ERR_VERIFICATION_FAILED" "Overlay sync below 75% threshold" "Success rate: ${success_rate}%"
     log_error "Overlay sync failed: only $success_count/$total_items succeeded (${success_rate}% < 75% threshold), ${sync_duration}s"
     log_operation_end "Overlay Deployment" "FAILED - Success rate ${success_rate}% below threshold" "$sync_duration"
+    # PHASE 4 INTEGRATION: Print deployment summary
+    print_deployment_summary "Overlay Deployment" "${CURRENT_FORK_NAME:-unknown}" "FAILED"
     return 1
   fi
 }
