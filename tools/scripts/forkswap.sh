@@ -552,10 +552,11 @@ restart_updated_daemon() {
 verify_overlay_deployment() {
   local fork_name="${1:-${CURRENT_FORK_NAME:-unknown}}"
   local target_dir="${2:-$OPENPILOT_DIR}"
+  local strict="${3:-0}"  # PHASE 2: Set to 1 for strict mode (100% files + hashes)
 
-  log_debug "Verifying overlay deployment in $target_dir for fork $fork_name"
+  log_debug "Verifying overlay deployment in $target_dir for fork $fork_name (strict=$strict)"
 
-  # PHASE 1.5 FIX: Comprehensive verification - check all manifest files, not just 2
+  # PHASE 2: Comprehensive verification with hash checking and strict mode
 
   # First check critical files
   if [ ! -f "$target_dir/tools/scripts/forkswap.sh" ]; then
@@ -588,10 +589,18 @@ verify_overlay_deployment() {
     return 1
   }
 
+  # PHASE 2: Load hash file if available
+  local hashes_file="$target_dir/overlay/forkswap_manifest.json.sha256"
+  local hashes_json=""
+  if [ -f "$hashes_file" ]; then
+    hashes_json=$(cat "$hashes_file" 2>/dev/null) || true
+  fi
+
   # Verify all files from manifest
-  local total_files missing_files
+  local total_files missing_files hash_mismatches
   total_files=$(printf '%s' "$manifest_json" | jq '.files | length' 2>/dev/null || echo "0")
   missing_files=0
+  hash_mismatches=0
 
   if [ "$total_files" -eq 0 ]; then
     log_warn "Verification: Manifest has no files listed"
@@ -608,6 +617,19 @@ verify_overlay_deployment() {
         if [ ! -f "$dest_abs" ]; then
           log_warn "Verification: File missing: $dest"
           missing_files=$((missing_files + 1))
+        else
+          # PHASE 2: Check hash if available and strict mode enabled
+          if [ -n "$hashes_json" ]; then
+            local expected actual
+            expected=$(printf '%s' "$hashes_json" | jq -r --arg key "$dest" '.[$key] // ""' 2>/dev/null)
+            if [ -n "$expected" ] && [ "$expected" != "null" ] && [ "$expected" != "" ]; then
+              actual=$(sha256sum "$dest_abs" 2>/dev/null | awk '{print $1}')
+              if [ "$actual" != "$expected" ]; then
+                log_warn "Verification: Hash mismatch: $dest (expected: ${expected:0:16}..., actual: ${actual:0:16}...)"
+                hash_mismatches=$((hash_mismatches + 1))
+              fi
+            fi
+          fi
         fi
       elif [ "$type" = "directory" ]; then
         if [ ! -d "$dest_abs" ]; then
@@ -620,20 +642,34 @@ verify_overlay_deployment() {
 
   # Calculate results
   local verified_files=$((total_files - missing_files))
-  local success_threshold=$((total_files * 75 / 100))
 
   log_info "Overlay verification: $verified_files/$total_files files present"
 
-  # Allow up to 25% missing (consistent with deployment 75% threshold)
-  if [ $verified_files -lt $success_threshold ]; then
-    log_error "Overlay verification failed: only $verified_files/$total_files present (< 75% threshold)"
-    return 1
+  if [ $hash_mismatches -gt 0 ]; then
+    log_warn "Overlay verification: $hash_mismatches hash mismatches detected"
   fi
 
-  if [ $missing_files -gt 0 ]; then
-    log_warn "Overlay verification passed with warnings: $missing_files files missing"
+  # PHASE 2: Determine pass/fail based on strict mode
+  if [ $strict -eq 1 ]; then
+    # Strict mode: all files must be present and match hashes
+    if [ $missing_files -gt 0 ] || [ $hash_mismatches -gt 0 ]; then
+      log_error "Overlay verification failed (strict mode): $missing_files missing, $hash_mismatches mismatches"
+      return 1
+    fi
+    log_info "Overlay verification passed (strict mode): all files present and verified"
   else
-    log_info "Overlay verification passed: all $total_files files present"
+    # Lenient mode: allow up to 25% missing (consistent with deployment 75% threshold)
+    local success_threshold=$((total_files * 75 / 100))
+    if [ $verified_files -lt $success_threshold ]; then
+      log_error "Overlay verification failed: only $verified_files/$total_files present (< 75% threshold)"
+      return 1
+    fi
+
+    if [ $missing_files -gt 0 ] || [ $hash_mismatches -gt 0 ]; then
+      log_warn "Overlay verification passed with warnings: $missing_files missing, $hash_mismatches hash mismatches"
+    else
+      log_info "Overlay verification passed: all $total_files files present"
+    fi
   fi
 
   return 0
@@ -1937,6 +1973,52 @@ check_disk_space() {
     printf "Error: Not enough disk space. Required: %sMB, Available: %sMB\n" "$required_space_mb" "$available_space_mb"
     return 1
   fi
+}
+
+# ========== PHASE 2.2: PRE-DEPLOYMENT VALIDATION ==========
+
+validate_target_fork_structure() {
+  local target_dir="${1:-$OPENPILOT_DIR}"
+
+  log_debug "Validating target fork structure at $target_dir"
+
+  # Check if target looks like an openpilot fork
+  local required_markers=(
+    "$target_dir/.git"
+    "$target_dir/launch_openpilot.sh"
+  )
+
+  for marker in "${required_markers[@]}"; do
+    if [ ! -e "$marker" ]; then
+      log_warn "Target fork may not be standard openpilot: missing $marker"
+      return 1
+    fi
+  done
+
+  # Check for write permissions in key directories
+  if [ ! -w "$target_dir" ]; then
+    log_error "No write permission to target fork: $target_dir"
+    return 1
+  fi
+
+  # Check that tools/scripts directory exists or can be created
+  if [ ! -d "$target_dir/tools/scripts" ]; then
+    if ! mkdir -p "$target_dir/tools/scripts" 2>/dev/null; then
+      log_error "Cannot create tools/scripts directory in target fork"
+      return 1
+    fi
+  fi
+
+  # Check that overlay directory exists or can be created
+  if [ ! -d "$target_dir/overlay" ]; then
+    if ! mkdir -p "$target_dir/overlay" 2>/dev/null; then
+      log_error "Cannot create overlay directory in target fork"
+      return 1
+    fi
+  fi
+
+  log_debug "Target fork structure validated successfully"
+  return 0
 }
 
 ensure_fork_swap_script() {
