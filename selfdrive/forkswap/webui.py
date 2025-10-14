@@ -13,10 +13,29 @@ This solves the UI injection problem by being fork-independent:
 """
 
 import os
+import sys
 import json
 import subprocess
 import logging
 from pathlib import Path
+
+# Auto-install Flask if not present (self-contained dependency management)
+try:
+    import flask
+except ImportError:
+    print("Flask not found. Installing Flask automatically...")
+    try:
+        subprocess.check_call([
+            sys.executable, '-m', 'pip', 'install',
+            '--user', '--quiet', 'flask'
+        ])
+        print("Flask installed successfully!")
+        import flask
+    except Exception as e:
+        print(f"ERROR: Failed to install Flask: {e}")
+        print("Please install Flask manually: python3 -m pip install flask --user")
+        sys.exit(1)
+
 from flask import Flask, render_template_string, jsonify, request, send_from_directory
 
 # Configure logging
@@ -776,7 +795,7 @@ def api_status():
         return jsonify({
             'current_fork': current_fork,
             'agnos_version': agnos_version,
-            'forkswap_version': '2.1.0',
+            'forkswap_version': '2.1.1',
             'disk_space': disk_info
         })
     except Exception as e:
