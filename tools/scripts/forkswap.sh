@@ -2676,7 +2676,9 @@ initialize() {
     done
   fi
 
-  if [ "${FORKSWAP_SKIP_OVERLAY:-0}" = "1" ]; then
+  # BUG FIX: Skip overlay deployment during initialize if --repair-overlay was used
+  # The repair function will handle deployment properly with diagnostics
+  if [ "${FORKSWAP_SKIP_OVERLAY:-0}" = "1" ] || [ "$REPAIR_OVERLAY_ONLY" -eq 1 ]; then
     INITIAL_OVERLAY_STATUS=0
   elif ! sync_overlay_files; then
     log_error "Failed to sync forkswap overlay during initialization."
@@ -2711,7 +2713,15 @@ fi
 initialize
 
 if [ "$REPAIR_OVERLAY_ONLY" -eq 1 ]; then
-  exit "$INITIAL_OVERLAY_STATUS"
+  # BUG FIX: Actually call repair_overlay_deployment() instead of just sync_overlay_files()
+  # The comprehensive repair function includes diagnostics, ensures forkswap.sh deployment, and strict verification
+  if repair_overlay_deployment "$CURRENT_FORK_NAME" "$OPENPILOT_DIR"; then
+    log_info "Overlay repair completed successfully"
+    exit 0
+  else
+    log_error "Overlay repair failed"
+    exit 1
+  fi
 elif [ "$REFRESH_ASSETS_ONLY" -eq 1 ]; then
   exit 0
 elif [ "$VERIFY_OVERLAY_ONLY" -eq 1 ]; then
