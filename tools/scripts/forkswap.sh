@@ -501,37 +501,55 @@ stop_updated_daemon() {
   local target_fork="$1"
   log_info "Stopping updated.py daemon to prevent firmware update triggers"
 
-  # Check if systemctl is available (comma devices use systemd)
-  if command -v systemctl >/dev/null 2>&1; then
-    # Check if service exists and is active
-    if systemctl is-active --quiet "$UPDATED_SERVICE_NAME" 2>/dev/null; then
-      log_debug "Stopping $UPDATED_SERVICE_NAME service"
-      if systemctl stop "$UPDATED_SERVICE_NAME" 2>/dev/null; then
-        log_info "Successfully stopped $UPDATED_SERVICE_NAME daemon"
-        # Give it a moment to fully stop
-        sleep 2
-      else
-        log_warn "Failed to stop $UPDATED_SERVICE_NAME daemon via systemctl"
-        # Try killall as fallback
-        if command -v killall >/dev/null 2>&1; then
-          killall -q updated.py 2>/dev/null || true
-          sleep 1
-        fi
-      fi
-    else
-      log_debug "$UPDATED_SERVICE_NAME service not active or not found"
-    fi
-  else
-    log_warn "systemctl not available - attempting direct process termination"
-    # Fallback for non-systemd systems
-    if command -v killall >/dev/null 2>&1; then
-      killall -q updated.py 2>/dev/null || true
-      sleep 1
-    fi
+  # BUG FIX P0-2: updated.py is managed by openpilot's manager, not systemd
+  # Process name: system.updated.updated (managed by manager.py)
+  # Cannot use systemctl - must use process signals
+
+  local updated_pid
+  updated_pid=$(pgrep -f "system.updated.updated" | head -n1)
+
+  if [ -z "$updated_pid" ]; then
+    log_warn "Updated daemon not running"
+    # Still set protection flag even if not running
+    set_forkswap_protection_flag "$target_fork"
+    return 0
   fi
+
+  log_info "Stopping updated daemon (PID: $updated_pid)"
+
+  # Send SIGTERM for graceful shutdown
+  if kill -TERM "$updated_pid" 2>/dev/null; then
+    log_debug "Sent SIGTERM to updated daemon"
+  else
+    log_warn "Failed to send SIGTERM to updated daemon"
+    set_forkswap_protection_flag "$target_fork"
+    return 1
+  fi
+
+  # Wait up to 10 seconds for clean shutdown
+  local count=0
+  while [ $count -lt 10 ]; do
+    if ! pgrep -f "system.updated.updated" >/dev/null 2>&1; then
+      log_info "Updated daemon stopped successfully"
+      set_forkswap_protection_flag "$target_fork"
+      return 0
+    fi
+    sleep 1
+    count=$((count + 1))
+  done
+
+  # Force kill if still running after 10 seconds
+  if pgrep -f "system.updated.updated" >/dev/null 2>&1; then
+    log_warn "Updated daemon did not stop gracefully, force killing"
+    pkill -9 -f "system.updated.updated" 2>/dev/null || true
+    sleep 1
+  fi
+
+  log_info "Updated daemon stopped (forced)"
 
   # Set post-reboot protection flag
   set_forkswap_protection_flag "$target_fork"
+  return 0
 }
 
 set_forkswap_protection_flag() {
@@ -637,19 +655,26 @@ check_forkswap_protection_status() {
 restart_updated_daemon() {
   log_info "Restarting updated.py daemon"
 
-  if command -v systemctl >/dev/null 2>&1; then
-    if systemctl start "$UPDATED_SERVICE_NAME" 2>/dev/null; then
-      log_info "Successfully restarted $UPDATED_SERVICE_NAME daemon"
+  # BUG FIX P0-2: Manager will automatically restart updated.py
+  # We just need to wait for it to come back (managed by manager.py)
+  log_info "Waiting for manager to restart updated daemon..."
+
+  local count=0
+  while [ $count -lt 30 ]; do
+    if pgrep -f "system.updated.updated" >/dev/null 2>&1; then
+      local updated_pid
+      updated_pid=$(pgrep -f "system.updated.updated" | head -n1)
+      log_info "Updated daemon restarted successfully (PID: $updated_pid)"
       return 0
-    else
-      log_warn "Failed to restart $UPDATED_SERVICE_NAME daemon via systemctl"
-      return 1
     fi
-  else
-    log_warn "systemctl not available - cannot restart updated.py daemon"
-    log_warn "Daemon will restart automatically on reboot"
-    return 0
-  fi
+    sleep 1
+    count=$((count + 1))
+  done
+
+  log_error "Updated daemon failed to restart after 30 seconds"
+  log_error "Manager may not be running or updated is disabled"
+  log_warn "Daemon will restart automatically on reboot"
+  return 1
 }
 
 verify_overlay_deployment() {
