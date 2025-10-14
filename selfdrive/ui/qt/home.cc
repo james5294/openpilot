@@ -238,11 +238,6 @@ OffroadHome::OffroadHome(QWidget* parent) : QFrame(parent) {
   QObject::connect(alerts_widget, &OffroadAlert::dismiss, [=]() { center_layout->setCurrentIndex(0); });
   center_layout->addWidget(alerts_widget);
 
-  forkswap_panel = new ForkSwapPanel(this, true);
-  QObject::connect(forkswap_panel, &ForkSwapPanel::backRequested, [=]() { center_layout->setCurrentIndex(0); });
-  center_layout->addWidget(forkswap_panel);
-  forkswap_index = center_layout->indexOf(forkswap_panel);
-
   main_layout->addLayout(center_layout, 1);
 
   // set up refresh timer
@@ -289,19 +284,16 @@ void OffroadHome::refresh() {
 
   // pop-up new notification
   int current_idx = center_layout->currentIndex();
-  bool custom_view_active = (forkswap_index >= 0) && (current_idx == forkswap_index);
   int idx = current_idx;
-  if (!custom_view_active) {
-    if (!updateAvailable && !alerts) {
-      idx = 0;
-    } else if (updateAvailable && (!update_notif->isVisible() || (!alerts && idx == 2))) {
-      idx = 1;
-    } else if (alerts && (!alert_notif->isVisible() || (!updateAvailable && idx == 1))) {
-      idx = 2;
-    }
-    if (idx != current_idx) {
-      center_layout->setCurrentIndex(idx);
-    }
+  if (!updateAvailable && !alerts) {
+    idx = 0;
+  } else if (updateAvailable && (!update_notif->isVisible() || (!alerts && idx == 2))) {
+    idx = 1;
+  } else if (alerts && (!alert_notif->isVisible() || (!updateAvailable && idx == 1))) {
+    idx = 2;
+  }
+  if (idx != current_idx) {
+    center_layout->setCurrentIndex(idx);
   }
 
   update_notif->setVisible(updateAvailable);

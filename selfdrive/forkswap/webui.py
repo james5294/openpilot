@@ -776,7 +776,7 @@ def api_status():
         return jsonify({
             'current_fork': current_fork,
             'agnos_version': agnos_version,
-            'forkswap_version': '2.0.0-webui',
+            'forkswap_version': '2.1.0',
             'disk_space': disk_info
         })
     except Exception as e:
