@@ -389,6 +389,17 @@ def index():
     device_ip = socket.gethostbyname(socket.gethostname())
     return render_template_string(HTML_TEMPLATE, device_ip=device_ip)
 
+@app.route('/favicon.ico')
+def favicon():
+    """Serve a simple SVG favicon"""
+    from flask import Response
+    # Simple fork icon SVG
+    svg = '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+        <circle cx="50" cy="50" r="45" fill="#667eea"/>
+        <path d="M 30 30 L 50 50 L 70 30 M 50 50 L 50 70" stroke="white" stroke-width="8" fill="none" stroke-linecap="round"/>
+    </svg>'''
+    return Response(svg, mimetype='image/svg+xml')
+
 @app.route('/api/status')
 def api_status():
     """Get current system status"""
