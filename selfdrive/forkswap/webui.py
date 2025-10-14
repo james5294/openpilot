@@ -233,6 +233,92 @@ HTML_TEMPLATE = """
             font-size: 1.1em;
         }
 
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+        }
+
+        .modal.show {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal-content {
+            background: white;
+            padding: 30px;
+            border-radius: 20px;
+            max-width: 500px;
+            width: 90%;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+
+        .modal-header {
+            font-size: 1.5em;
+            font-weight: 700;
+            color: #667eea;
+            margin-bottom: 20px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-label {
+            display: block;
+            font-weight: 600;
+            color: #666;
+            margin-bottom: 8px;
+        }
+
+        .form-input {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            font-size: 1em;
+            transition: border-color 0.2s;
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .modal-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 25px;
+        }
+
+        button.success {
+            background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+        }
+
+        .disk-space-bar {
+            height: 10px;
+            background: #e0e0e0;
+            border-radius: 5px;
+            overflow: hidden;
+            margin-top: 5px;
+        }
+
+        .disk-space-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #11998e 0%, #38ef7d 100%);
+            transition: width 0.3s;
+        }
+
+        .disk-space-fill.warning {
+            background: linear-gradient(90deg, #f093fb 0%, #f5576c 100%);
+        }
+
         @media (max-width: 600px) {
             .header h1 {
                 font-size: 2em;
@@ -272,6 +358,19 @@ HTML_TEMPLATE = """
                 <span class="status-label">AGNOS Version:</span>
                 <span class="status-value" id="agnos-version">Loading...</span>
             </div>
+            <div class="status-item">
+                <span class="status-label">Disk Space:</span>
+                <span class="status-value" id="disk-space">Loading...</span>
+            </div>
+        </div>
+
+        <div class="status-card">
+            <h2>🛠️ System Tools</h2>
+            <div class="fork-actions" style="margin-top: 10px;">
+                <button class="secondary" onclick="repairOverlay()">🔧 Repair Overlay</button>
+                <button class="secondary" onclick="refreshAssets()">📦 Refresh Assets</button>
+                <button class="secondary" onclick="verifyOverlay()">✅ Verify Overlay</button>
+            </div>
         </div>
 
         <div class="status-card">
@@ -281,7 +380,26 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <button class="add-fork-btn secondary">+ Add New Fork</button>
+        <button class="add-fork-btn secondary" onclick="showAddForkModal()">+ Add New Fork</button>
+    </div>
+
+    <!-- Add Fork Modal -->
+    <div id="addForkModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">➕ Add New Fork</div>
+            <div class="form-group">
+                <label class="form-label">GitHub URL</label>
+                <input type="text" id="githubUrl" class="form-input" placeholder="https://github.com/username/openpilot">
+            </div>
+            <div class="form-group">
+                <label class="form-label">Branch (optional)</label>
+                <input type="text" id="branchName" class="form-input" placeholder="master (leave empty for default)">
+            </div>
+            <div class="modal-actions">
+                <button class="success" onclick="cloneFork()">🚀 Clone Fork</button>
+                <button class="secondary" onclick="hideAddForkModal()">Cancel</button>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -295,6 +413,23 @@ HTML_TEMPLATE = """
                 currentFork = data.current_fork;
                 document.getElementById('current-fork').textContent = currentFork || 'Unknown';
                 document.getElementById('agnos-version').textContent = data.agnos_version || 'Unknown';
+
+                // Display disk space with color coding
+                if (data.disk_space && data.disk_space.available && data.disk_space.percent) {
+                    const percent = parseInt(data.disk_space.percent);
+                    let color = '#4caf50'; // Green
+                    if (percent > 80) {
+                        color = '#ff9800'; // Orange
+                    }
+                    if (percent > 90) {
+                        color = '#f44336'; // Red
+                    }
+                    document.getElementById('disk-space').innerHTML =
+                        `${data.disk_space.available} free (${data.disk_space.used} / ${data.disk_space.total})
+                        <span style="color: ${color}; font-weight: bold;">${data.disk_space.percent}</span>`;
+                } else {
+                    document.getElementById('disk-space').textContent = 'Unknown';
+                }
             } catch (error) {
                 console.error('Failed to load status:', error);
             }
@@ -324,6 +459,11 @@ HTML_TEMPLATE = """
                             <div class="fork-detail">💾 Size: ${fork.size || 'Unknown'}</div>
                         </div>
                         <div class="fork-actions">
+                            ${fork.branch ? `
+                                <button class="secondary" onclick="updateFork('${fork.name}')">
+                                    🔄 Update Fork
+                                </button>
+                            ` : ''}
                             ${!fork.is_active ? `
                                 <button onclick="switchFork('${fork.name}')">
                                     Switch to This Fork
@@ -402,6 +542,166 @@ HTML_TEMPLATE = """
             }
         }
 
+        function showAddForkModal() {
+            document.getElementById('addForkModal').classList.add('show');
+        }
+
+        function hideAddForkModal() {
+            document.getElementById('addForkModal').classList.remove('show');
+            // Clear inputs
+            document.getElementById('githubUrl').value = '';
+            document.getElementById('branchName').value = '';
+        }
+
+        async function cloneFork() {
+            const url = document.getElementById('githubUrl').value.trim();
+            const branch = document.getElementById('branchName').value.trim();
+
+            if (!url) {
+                alert('Please enter a GitHub URL');
+                return;
+            }
+
+            // Basic URL validation
+            if (!url.startsWith('https://github.com/') && !url.startsWith('http://github.com/')) {
+                alert('Please enter a valid GitHub URL (https://github.com/...)');
+                return;
+            }
+
+            hideAddForkModal();
+            const messageDiv = document.getElementById('message');
+            messageDiv.innerHTML = '<div class="success">Cloning fork... This may take several minutes. Please wait...</div>';
+
+            try {
+                const response = await fetch('/api/clone', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ github_url: url, branch: branch || null })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    messageDiv.innerHTML = '<div class="success">Fork cloned successfully!</div>';
+                    // Reload fork list
+                    loadForks();
+                    // Clear message after 5 seconds
+                    setTimeout(() => { messageDiv.innerHTML = ''; }, 5000);
+                } else {
+                    messageDiv.innerHTML = `<div class="error">Error: ${result.error}</div>`;
+                }
+            } catch (error) {
+                messageDiv.innerHTML = `<div class="error">Failed to clone fork: ${error.message}</div>`;
+            }
+        }
+
+        async function repairOverlay() {
+            if (!confirm('Repair ForkSwap overlay?\\n\\nThis will reapply the overlay files to the current fork.')) {
+                return;
+            }
+
+            const messageDiv = document.getElementById('message');
+            messageDiv.innerHTML = '<div class="success">Repairing overlay... Please wait...</div>';
+
+            try {
+                const response = await fetch('/api/repair', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    messageDiv.innerHTML = '<div class="success">Overlay repaired successfully!</div>';
+                    setTimeout(() => { messageDiv.innerHTML = ''; }, 5000);
+                } else {
+                    messageDiv.innerHTML = `<div class="error">Error: ${result.error}</div>`;
+                }
+            } catch (error) {
+                messageDiv.innerHTML = `<div class="error">Failed to repair overlay: ${error.message}</div>`;
+            }
+        }
+
+        async function refreshAssets() {
+            if (!confirm('Refresh shared assets?\\n\\nThis will rebuild the asset repository.')) {
+                return;
+            }
+
+            const messageDiv = document.getElementById('message');
+            messageDiv.innerHTML = '<div class="success">Refreshing assets... Please wait...</div>';
+
+            try {
+                const response = await fetch('/api/refresh-assets', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    messageDiv.innerHTML = '<div class="success">Assets refreshed successfully!</div>';
+                    setTimeout(() => { messageDiv.innerHTML = ''; }, 5000);
+                } else {
+                    messageDiv.innerHTML = `<div class="error">Error: ${result.error}</div>`;
+                }
+            } catch (error) {
+                messageDiv.innerHTML = `<div class="error">Failed to refresh assets: ${error.message}</div>`;
+            }
+        }
+
+        async function verifyOverlay() {
+            const messageDiv = document.getElementById('message');
+            messageDiv.innerHTML = '<div class="success">Verifying overlay... Please wait...</div>';
+
+            try {
+                const response = await fetch('/api/verify', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    messageDiv.innerHTML = '<div class="success">Overlay verified successfully!</div>';
+                    setTimeout(() => { messageDiv.innerHTML = ''; }, 5000);
+                } else {
+                    messageDiv.innerHTML = `<div class="error">Error: ${result.error || result.message}</div>`;
+                }
+            } catch (error) {
+                messageDiv.innerHTML = `<div class="error">Failed to verify overlay: ${error.message}</div>`;
+            }
+        }
+
+        async function updateFork(forkName) {
+            if (!confirm(`Update ${forkName}?\\n\\nThis will pull the latest changes from GitHub.`)) {
+                return;
+            }
+
+            const messageDiv = document.getElementById('message');
+            messageDiv.innerHTML = '<div class="success">Updating fork... Please wait...</div>';
+
+            try {
+                const response = await fetch('/api/update', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ fork_name: forkName })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    messageDiv.innerHTML = '<div class="success">Fork updated successfully!</div>';
+                    // Reload fork list
+                    loadForks();
+                    setTimeout(() => { messageDiv.innerHTML = ''; }, 5000);
+                } else {
+                    messageDiv.innerHTML = `<div class="error">Error: ${result.error}</div>`;
+                }
+            } catch (error) {
+                messageDiv.innerHTML = `<div class="error">Failed to update fork: ${error.message}</div>`;
+            }
+        }
+
         // Load data on page load
         loadStatus();
         loadForks();
@@ -452,10 +752,32 @@ def api_status():
             with open('/VERSION') as f:
                 agnos_version = f.read().strip()
 
+        # Get disk space
+        disk_info = {}
+        try:
+            result = subprocess.run(
+                ['df', '-h', '/data'],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                lines = result.stdout.strip().split('\n')
+                if len(lines) >= 2:
+                    parts = lines[1].split()
+                    if len(parts) >= 5:
+                        disk_info = {
+                            'total': parts[1],
+                            'used': parts[2],
+                            'available': parts[3],
+                            'percent': parts[4]
+                        }
+        except Exception as e:
+            logger.warning(f"Failed to get disk space: {e}")
+
         return jsonify({
             'current_fork': current_fork,
             'agnos_version': agnos_version,
-            'forkswap_version': '2.0.0-webui'
+            'forkswap_version': '2.0.0-webui',
+            'disk_space': disk_info
         })
     except Exception as e:
         logger.error(f"Failed to get status: {e}")
@@ -624,6 +946,311 @@ def api_delete():
 
     except Exception as e:
         logger.error(f"Failed to delete fork: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/clone', methods=['POST'])
+def api_clone():
+    """Clone a new fork from GitHub"""
+    try:
+        data = request.json
+        github_url = data.get('github_url')
+        branch = data.get('branch')
+
+        if not github_url:
+            return jsonify({'success': False, 'error': 'No GitHub URL provided'}), 400
+
+        # Generate fork name from URL
+        # Extract username and repo from URL
+        # Example: https://github.com/commaai/openpilot -> commaai
+        try:
+            parts = github_url.rstrip('/').split('/')
+            if 'github.com' not in github_url:
+                return jsonify({'success': False, 'error': 'Invalid GitHub URL'}), 400
+
+            username = parts[-2]
+            repo = parts[-1].replace('.git', '')
+
+            if repo != 'openpilot':
+                fork_name = f"{username}-{repo}"
+            else:
+                fork_name = username
+
+            # If branch specified, append it
+            if branch:
+                fork_name = f"{fork_name}-{branch}"
+
+        except Exception as e:
+            return jsonify({'success': False, 'error': f'Failed to parse GitHub URL: {e}'}), 400
+
+        # Check if fork already exists
+        fork_path = Path(FORKS_DIR) / fork_name
+        if fork_path.exists():
+            return jsonify({
+                'success': False,
+                'error': f'Fork {fork_name} already exists'
+            }), 400
+
+        # Create forks directory if needed
+        Path(FORKS_DIR).mkdir(parents=True, exist_ok=True)
+
+        # Clone the repository
+        try:
+            clone_cmd = [
+                'sudo', 'git', 'clone',
+                '--recurse-submodules',
+                github_url,
+                str(fork_path / 'openpilot')
+            ]
+
+            if branch:
+                clone_cmd.insert(3, '-b')
+                clone_cmd.insert(4, branch)
+
+            logger.info(f"Cloning {github_url} to {fork_name}...")
+            result = subprocess.run(
+                clone_cmd,
+                capture_output=True,
+                text=True,
+                timeout=600  # 10 minutes timeout
+            )
+
+            if result.returncode != 0:
+                return jsonify({
+                    'success': False,
+                    'error': f'Git clone failed: {result.stderr}'
+                }), 500
+
+            logger.info(f"Successfully cloned {fork_name}")
+
+            return jsonify({
+                'success': True,
+                'message': f'Fork {fork_name} cloned successfully',
+                'fork_name': fork_name
+            })
+
+        except subprocess.TimeoutExpired:
+            return jsonify({
+                'success': False,
+                'error': 'Clone operation timed out (10 minutes)'
+            }), 500
+        except Exception as e:
+            return jsonify({
+                'success': False,
+                'error': f'Clone failed: {e}'
+            }), 500
+
+    except Exception as e:
+        logger.error(f"Failed to clone fork: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/update', methods=['POST'])
+def api_update():
+    """Update a fork (git pull)"""
+    try:
+        data = request.json
+        fork_name = data.get('fork_name')
+
+        if not fork_name:
+            return jsonify({'success': False, 'error': 'No fork name provided'}), 400
+
+        # Verify fork exists
+        fork_path = Path(FORKS_DIR) / fork_name / 'openpilot'
+        if not fork_path.exists():
+            return jsonify({'success': False, 'error': f'Fork {fork_name} not found'}), 404
+
+        # Check if it's a git repository
+        git_dir = fork_path / '.git'
+        if not git_dir.exists():
+            return jsonify({
+                'success': False,
+                'error': 'Fork is not a git repository'
+            }), 400
+
+        try:
+            # Git pull with rebase
+            logger.info(f"Updating fork {fork_name}...")
+            result = subprocess.run(
+                ['sudo', 'git', '-C', str(fork_path), 'pull', '--rebase', '--recurse-submodules'],
+                capture_output=True,
+                text=True,
+                timeout=300  # 5 minutes timeout
+            )
+
+            if result.returncode != 0:
+                # Check if error is "already up to date"
+                if 'Already up to date' in result.stdout or 'Already up to date' in result.stderr:
+                    return jsonify({
+                        'success': True,
+                        'message': f'Fork {fork_name} is already up to date'
+                    })
+                return jsonify({
+                    'success': False,
+                    'error': f'Git pull failed: {result.stderr}'
+                }), 500
+
+            logger.info(f"Successfully updated {fork_name}")
+
+            return jsonify({
+                'success': True,
+                'message': f'Fork {fork_name} updated successfully'
+            })
+
+        except subprocess.TimeoutExpired:
+            return jsonify({
+                'success': False,
+                'error': 'Update operation timed out'
+            }), 500
+        except Exception as e:
+            return jsonify({
+                'success': False,
+                'error': f'Update failed: {e}'
+            }), 500
+
+    except Exception as e:
+        logger.error(f"Failed to update fork: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/repair', methods=['POST'])
+def api_repair():
+    """Repair ForkSwap overlay"""
+    try:
+        if not os.path.exists(FORKSWAP_SCRIPT):
+            return jsonify({
+                'success': False,
+                'error': 'ForkSwap script not found'
+            }), 404
+
+        try:
+            logger.info("Repairing overlay...")
+            result = subprocess.run(
+                ['sudo', 'bash', FORKSWAP_SCRIPT, '--repair-overlay'],
+                capture_output=True,
+                text=True,
+                timeout=120
+            )
+
+            if result.returncode != 0:
+                return jsonify({
+                    'success': False,
+                    'error': f'Repair failed: {result.stderr}'
+                }), 500
+
+            logger.info("Overlay repaired successfully")
+
+            return jsonify({
+                'success': True,
+                'message': 'Overlay repaired successfully'
+            })
+
+        except subprocess.TimeoutExpired:
+            return jsonify({
+                'success': False,
+                'error': 'Repair operation timed out'
+            }), 500
+        except Exception as e:
+            return jsonify({
+                'success': False,
+                'error': f'Repair failed: {e}'
+            }), 500
+
+    except Exception as e:
+        logger.error(f"Failed to repair overlay: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/refresh-assets', methods=['POST'])
+def api_refresh_assets():
+    """Refresh shared assets"""
+    try:
+        if not os.path.exists(FORKSWAP_SCRIPT):
+            return jsonify({
+                'success': False,
+                'error': 'ForkSwap script not found'
+            }), 404
+
+        try:
+            logger.info("Refreshing assets...")
+            result = subprocess.run(
+                ['sudo', 'bash', FORKSWAP_SCRIPT, '--refresh-assets'],
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
+
+            if result.returncode != 0:
+                return jsonify({
+                    'success': False,
+                    'error': f'Refresh failed: {result.stderr}'
+                }), 500
+
+            logger.info("Assets refreshed successfully")
+
+            return jsonify({
+                'success': True,
+                'message': 'Assets refreshed successfully'
+            })
+
+        except subprocess.TimeoutExpired:
+            return jsonify({
+                'success': False,
+                'error': 'Refresh operation timed out'
+            }), 500
+        except Exception as e:
+            return jsonify({
+                'success': False,
+                'error': f'Refresh failed: {e}'
+            }), 500
+
+    except Exception as e:
+        logger.error(f"Failed to refresh assets: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/verify', methods=['POST'])
+def api_verify():
+    """Verify ForkSwap overlay"""
+    try:
+        if not os.path.exists(FORKSWAP_SCRIPT):
+            return jsonify({
+                'success': False,
+                'error': 'ForkSwap script not found'
+            }), 404
+
+        try:
+            logger.info("Verifying overlay...")
+            result = subprocess.run(
+                ['sudo', 'bash', FORKSWAP_SCRIPT, '--verify-overlay'],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+
+            # Verify command returns success/failure via exit code
+            if result.returncode != 0:
+                return jsonify({
+                    'success': False,
+                    'message': 'Overlay verification failed',
+                    'details': result.stdout + result.stderr
+                })
+
+            logger.info("Overlay verified successfully")
+
+            return jsonify({
+                'success': True,
+                'message': 'Overlay verified successfully'
+            })
+
+        except subprocess.TimeoutExpired:
+            return jsonify({
+                'success': False,
+                'error': 'Verify operation timed out'
+            }), 500
+        except Exception as e:
+            return jsonify({
+                'success': False,
+                'error': f'Verify failed: {e}'
+            }), 500
+
+    except Exception as e:
+        logger.error(f"Failed to verify overlay: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 def main():
