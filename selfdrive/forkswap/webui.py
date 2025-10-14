@@ -795,7 +795,7 @@ def api_status():
         return jsonify({
             'current_fork': current_fork,
             'agnos_version': agnos_version,
-            'forkswap_version': '2.1.1',
+            'forkswap_version': '2.2.0',
             'disk_space': disk_info
         })
     except Exception as e:
@@ -888,6 +888,48 @@ def api_switch():
         fork_path = Path(FORKS_DIR) / fork_name / 'openpilot'
         if not fork_path.exists():
             return jsonify({'success': False, 'error': f'Fork {fork_name} not found'}), 404
+
+        # Get current fork name for overlay deployment
+        symlink = Path('/data/openpilot')
+        current_fork = None
+        if symlink.is_symlink():
+            target = os.readlink(symlink)
+            current_fork = Path(target).parent.name
+
+        # Deploy ForkSwap overlay to target fork BEFORE switching
+        # This ensures ForkSwap is available in the target fork after reboot
+        deployment_script = os.path.join(OPENPILOT_ROOT, 'tools/scripts/deploy_overlay_to_fork.sh')
+
+        if current_fork and os.path.exists(deployment_script):
+            logger.info(f"Deploying ForkSwap overlay from {current_fork} to {fork_name}...")
+            try:
+                result = subprocess.run(
+                    ['sudo', 'bash', deployment_script, current_fork, fork_name],
+                    capture_output=True,
+                    text=True,
+                    timeout=60
+                )
+
+                if result.returncode != 0:
+                    logger.error(f"Overlay deployment failed: {result.stderr}")
+                    return jsonify({
+                        'success': False,
+                        'error': f'Failed to deploy ForkSwap overlay: {result.stderr}'
+                    }), 500
+
+                logger.info(f"Overlay deployment successful")
+            except subprocess.TimeoutExpired:
+                return jsonify({
+                    'success': False,
+                    'error': 'Overlay deployment timed out'
+                }), 500
+            except Exception as e:
+                return jsonify({
+                    'success': False,
+                    'error': f'Overlay deployment failed: {e}'
+                }), 500
+        else:
+            logger.warning(f"Deployment script not found or no current fork - skipping overlay deployment")
 
         # Switch symlink directly
         # Note: This requires sudo, so the web server must run as root or have sudo access
@@ -1040,6 +1082,39 @@ def api_clone():
                 }), 500
 
             logger.info(f"Successfully cloned {fork_name}")
+
+            # Deploy ForkSwap overlay to the newly cloned fork
+            # This ensures ForkSwap is available immediately after cloning
+            deployment_script = os.path.join(OPENPILOT_ROOT, 'tools/scripts/deploy_overlay_to_fork.sh')
+
+            # Get current fork name for overlay source
+            symlink = Path('/data/openpilot')
+            current_fork = None
+            if symlink.is_symlink():
+                target = os.readlink(symlink)
+                current_fork = Path(target).parent.name
+
+            if current_fork and os.path.exists(deployment_script):
+                logger.info(f"Deploying ForkSwap overlay from {current_fork} to {fork_name}...")
+                try:
+                    deploy_result = subprocess.run(
+                        ['sudo', 'bash', deployment_script, current_fork, fork_name],
+                        capture_output=True,
+                        text=True,
+                        timeout=60
+                    )
+
+                    if deploy_result.returncode != 0:
+                        logger.error(f"Overlay deployment failed: {deploy_result.stderr}")
+                        # Don't fail the clone - fork is still usable, just without overlay
+                        logger.warning("Fork cloned but overlay deployment failed")
+                    else:
+                        logger.info(f"Overlay deployed successfully to {fork_name}")
+                except Exception as e:
+                    logger.error(f"Overlay deployment error: {e}")
+                    # Don't fail the clone
+            else:
+                logger.warning("Deployment script not found or no current fork - skipping overlay deployment")
 
             return jsonify({
                 'success': True,

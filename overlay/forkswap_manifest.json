@@ -1,5 +1,5 @@
 {
-  "version": "2.1.1",
+  "version": "2.2.0",
   "description": "ForkSwap overlay - Modular fork management system with Web UI",
   "compatibility": "Works with ANY openpilot fork (comma official, FrogPilot, dragonpilot, etc.)",
   "features": [
@@ -9,6 +9,7 @@
     "Disk space monitoring",
     "Auto-starts on boot",
     "Auto-installs Flask dependency on first run",
+    "Auto-deploys overlay when switching or cloning forks",
     "Zero fork dependencies - completely modular"
   ],
   "files": [
