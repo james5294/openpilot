@@ -12,6 +12,12 @@
       "type": "file"
     },
     {
+      "source": "selfdrive/ui/ui",
+      "destination": "selfdrive/ui/ui",
+      "type": "file",
+      "description": "Pre-compiled UI binary with ForkSwap panel (72MB)"
+    },
+    {
       "source": "selfdrive/ui/qt/offroad/forkswap_panel.cc",
       "destination": "selfdrive/ui/qt/offroad/forkswap_panel.cc",
       "type": "file"
