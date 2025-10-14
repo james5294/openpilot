@@ -1,46 +1,18 @@
 {
-  "version": "1.0.0",
+  "version": "2.0.0",
+  "description": "ForkSwap overlay files - Web UI version (no C++ binaries)",
   "files": [
     {
       "source": "selfdrive/forkswap",
       "destination": "selfdrive/forkswap",
-      "type": "directory"
-    },
-    {
-      "source": "selfdrive/ui/forkswap_client.py",
-      "destination": "selfdrive/ui/forkswap_client.py",
-      "type": "file"
-    },
-    {
-      "source": "selfdrive/ui/ui",
-      "destination": "selfdrive/ui/ui",
-      "type": "file",
-      "description": "Pre-compiled UI binary with ForkSwap panel (72MB)"
-    },
-    {
-      "source": "selfdrive/ui/qt/offroad/forkswap_panel.cc",
-      "destination": "selfdrive/ui/qt/offroad/forkswap_panel.cc",
-      "type": "file"
-    },
-    {
-      "source": "selfdrive/ui/qt/offroad/forkswap_panel.h",
-      "destination": "selfdrive/ui/qt/offroad/forkswap_panel.h",
-      "type": "file"
-    },
-    {
-      "source": "selfdrive/ui/qt/home.cc",
-      "destination": "selfdrive/ui/qt/home.cc",
-      "type": "file"
-    },
-    {
-      "source": "selfdrive/ui/qt/home.h",
-      "destination": "selfdrive/ui/qt/home.h",
-      "type": "file"
+      "type": "directory",
+      "description": "ForkSwap Python backend and web UI server"
     },
     {
       "source": "system/manager/process_config.py",
       "destination": "system/manager/process_config.py",
-      "type": "file"
+      "type": "file",
+      "description": "Manager config with forkswap_webui process"
     }
   ]
 }
