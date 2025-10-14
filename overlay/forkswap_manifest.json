@@ -1,18 +1,40 @@
 {
-  "version": "2.0.0",
-  "description": "ForkSwap overlay files - Web UI version (no C++ binaries)",
+  "version": "2.1.0",
+  "description": "ForkSwap overlay - Modular fork management system with Web UI",
+  "compatibility": "Works with ANY openpilot fork (comma official, FrogPilot, dragonpilot, etc.)",
+  "features": [
+    "Web UI accessible from any device on network (port 8080)",
+    "Fork switching, cloning, updating, deletion",
+    "System maintenance (repair/refresh/verify overlay)",
+    "Disk space monitoring",
+    "Auto-starts on boot",
+    "Zero fork dependencies - completely modular"
+  ],
   "files": [
     {
       "source": "selfdrive/forkswap",
       "destination": "selfdrive/forkswap",
       "type": "directory",
-      "description": "ForkSwap Python backend and web UI server"
+      "description": "ForkSwap Python backend and Web UI server (complete system)"
     },
     {
       "source": "system/manager/process_config.py",
       "destination": "system/manager/process_config.py",
       "type": "file",
-      "description": "Manager config with forkswap_webui process"
+      "description": "Manager config with forkswapd and forkswap_webui auto-start"
+    },
+    {
+      "source": "tools/scripts/forkswap.sh",
+      "destination": "tools/scripts/forkswap.sh",
+      "type": "file",
+      "description": "CLI script for command-line fork management"
     }
-  ]
+  ],
+  "deployment": {
+    "method": "Automatic via overlay system",
+    "requirements": ["Python 3.8+", "Flask (auto-installed)"],
+    "access": "http://DEVICE_IP:8080 (after deployment)",
+    "disable_webui": "Set param ForkSwapWebUIDisabled=1 to disable auto-start",
+    "disable_service": "Set param ForkSwapServiceDisabled=1 to disable backend"
+  }
 }
