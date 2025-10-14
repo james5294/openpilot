@@ -328,6 +328,9 @@ HTML_TEMPLATE = """
                                 <button onclick="switchFork('${fork.name}')">
                                     Switch to This Fork
                                 </button>
+                                <button class="danger" onclick="deleteFork('${fork.name}')">
+                                    🗑️ Delete Fork
+                                </button>
                             ` : `
                                 <button disabled>Currently Active</button>
                             `}
@@ -365,6 +368,37 @@ HTML_TEMPLATE = """
                 }
             } catch (error) {
                 messageDiv.innerHTML = `<div class="error">Failed to switch fork: ${error.message}</div>`;
+            }
+        }
+
+        async function deleteFork(forkName) {
+            if (!confirm(`⚠️  DELETE ${forkName}?\\n\\nThis will permanently remove all files for this fork.\\nThis action CANNOT be undone!\\n\\nAre you sure?`)) {
+                return;
+            }
+
+            const messageDiv = document.getElementById('message');
+            messageDiv.innerHTML = '<div class="success">Deleting fork... This may take a moment.</div>';
+
+            try {
+                const response = await fetch('/api/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ fork_name: forkName })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    messageDiv.innerHTML = '<div class="success">Fork deleted successfully!</div>';
+                    // Reload fork list immediately
+                    loadForks();
+                    // Clear message after 3 seconds
+                    setTimeout(() => { messageDiv.innerHTML = ''; }, 3000);
+                } else {
+                    messageDiv.innerHTML = `<div class="error">Error: ${result.error}</div>`;
+                }
+            } catch (error) {
+                messageDiv.innerHTML = `<div class="error">Failed to delete fork: ${error.message}</div>`;
             }
         }
 
@@ -544,6 +578,52 @@ def api_switch():
 
     except Exception as e:
         logger.error(f"Failed to switch fork: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/delete', methods=['POST'])
+def api_delete():
+    """Delete a fork"""
+    try:
+        data = request.json
+        fork_name = data.get('fork_name')
+
+        if not fork_name:
+            return jsonify({'success': False, 'error': 'No fork name provided'}), 400
+
+        # Verify fork exists
+        fork_path = Path(FORKS_DIR) / fork_name
+        if not fork_path.exists():
+            return jsonify({'success': False, 'error': f'Fork {fork_name} not found'}), 404
+
+        # Check if it's the active fork
+        symlink = Path('/data/openpilot')
+        if symlink.is_symlink():
+            target = os.readlink(symlink)
+            current_fork = Path(target).parent.name
+            if current_fork == fork_name:
+                return jsonify({
+                    'success': False,
+                    'error': 'Cannot delete the currently active fork. Switch to another fork first.'
+                }), 400
+
+        # Delete the fork directory
+        try:
+            subprocess.run(['sudo', 'rm', '-rf', str(fork_path)], check=True, timeout=30)
+            logger.info(f"Deleted fork: {fork_name}")
+
+            return jsonify({
+                'success': True,
+                'message': f'Fork {fork_name} deleted successfully'
+            })
+
+        except subprocess.CalledProcessError as e:
+            return jsonify({
+                'success': False,
+                'error': f'Failed to delete fork: {e}'
+            }), 500
+
+    except Exception as e:
+        logger.error(f"Failed to delete fork: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 def main():
