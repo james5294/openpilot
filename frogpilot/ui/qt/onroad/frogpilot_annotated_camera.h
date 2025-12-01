@@ -19,6 +19,7 @@ public:
   void paintAdjacentPaths(QPainter &p);
   void paintBlindSpotPath(QPainter &p);
   void paintFrogPilotWidgets(QPainter &p, UIState &s);
+  void paintLeadMetrics(QPainter &p, bool adjacent, QPointF *chevron, const cereal::RadarState::LeadData::Reader &lead_data);
   void updateState(const UIState &s, const FrogPilotUIState &fs);
 
   bool hideBottomIcons;
@@ -45,6 +46,8 @@ public:
 
   QPolygonF track_adjacent_vertices[2];
 
+  QRect adjacentLeadTextRect;
+  QRect leadTextRect;
   QRect setSpeedRect;
 
   QSize defaultSize;
@@ -80,6 +83,7 @@ private:
   bool redLight;
 
   int animationFrameIndex;
+  int desiredFollowDistance;
   int frogHopCount;
   int signalAnimationLength;
   int signalHeight;
