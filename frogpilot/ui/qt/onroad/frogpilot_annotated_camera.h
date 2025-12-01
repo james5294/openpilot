@@ -29,6 +29,7 @@ public:
   bool rightHandDM;
 
   int alertHeight;
+  int speedLimitHeight;
   int standstillDuration;
 
   float speed;
@@ -69,8 +70,11 @@ private:
   void paintLateralPaused(QPainter &p);
   void paintLongitudinalPaused(QPainter &p);
   void paintPedalIcons(QPainter &p);
+  void paintPendingSpeedLimit(QPainter &p);
   void paintRadarTracks(QPainter &p);
   void paintRoadName(QPainter &p);
+  void paintSpeedLimit(QPainter &p);
+  void paintSpeedLimitSources(QPainter &p);
   void paintStandstillTimer(QPainter &p);
   void paintStoppingPoint(QPainter &p);
   void paintTurnSignals(QPainter &p);
@@ -88,6 +92,7 @@ private:
   bool lateralPaused;
   bool longitudinalPaused;
   bool redLight;
+  bool speedLimitChanged;
 
   int animationFrameIndex;
   int desiredFollowDistance;
@@ -100,14 +105,23 @@ private:
 
   float accelerationEgo;
   float cscSpeed;
+  float dashboardSpeedLimit;
   float distanceConversion;
   float laneWidthLeft;
   float laneWidthRight;
+  float mapSpeedLimit;
+  float mapboxSpeedLimit;
+  float nextSpeedLimit;
   float roadCurvature;
   float setSpeed;
+  float slcOverriddenSpeed;
   float speedConversion;
   float speedConversionMetrics;
+  float speedLimit;
   float stoppingDistance;
+  float unconfirmedSpeedLimit;
+
+  std::string speedLimitSource;
 
   Params params;
   Params params_memory{"", true};
@@ -116,12 +130,17 @@ private:
   QColor redColor(int alpha = 255) { return QColor(201, 34, 49, alpha); }
 
   QElapsedTimer glowTimer;
+  QElapsedTimer pendingLimitTimer;
   QElapsedTimer standstillTimer;
 
   QPixmap brakePedalImg;
   QPixmap curveSpeedIcon;
   QPixmap curveSpeedIconFlipped;
+  QPixmap dashboardIcon;
   QPixmap gasPedalImg;
+  QPixmap mapboxIcon;
+  QPixmap mapDataIcon;
+  QPixmap nextMapsIcon;
   QPixmap pausedIcon;
   QPixmap speedIcon;
   QPixmap stopSignImg;
@@ -130,6 +149,9 @@ private:
   QPoint cemStatusPosition;
   QPoint compassPosition;
   QPoint lateralPausedPosition;
+
+  QRect newSpeedLimitRect;
+  QRect speedLimitRect;
 
   QSharedPointer<QMovie> cemCurveIcon;
   QSharedPointer<QMovie> cemLeadIcon;
@@ -142,6 +164,7 @@ private:
   QString leadDistanceUnit;
   QString leadSpeedUnit;
   QString roadName;
+  QString speedLimitOffsetStr;
   QString speedUnit;
 
   QTimer *animationTimer;
