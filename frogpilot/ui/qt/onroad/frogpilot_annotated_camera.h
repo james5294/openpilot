@@ -16,6 +16,7 @@ public:
   explicit FrogPilotAnnotatedCameraWidget(QWidget *parent = 0);
 
   void mousePressEvent(QMouseEvent *mouseEvent) override;
+  void paintAdjacentPaths(QPainter &p);
   void paintBlindSpotPath(QPainter &p);
   void paintFrogPilotWidgets(QPainter &p, UIState &s);
   void updateState(const UIState &s, const FrogPilotUIState &fs);
@@ -41,6 +42,8 @@ public:
 
   QPoint dmIconPosition;
   QPoint experimentalButtonPosition;
+
+  QPolygonF track_adjacent_vertices[2];
 
   QRect setSpeedRect;
 
@@ -87,6 +90,8 @@ private:
   float accelerationEgo;
   float cscSpeed;
   float distanceConversion;
+  float laneWidthLeft;
+  float laneWidthRight;
   float roadCurvature;
   float setSpeed;
   float speedConversion;
