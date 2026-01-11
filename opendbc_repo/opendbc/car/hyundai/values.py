@@ -71,6 +71,7 @@ class HyundaiSafetyFlags(IntFlag):
 # FrogPilot variables
 class HyundaiFrogPilotSafetyFlags(IntFlag):
   HAS_LDA_BUTTON = 1024
+  CCNC = 2048  # connected car Navigation Cockpit cluster communication
 
 
 class HyundaiFlags(IntFlag):
@@ -130,6 +131,8 @@ class HyundaiFlags(IntFlag):
   FCEV = 2 ** 25
 
   ALT_LIMITS_2 = 2 ** 26
+
+  CCNC = 2 ** 27  # connected car Navigation Cockpit cluster communication
 
 
 @dataclass

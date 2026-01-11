@@ -174,8 +174,18 @@ class CarController(CarControllerBase):
       can_sends.append(hyundaicanfd.create_suppress_lfa(self.packer, self.CAN, CS.lfa_block_msg,
                                                         self.CP.flags & HyundaiFlags.CANFD_LKA_STEERING_ALT))
 
-    # LFA and HDA icons
-    if self.frame % 5 == 0 and (not lka_steering or lka_steering_long):
+    # ccNC (connected car Navigation Cockpit) cluster communication for 2024+ vehicles
+    # Replaces create_lfahda_cluster with richer HUD features: lane animations, curvature, blind spot icons
+    if self.CP.flags & HyundaiFlags.CCNC:
+      can_sends.extend(hyundaicanfd.create_ccnc(
+        self.packer, self.CAN, self.CP.openpilotLongitudinalControl,
+        CC.enabled, hud_control,
+        CS.out.leftBlinker, CS.out.rightBlinker,
+        CS.msg_161, CS.msg_162, CS.msg_1b5,
+        CS.is_metric, CS.out
+      ))
+    # LFA and HDA icons (fallback for non-ccNC cars)
+    elif self.frame % 5 == 0 and (not lka_steering or lka_steering_long):
       can_sends.append(hyundaicanfd.create_lfahda_cluster(self.packer, self.CAN, CC.enabled))
 
     # blinkers
