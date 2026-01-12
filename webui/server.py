@@ -36,7 +36,7 @@ except ImportError:
 # =============================================================================
 # Configuration
 # =============================================================================
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 PORT = int(os.environ.get("FORKSWAP_PORT", "8888"))
 # Security: Bind to localhost by default; set FORKSWAP_BIND_ALL=1 to expose to network
 HOST = "0.0.0.0" if os.environ.get("FORKSWAP_BIND_ALL", "1") == "1" else "127.0.0.1"
@@ -462,6 +462,116 @@ def get_disk_free_gb() -> float:
     except Exception:
         pass
     return 0.0
+
+# =============================================================================
+# Self-Healing Functions
+# =============================================================================
+def fix_fork_ownership(fork_path: Path) -> bool:
+    """
+    Fix ownership of fork directory to comma user.
+    Returns True if ownership is correct (or was fixed), False on failure.
+    """
+    if not fork_path.exists():
+        return False
+
+    try:
+        # Get current owner
+        stat_info = fork_path.stat()
+        current_uid = stat_info.st_uid
+
+        # Get comma user uid (standard on AGNOS devices)
+        import pwd
+        try:
+            comma_uid = pwd.getpwnam("comma").pw_uid
+            comma_gid = pwd.getpwnam("comma").pw_gid
+        except KeyError:
+            # comma user doesn't exist (not on device), skip
+            return True
+
+        # Check if owned by root (uid 0) but should be owned by comma
+        if current_uid == 0:
+            logger.info(f"Fixing ownership for: {fork_path}")
+            subprocess.run(
+                ["sudo", "chown", "-R", "comma:comma", str(fork_path)],
+                capture_output=True, timeout=60
+            )
+            return True
+        elif current_uid == comma_uid:
+            return True  # Already correct
+        else:
+            return True  # Owned by someone else, don't change
+
+    except Exception as e:
+        logger.warning(f"Error fixing ownership for {fork_path}: {e}")
+        return False
+
+def configure_git_safe_directory(repo_path: Path) -> bool:
+    """
+    Add repository to git safe.directory config.
+    Prevents 'dubious ownership' warnings when accessing repos owned by different users.
+    """
+    if not repo_path.exists():
+        return False
+
+    try:
+        # Check if already configured
+        result = subprocess.run(
+            ["git", "config", "--global", "--get-all", "safe.directory"],
+            capture_output=True, text=True, timeout=5
+        )
+        configured_dirs = result.stdout.strip().split('\n') if result.stdout else []
+
+        if str(repo_path) not in configured_dirs:
+            subprocess.run(
+                ["git", "config", "--global", "--add", "safe.directory", str(repo_path)],
+                capture_output=True, timeout=5
+            )
+            logger.debug(f"Added safe.directory: {repo_path}")
+        return True
+    except Exception as e:
+        logger.warning(f"Error configuring safe.directory for {repo_path}: {e}")
+        return False
+
+def run_startup_selfhealing() -> dict:
+    """
+    Run self-healing checks and fixes on startup.
+    Returns dict with results of each check.
+    """
+    results = {
+        "ownership_fixes": 0,
+        "safe_directory_configs": 0,
+        "errors": []
+    }
+
+    forks_dir = Path("/data/forks")
+    if not forks_dir.exists():
+        return results
+
+    logger.info("Running startup self-healing checks...")
+
+    for fork_dir in forks_dir.iterdir():
+        if not fork_dir.is_dir():
+            continue
+
+        try:
+            # Fix ownership if needed
+            if fix_fork_ownership(fork_dir):
+                results["ownership_fixes"] += 1
+
+            # Configure git safe.directory
+            openpilot_dir = fork_dir / "openpilot"
+            if openpilot_dir.exists():
+                if configure_git_safe_directory(openpilot_dir):
+                    results["safe_directory_configs"] += 1
+
+        except Exception as e:
+            results["errors"].append(f"{fork_dir.name}: {e}")
+
+    if results["ownership_fixes"] > 0 or results["safe_directory_configs"] > 0:
+        logger.info(f"Self-healing complete: {results['ownership_fixes']} ownership fixes, "
+                   f"{results['safe_directory_configs']} safe.directory configs")
+
+    return results
 
 # =============================================================================
 # Middleware (aiohttp)
@@ -1266,6 +1376,15 @@ def main():
         for issue in issues:
             logger.warning(f"Startup check: {issue}")
         logger.warning("Starting in degraded mode - some features may not work")
+
+    # Run self-healing checks (fix ownership, configure git safe.directory)
+    try:
+        selfhealing_results = run_startup_selfhealing()
+        if selfhealing_results["errors"]:
+            for err in selfhealing_results["errors"]:
+                logger.warning(f"Self-healing error: {err}")
+    except Exception as e:
+        logger.warning(f"Self-healing failed: {e}")
 
     backend = "aiohttp" if USE_AIOHTTP else "http.server (fallback)"
     logger.info(f"Fork Swap Web UI v{VERSION} starting on http://{HOST}:{PORT} [{backend}]")

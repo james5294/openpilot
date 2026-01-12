@@ -5414,6 +5414,50 @@ harden_git_config() {
     return 0
 }
 
+# Fix ownership of fork directory to comma user
+# This is essential because the script runs as root (sudo) but openpilot runs as comma
+fix_fork_ownership() {
+    local fork_path="$1"
+
+    if [[ ! -d "$fork_path" ]]; then
+        log_warn "Cannot fix ownership: directory does not exist: $fork_path"
+        return 1
+    fi
+
+    # Detect comma user - standard on AGNOS devices
+    local target_user="comma"
+    local target_group="comma"
+
+    # Verify comma user exists
+    if ! id "$target_user" &>/dev/null; then
+        # Fallback: use the owner of /data if comma user doesn't exist
+        if [[ -d "/data" ]]; then
+            target_user=$(stat -c '%U' /data 2>/dev/null || echo "root")
+            target_group=$(stat -c '%G' /data 2>/dev/null || echo "root")
+        fi
+        log_debug "comma user not found, using: $target_user:$target_group"
+    fi
+
+    # Skip if already owned correctly
+    local current_owner
+    current_owner=$(stat -c '%U' "$fork_path" 2>/dev/null)
+    if [[ "$current_owner" == "$target_user" ]]; then
+        log_debug "Ownership already correct for: $fork_path"
+        return 0
+    fi
+
+    log_info "Fixing ownership to $target_user:$target_group for: $fork_path"
+
+    # Recursively change ownership
+    if chown -R "$target_user:$target_group" "$fork_path" 2>/dev/null; then
+        log_debug "Ownership fixed successfully"
+        return 0
+    else
+        log_warn "Failed to fix ownership (continuing anyway)"
+        return 1
+    fi
+}
+
 # Clone a repository with progress display
 clone_repository() {
     local url="$1"
@@ -6210,6 +6254,14 @@ clone_fork() {
         rm -rf "$(get_fork_path "$fork_name")" 2>/dev/null
         return 1
     fi
+
+    # Fix ownership so openpilot (running as comma user) can access the files
+    local fork_path
+    fork_path=$(get_fork_path "$fork_name")
+    fix_fork_ownership "$fork_path"
+
+    # Apply git hardening (safe.directory, gc settings)
+    harden_git_config "$clone_target"
 
     # Create fork info metadata
     if ! create_fork_info "$fork_name" "$git_url" "$branch"; then
