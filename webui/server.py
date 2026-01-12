@@ -36,7 +36,7 @@ except ImportError:
 # =============================================================================
 # Configuration
 # =============================================================================
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 PORT = int(os.environ.get("FORKSWAP_PORT", "8888"))
 # Security: Bind to localhost by default; set FORKSWAP_BIND_ALL=1 to expose to network
 HOST = "0.0.0.0" if os.environ.get("FORKSWAP_BIND_ALL", "1") == "1" else "127.0.0.1"
@@ -402,48 +402,130 @@ def run_fork_swap(command: str, *args) -> tuple[bool, str]:
         logger.error(f"Subprocess error: {e}")
         return False, str(e)
 
+def get_git_info(repo_path: Path) -> dict:
+    """Get git info (branch, remote URL, fork name) from a repository."""
+    info = {"branch": "unknown", "remote_url": "", "fork_name": "unknown"}
+
+    if not repo_path.exists() or not (repo_path / ".git").exists():
+        return info
+
+    try:
+        # Get branch
+        result = subprocess.run(
+            ["git", "-C", str(repo_path), "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            info["branch"] = result.stdout.strip()
+
+        # Get remote URL
+        result = subprocess.run(
+            ["git", "-C", str(repo_path), "remote", "get-url", "origin"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            info["remote_url"] = result.stdout.strip()
+            # Extract fork name from URL (e.g., "FrogAi/FrogPilot" or "sunnypilot")
+            url = info["remote_url"]
+            # Handle both https and git@ URLs
+            if "github.com" in url:
+                # Extract owner/repo from URL
+                parts = url.replace(".git", "").split("github.com")[-1]
+                parts = parts.lstrip("/:").split("/")
+                if len(parts) >= 2:
+                    info["fork_name"] = parts[1]  # repo name
+                elif len(parts) == 1:
+                    info["fork_name"] = parts[0]
+    except Exception:
+        pass
+
+    return info
+
 def get_current_fork() -> str:
-    """Read current fork from state file."""
+    """
+    Get current active fork name.
+    Checks state file first, then detects from /data/openpilot git info.
+    """
+    # First check state file (used by fork-managed installations)
     state_file = FORKSWAP_DIR / "current_fork.txt"
     if state_file.exists():
-        return state_file.read_text().strip()
+        name = state_file.read_text().strip()
+        if name:
+            return name
+
+    # Check if /data/openpilot is a symlink to a fork
+    openpilot_path = Path("/data/openpilot")
+    if openpilot_path.is_symlink():
+        target = openpilot_path.resolve()
+        # Extract fork name from path like /data/forks/frogpilot/openpilot
+        if "/data/forks/" in str(target):
+            parts = str(target).split("/data/forks/")[-1].split("/")
+            if parts:
+                return parts[0]
+
+    # Fallback: detect from git info at /data/openpilot (overlay installation)
+    if openpilot_path.exists() and not openpilot_path.is_symlink():
+        git_info = get_git_info(openpilot_path)
+        if git_info["fork_name"] != "unknown":
+            return f"{git_info['fork_name']} (overlay)"
+        elif git_info["branch"] != "unknown":
+            return f"openpilot ({git_info['branch']})"
+
     return "unknown"
 
 def get_fork_list() -> list[dict]:
-    """Get list of installed forks with metadata."""
-    forks_dir = Path("/data/forks")
+    """
+    Get list of all installed forks with metadata.
+    Includes both fork-managed installations in /data/forks/ AND
+    overlay installations at /data/openpilot.
+    """
     forks = []
     current = get_current_fork()
 
-    if not forks_dir.exists():
-        return forks
-
-    for fork_dir in sorted(forks_dir.iterdir()):
-        if not fork_dir.is_dir():
-            continue
-
-        openpilot_dir = fork_dir / "openpilot"
-        if not openpilot_dir.exists():
-            continue
-
-        # Get branch info
-        branch = "unknown"
-        try:
-            result = subprocess.run(
-                ["git", "-C", str(openpilot_dir), "rev-parse", "--abbrev-ref", "HEAD"],
-                capture_output=True, text=True, timeout=5
-            )
-            if result.returncode == 0:
-                branch = result.stdout.strip()
-        except Exception:
-            pass
+    # First, check for overlay installation at /data/openpilot
+    openpilot_path = Path("/data/openpilot")
+    if openpilot_path.exists() and not openpilot_path.is_symlink():
+        # This is an overlay installation (not managed by fork swap symlinks)
+        git_info = get_git_info(openpilot_path)
+        fork_name = git_info["fork_name"]
+        if fork_name == "unknown":
+            fork_name = "openpilot"
 
         forks.append({
-            "name": fork_dir.name,
-            "branch": branch,
-            "active": fork_dir.name == current,
-            "path": str(openpilot_dir)
+            "name": f"{fork_name} (active)",
+            "branch": git_info["branch"],
+            "active": True,
+            "path": str(openpilot_path),
+            "type": "overlay"
         })
+
+    # Then, scan /data/forks for fork-managed installations
+    forks_dir = Path("/data/forks")
+    if forks_dir.exists():
+        for fork_dir in sorted(forks_dir.iterdir()):
+            if not fork_dir.is_dir():
+                continue
+
+            openpilot_dir = fork_dir / "openpilot"
+            if not openpilot_dir.exists():
+                continue
+
+            git_info = get_git_info(openpilot_dir)
+
+            # Check if this fork is active (symlink target or state file match)
+            is_active = False
+            if openpilot_path.is_symlink():
+                is_active = openpilot_path.resolve() == openpilot_dir.resolve()
+            elif fork_dir.name in current:
+                is_active = True
+
+            forks.append({
+                "name": fork_dir.name,
+                "branch": git_info["branch"],
+                "active": is_active,
+                "path": str(openpilot_dir),
+                "type": "managed"
+            })
 
     return forks
 
