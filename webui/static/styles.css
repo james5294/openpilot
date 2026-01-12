@@ -331,3 +331,120 @@ button:disabled {
     0% { background-position: 200% 0; }
     100% { background-position: -200% 0; }
 }
+
+/* Popular Forks Section */
+.popular-forks-section {
+    margin-top: 20px;
+    margin-bottom: 10px;
+    border-radius: var(--border-radius);
+    background: var(--bg-secondary);
+    overflow: hidden;
+}
+
+.popular-forks-section[open] {
+    background: transparent;
+}
+
+.section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 14px 16px;
+    cursor: pointer;
+    background: var(--bg-secondary);
+    border-radius: var(--border-radius);
+    transition: background 0.2s;
+    list-style: none;
+}
+
+.section-header::-webkit-details-marker {
+    display: none;
+}
+
+.section-header:hover {
+    background: var(--bg-card);
+}
+
+.section-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.chevron {
+    font-size: 14px;
+    color: var(--text-secondary);
+    transition: transform 0.2s;
+}
+
+.popular-forks-section[open] .chevron {
+    transform: rotate(90deg);
+}
+
+.template-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px 0;
+}
+
+.template-card {
+    background: var(--bg-secondary);
+    border: 2px solid transparent;
+    border-radius: var(--border-radius);
+    padding: 14px 16px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.template-card:hover {
+    background: var(--bg-card);
+    border-color: var(--accent);
+}
+
+.template-header {
+    margin-bottom: 6px;
+}
+
+.template-card .name {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.template-card .description {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+    line-height: 1.4;
+}
+
+.template-card .branch {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 10px;
+}
+
+.btn-clone {
+    display: inline-block;
+    padding: 8px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    border-radius: 6px;
+    background: var(--accent);
+    color: white;
+    border: none;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.btn-clone:hover {
+    background: var(--accent-hover);
+}
+
+.no-templates {
+    text-align: center;
+    padding: 20px;
+    color: var(--success);
+    font-size: 14px;
+}

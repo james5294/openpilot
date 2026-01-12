@@ -35,7 +35,7 @@ except ImportError:
 # =============================================================================
 # Configuration
 # =============================================================================
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 PORT = int(os.environ.get("FORKSWAP_PORT", "8888"))
 # Security: Bind to localhost by default; set FORKSWAP_BIND_ALL=1 to expose to network
 HOST = "0.0.0.0" if os.environ.get("FORKSWAP_BIND_ALL", "1") == "1" else "127.0.0.1"
@@ -70,14 +70,52 @@ _rate_limit_log_times: dict = {}
 FORK_NAME_PATTERN = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$')
 
 # Security: Only these fork_swap.sh commands are allowed
-ALLOWED_COMMANDS = {"switch", "update", "list", "status"}
+ALLOWED_COMMANDS = {"switch", "update", "list", "status", "clone", "delete"}
 
 # Timeouts per command (seconds)
 COMMAND_TIMEOUTS = {
     "switch": 60,
     "update": 300,  # Updates can take several minutes
+    "clone": 600,   # Cloning can take up to 10 minutes
+    "delete": 30,
     "list": 10,
     "status": 10,
+}
+
+# =============================================================================
+# Popular Fork Templates
+# =============================================================================
+FORK_TEMPLATES = {
+    "frogpilot": {
+        "name": "FrogPilot",
+        "url": "https://github.com/FrogAi/FrogPilot.git",
+        "branch": "FrogPilot",
+        "description": "Customization-focused fork with many toggles"
+    },
+    "sunnypilot": {
+        "name": "SunnyPilot",
+        "url": "https://github.com/sunnypilot/sunnypilot.git",
+        "branch": "master",
+        "description": "Feature-rich fork with enhanced driving experience"
+    },
+    "carrot": {
+        "name": "CarrotPilot",
+        "url": "https://github.com/ajouatom/carern.git",
+        "branch": "carrot",
+        "description": "Korean community fork with local optimizations"
+    },
+    "stock": {
+        "name": "Stock OpenPilot",
+        "url": "https://github.com/commaai/openpilot.git",
+        "branch": "master",
+        "description": "Official comma.ai OpenPilot"
+    },
+    "dragonpilot": {
+        "name": "DragonPilot",
+        "url": "https://github.com/dragonpilot-community/dragonpilot.git",
+        "branch": "master",
+        "description": "Asian market focused fork"
+    },
 }
 
 # CSP header for UI security (tightened with frame-ancestors and base-uri)
@@ -759,6 +797,109 @@ if USE_AIOHTTP:
         await asyncio.sleep(seconds)
         subprocess.run(["sudo", "reboot"], check=False)
 
+    async def handle_templates(request: web.Request) -> web.Response:
+        """Return available fork templates for one-click cloning."""
+        return json_response({
+            "templates": FORK_TEMPLATES,
+            "count": len(FORK_TEMPLATES)
+        })
+
+    async def handle_clone(request: web.Request) -> web.Response:
+        """Clone a new fork from template or custom URL."""
+        try:
+            body = await request.json()
+
+            # Can specify template key OR custom url+branch
+            template_key = body.get("template", "")
+            custom_url = body.get("url", "")
+            custom_branch = body.get("branch", "")
+            fork_name = body.get("name", "")
+
+            # Determine URL and branch from template or custom input
+            if template_key:
+                if template_key not in FORK_TEMPLATES:
+                    return json_response(
+                        {"success": False, "message": f"Unknown template: {template_key}"},
+                        status=400
+                    )
+                template = FORK_TEMPLATES[template_key]
+                url = template["url"]
+                branch = custom_branch or template["branch"]
+                # Use template key as default fork name if not provided
+                if not fork_name:
+                    fork_name = template_key
+            elif custom_url:
+                url = custom_url
+                branch = custom_branch or "master"
+                if not fork_name:
+                    # Extract repo name from URL as default fork name
+                    fork_name = custom_url.rstrip('/').rstrip('.git').split('/')[-1]
+            else:
+                return json_response(
+                    {"success": False, "message": "Specify 'template' or 'url'"},
+                    status=400
+                )
+
+            # Validate fork name
+            if not validate_fork_name(fork_name):
+                logger.warning(f"Invalid fork name rejected: {fork_name[:50]}")
+                return json_response(
+                    {"success": False, "message": "Invalid fork name (alphanumeric, hyphens, underscores only)"},
+                    status=400
+                )
+
+            # Check if fork already exists
+            existing_forks = [f["name"] for f in get_fork_list()]
+            if fork_name in existing_forks:
+                return json_response(
+                    {"success": False, "message": f"Fork '{fork_name}' already exists"},
+                    status=409
+                )
+
+            # Check for CLI lock
+            if is_cli_locked():
+                return json_response(
+                    {"success": False, "message": "CLI operation in progress"},
+                    status=409
+                )
+
+            # Check operation lock
+            if operation_lock.locked():
+                return json_response(
+                    {"success": False, "message": "Another operation in progress"},
+                    status=409
+                )
+
+            async with operation_lock:
+                set_operation("clone")
+                try:
+                    logger.info(f"Cloning fork: {fork_name} from {url} branch {branch}")
+
+                    # Call fork_swap.sh clone command
+                    # Format: fork_swap.sh clone <name> <url> [branch]
+                    success, output = run_fork_swap("clone", fork_name, url, branch)
+
+                    if success:
+                        logger.info(f"Clone successful: {fork_name}")
+                        return json_response({
+                            "success": True,
+                            "message": f"Cloned {fork_name} successfully",
+                            "fork": fork_name
+                        })
+                    else:
+                        logger.error(f"Clone failed: {output[:200]}")
+                        return json_response(
+                            {"success": False, "message": f"Clone failed: {output[:200]}"},
+                            status=500
+                        )
+                finally:
+                    clear_operation()
+        except json.JSONDecodeError:
+            return json_response(
+                {"success": False, "message": "Invalid JSON"},
+                status=400
+            )
+
 # =============================================================================
 # Application Setup (aiohttp)
 # =============================================================================
@@ -777,6 +918,8 @@ if USE_AIOHTTP:
         app.router.add_post("/api/switch", handle_switch)
         app.router.add_post("/api/reboot", handle_reboot)
         app.router.add_post("/api/update", handle_update)
+        app.router.add_get("/api/templates", handle_templates)
+        app.router.add_post("/api/clone", handle_clone)
         return app
 
 # =============================================================================
@@ -908,6 +1051,11 @@ if not USE_AIOHTTP:
                     "device": get_device_info(),
                 }
                 self.send_json(data)
+            elif self.path == "/api/templates":
+                self.send_json({
+                    "templates": FORK_TEMPLATES,
+                    "count": len(FORK_TEMPLATES)
+                })
             elif self.path == "/api/health":
                 issues = verify_environment()
                 health_status = "healthy" if not issues else "degraded"
@@ -974,6 +1122,8 @@ if not USE_AIOHTTP:
                 self._handle_update(data)
             elif self.path == "/api/reboot":
                 self._handle_reboot()
+            elif self.path == "/api/clone":
+                self._handle_clone(data)
             else:
                 self.send_json({"error": "Not found"}, 404)
 
@@ -1038,6 +1188,60 @@ if not USE_AIOHTTP:
             logger.info("Manual reboot requested")
             threading.Thread(target=delayed_reboot_sync, args=(3,), daemon=True).start()
             self.send_json({"success": True, "message": "Rebooting in 3 seconds..."})
+
+        def _handle_clone(self, data: dict):
+            # Can specify template key OR custom url+branch
+            template_key = data.get("template", "")
+            custom_url = data.get("url", "")
+            custom_branch = data.get("branch", "")
+            fork_name = data.get("name", "")
+
+            # Determine URL and branch from template or custom input
+            if template_key:
+                if template_key not in FORK_TEMPLATES:
+                    self.send_json({"success": False, "message": f"Unknown template: {template_key}"}, 400)
+                    return
+                template = FORK_TEMPLATES[template_key]
+                url = template["url"]
+                branch = custom_branch or template["branch"]
+                if not fork_name:
+                    fork_name = template_key
+            elif custom_url:
+                url = custom_url
+                branch = custom_branch or "master"
+                if not fork_name:
+                    fork_name = custom_url.rstrip('/').rstrip('.git').split('/')[-1]
+            else:
+                self.send_json({"success": False, "message": "Specify 'template' or 'url'"}, 400)
+                return
+
+            # Validate fork name
+            if not validate_fork_name(fork_name):
+                self.send_json({"success": False, "message": "Invalid fork name"}, 400)
+                return
+
+            # Check if fork already exists
+            existing_forks = [f["name"] for f in get_fork_list()]
+            if fork_name in existing_forks:
+                self.send_json({"success": False, "message": f"Fork '{fork_name}' already exists"}, 409)
+                return
+
+            if is_cli_locked() or operation_lock.locked():
+                self.send_json({"success": False, "message": "Operation in progress"}, 409)
+                return
+
+            with operation_lock:
+                set_operation("clone")
+                try:
+                    logger.info(f"Cloning fork: {fork_name} from {url} branch {branch}")
+                    success, output = run_fork_swap("clone", fork_name, url, branch)
+                    if success:
+                        self.send_json({"success": True, "message": f"Cloned {fork_name} successfully", "fork": fork_name})
+                    else:
+                        logger.error(f"Clone failed: {output[:200]}")
+                        self.send_json({"success": False, "message": f"Clone failed: {output[:200]}"}, 500)
+                finally:
+                    clear_operation()
 
 # =============================================================================
 # Shutdown Handling

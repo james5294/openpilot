@@ -7,6 +7,7 @@ let selectedFork = null;
 let currentFork = null;
 let isConnected = true;
 let pollInterval = null;
+let templates = {};
 
 // DOM Elements
 const forkListEl = document.getElementById('forkList');
@@ -20,6 +21,8 @@ const modalEl = document.getElementById('modal');
 const modalTextEl = document.getElementById('modalText');
 const errorEl = document.getElementById('error');
 const versionInfoEl = document.getElementById('versionInfo');
+const templateListEl = document.getElementById('templateList');
+const popularForksSection = document.getElementById('popularForksSection');
 
 // Disk space thresholds (GB)
 const DISK_WARNING_GB = 5;
@@ -70,6 +73,9 @@ async function fetchStatus() {
         } else {
             deviceInfoEl.textContent = 'comma device';
         }
+
+        // Re-render templates to update which ones are available
+        renderTemplates();
 
     } catch (err) {
         setConnectionStatus(false);
@@ -382,6 +388,156 @@ async function reboot() {
     }
 }
 
+// Fetch popular fork templates
+async function fetchTemplates() {
+    try {
+        const res = await fetch('/api/templates', { signal: AbortSignal.timeout(5000) });
+        const data = await res.json();
+        templates = data.templates || {};
+        renderTemplates();
+    } catch (err) {
+        // Templates are optional - don't show error
+        console.log('Could not load templates:', err);
+    }
+}
+
+// Render template cards
+function renderTemplates() {
+    if (!templateListEl) return;
+
+    // Clear existing content
+    while (templateListEl.firstChild) {
+        templateListEl.removeChild(templateListEl.firstChild);
+    }
+
+    // Get list of already installed forks to filter templates
+    const installedForks = [];
+    const forkCards = forkListEl.querySelectorAll('.fork-card');
+    forkCards.forEach(function(card) {
+        const nameEl = card.querySelector('.name');
+        if (nameEl) {
+            installedForks.push(nameEl.textContent.toLowerCase());
+        }
+    });
+
+    const templateKeys = Object.keys(templates);
+    let availableCount = 0;
+
+    templateKeys.forEach(function(key) {
+        const template = templates[key];
+
+        // Skip if already installed (check by template key)
+        if (installedForks.includes(key.toLowerCase())) {
+            return;
+        }
+
+        availableCount++;
+
+        // Create template card
+        const card = document.createElement('div');
+        card.className = 'template-card';
+        card.setAttribute('role', 'option');
+        card.setAttribute('tabindex', '0');
+
+        // Header with name
+        const header = document.createElement('div');
+        header.className = 'template-header';
+
+        const nameEl = document.createElement('div');
+        nameEl.className = 'name';
+        nameEl.textContent = template.name;
+        header.appendChild(nameEl);
+
+        // Description
+        const descEl = document.createElement('div');
+        descEl.className = 'description';
+        descEl.textContent = template.description;
+
+        // Branch info
+        const branchEl = document.createElement('div');
+        branchEl.className = 'branch';
+        branchEl.textContent = 'Branch: ' + template.branch;
+
+        // Clone button
+        const cloneBtn = document.createElement('button');
+        cloneBtn.className = 'btn-clone';
+        cloneBtn.textContent = 'Clone';
+        cloneBtn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            cloneTemplate(key, template.name);
+        });
+
+        // Assemble card
+        card.appendChild(header);
+        card.appendChild(descEl);
+        card.appendChild(branchEl);
+        card.appendChild(cloneBtn);
+
+        // Make whole card clickable
+        card.addEventListener('click', function() {
+            cloneTemplate(key, template.name);
+        });
+
+        card.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                cloneTemplate(key, template.name);
+            }
+        });
+
+        templateListEl.appendChild(card);
+    });
+
+    // Show message if all templates are installed
+    if (availableCount === 0 && templateKeys.length > 0) {
+        const msgEl = document.createElement('div');
+        msgEl.className = 'no-templates';
+        msgEl.textContent = 'All popular forks are already installed!';
+        templateListEl.appendChild(msgEl);
+    }
+}
+
+// Clone a fork from template
+async function cloneTemplate(templateKey, displayName) {
+    var confirmMsg = 'Clone ' + displayName + '?\n\n' +
+        'This will:\n' +
+        '\u2022 Download the fork (~2-5 GB)\n' +
+        '\u2022 May take 5-10 minutes depending on connection\n\n' +
+        'Make sure you have enough disk space.';
+
+    if (!confirm(confirmMsg)) {
+        return;
+    }
+
+    showModal('Cloning ' + displayName + '...');
+    startElapsedTimer('Cloning ' + displayName, 600);  // 10 minute timeout
+
+    try {
+        const res = await fetch('/api/clone', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({template: templateKey})
+        });
+
+        const data = await res.json();
+        stopElapsedTimer();
+        hideModal();
+
+        if (data.success) {
+            showSuccess(data.message || displayName + ' cloned successfully!');
+            // Refresh the fork list and templates
+            fetchStatus();
+            fetchTemplates();
+        } else {
+            showError(data.message || 'Clone failed');
+        }
+    } catch (err) {
+        stopElapsedTimer();
+        hideModal();
+        showError('Clone failed - check connection');
+    }
+}
+
 // Modal helpers
 function showModal(text) {
     modalTextEl.textContent = text;
@@ -484,6 +640,7 @@ rebootBtn.addEventListener('click', reboot);
 // Initial load
 fetchStatus();
 fetchHealth();
+fetchTemplates();
 
 // Start polling
 startPolling();
