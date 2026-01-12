@@ -36,7 +36,7 @@ except ImportError:
 # =============================================================================
 # Configuration
 # =============================================================================
-VERSION = "1.6.0"
+VERSION = "2.0.0"
 PORT = int(os.environ.get("FORKSWAP_PORT", "8888"))
 # Security: Bind to localhost by default; set FORKSWAP_BIND_ALL=1 to expose to network
 HOST = "0.0.0.0" if os.environ.get("FORKSWAP_BIND_ALL", "1") == "1" else "127.0.0.1"
@@ -119,8 +119,16 @@ FORK_TEMPLATES = {
     },
 }
 
-# CSP header for UI security (tightened with frame-ancestors and base-uri)
-CSP_HEADER = "default-src 'self'; script-src 'self'; style-src 'self'; frame-ancestors 'none'; base-uri 'self'"
+# CSP header for UI security - allow inline styles/scripts for embedded UI
+CSP_HEADER = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com; frame-ancestors 'none'; base-uri 'self'"
+
+# Import embedded UI (professional OpenPilot-style frontend)
+try:
+    from embedded_ui import get_embedded_html, VERSION as UI_VERSION
+    USE_EMBEDDED_UI = True
+except ImportError:
+    USE_EMBEDDED_UI = False
+    UI_VERSION = VERSION
 
 # Additional security headers (defense in depth)
 SECURITY_HEADERS = {
@@ -810,6 +818,18 @@ if USE_AIOHTTP:
 
     async def handle_index(request: web.Request) -> web.Response:
         """Serve main HTML page with security headers."""
+        # Use embedded UI if available (professional OpenPilot-style frontend)
+        if USE_EMBEDDED_UI:
+            return web.Response(
+                text=get_embedded_html(),
+                content_type="text/html",
+                headers={
+                    "Content-Security-Policy": CSP_HEADER,
+                    "Cache-Control": NO_CACHE_HEADER,
+                    **SECURITY_HEADERS,
+                }
+            )
+        # Fall back to static file if embedded UI not available
         index_path = STATIC_DIR / "index.html"
         if index_path.exists():
             return web.Response(
@@ -1291,11 +1311,15 @@ if not USE_AIOHTTP:
                 return
 
             if self.path == "/":
-                index_path = STATIC_DIR / "index.html"
-                if index_path.exists():
-                    self.send_html(index_path.read_text())
+                # Use embedded UI if available (professional OpenPilot-style frontend)
+                if USE_EMBEDDED_UI:
+                    self.send_html(get_embedded_html())
                 else:
-                    self.send_html("index.html not found", 404)
+                    index_path = STATIC_DIR / "index.html"
+                    if index_path.exists():
+                        self.send_html(index_path.read_text())
+                    else:
+                        self.send_html("index.html not found", 404)
             elif self.path.startswith("/static/"):
                 filename = self.path[8:]  # Remove "/static/"
                 # Security: Only allow specific file types
