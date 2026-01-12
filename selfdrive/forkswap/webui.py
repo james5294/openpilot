@@ -47,6 +47,86 @@ OPENPILOT_ROOT = os.environ.get('OPENPILOT_DIR', '/data/openpilot')
 FORKSWAP_SCRIPT = os.path.join(OPENPILOT_ROOT, 'tools/scripts/forkswap.sh')
 FORKS_DIR = '/data/forks'
 
+# Known fork identifiers - maps owner/repo patterns to friendly names
+KNOWN_FORKS = {
+    "frogai/frogpilot": "FrogPilot",
+    "sunnypilot/sunnypilot": "SunnyPilot",
+    "commaai/openpilot": "Stock OpenPilot",
+    "dragonpilot-community/dragonpilot": "DragonPilot",
+    "ajouatom/carern": "CarrotPilot",
+}
+
+def get_git_info(repo_path):
+    """Get git info (branch, remote URL, fork name) from a repository."""
+    import re
+    info = {
+        "branch": "unknown",
+        "remote_url": "",
+        "owner": "unknown",
+        "repo": "unknown",
+        "fork_name": "unknown",
+        "display_name": "unknown"
+    }
+
+    repo_path = Path(repo_path)
+    if not (repo_path / ".git").exists():
+        return info
+
+    try:
+        # Get branch
+        result = subprocess.run(
+            ["git", "-C", str(repo_path), "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            info["branch"] = result.stdout.strip()
+
+        # Get remote URL
+        result = subprocess.run(
+            ["git", "-C", str(repo_path), "remote", "get-url", "origin"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            info["remote_url"] = result.stdout.strip()
+
+            # Extract owner/repo from URL
+            url = info["remote_url"]
+            match = re.search(r'[:/]([^/]+)/([^/]+?)(?:\.git)?$', url)
+            if match:
+                info["owner"] = match.group(1)
+                info["repo"] = match.group(2).replace('.git', '')
+
+                # Generate display name
+                owner_repo = f"{info['owner']}/{info['repo']}".lower()
+                if owner_repo in KNOWN_FORKS:
+                    info["fork_name"] = KNOWN_FORKS[owner_repo]
+                    info["display_name"] = f"{KNOWN_FORKS[owner_repo]} ({info['branch']})"
+                else:
+                    info["fork_name"] = f"{info['owner']}/{info['repo']}"
+                    info["display_name"] = f"{info['owner']}/{info['repo']} ({info['branch']})"
+    except Exception as e:
+        logger.warning(f"Failed to get git info: {e}")
+
+    return info
+
+def detect_overlay_installation():
+    """Detect if there's an overlay installation at /data/openpilot."""
+    openpilot_path = Path("/data/openpilot")
+
+    # If it's a symlink, it's managed by fork swap - not an overlay
+    if not openpilot_path.exists() or openpilot_path.is_symlink():
+        return None
+
+    # It's a direct installation (overlay)
+    git_info = get_git_info(openpilot_path)
+    return {
+        "path": str(openpilot_path),
+        "git_info": git_info,
+        "needs_migration": True,
+        "display_name": git_info["display_name"],
+        "type": "overlay"
+    }
+
 app = Flask(__name__)
 
 # Embedded HTML template (for simplicity - we'll make it beautiful!)
@@ -757,13 +837,23 @@ def favicon():
 def api_status():
     """Get current system status"""
     try:
-        # Get current fork from symlink
+        # Get current fork - check symlink first, then overlay
         symlink = Path('/data/openpilot')
+        current_fork = None
+        is_overlay = False
+
         if symlink.is_symlink():
+            # Managed installation via symlink
             target = os.readlink(symlink)
-            current_fork = Path(target).parent.name
+            fork_dir = Path(target).parent
+            git_info = get_git_info(Path(target))
+            current_fork = git_info["display_name"]
         else:
-            current_fork = None
+            # Check for overlay installation
+            overlay = detect_overlay_installation()
+            if overlay:
+                current_fork = f"{overlay['display_name']} [overlay]"
+                is_overlay = True
 
         # Get AGNOS version
         agnos_version = None
@@ -794,8 +884,9 @@ def api_status():
 
         return jsonify({
             'current_fork': current_fork,
+            'is_overlay': is_overlay,
             'agnos_version': agnos_version,
-            'forkswap_version': '2.2.0',
+            'forkswap_version': '2.3.0',
             'disk_space': disk_info
         })
     except Exception as e:
@@ -804,70 +895,78 @@ def api_status():
 
 @app.route('/api/forks')
 def api_forks():
-    """List all available forks"""
+    """List all available forks including overlay installations"""
     try:
         forks = []
         forks_dir = Path(FORKS_DIR)
 
-        if not forks_dir.exists():
-            return jsonify([])
-
-        # Get current fork
+        # Get current managed fork (if symlink exists)
         symlink = Path('/data/openpilot')
-        current_fork = None
+        current_managed_fork = None
+        is_overlay = not symlink.is_symlink() and symlink.exists()
+
         if symlink.is_symlink():
             target = os.readlink(symlink)
-            current_fork = Path(target).parent.name
+            current_managed_fork = Path(target).parent.name
 
-        # List all fork directories
-        for fork_dir in forks_dir.iterdir():
-            if not fork_dir.is_dir():
-                continue
+        # First, check for overlay installation at /data/openpilot
+        overlay = detect_overlay_installation()
+        if overlay:
+            git_info = overlay["git_info"]
+            forks.append({
+                'name': overlay["display_name"],
+                'directory': 'openpilot',
+                'path': str(Path('/data/openpilot')),
+                'branch': git_info["branch"],
+                'owner': git_info["owner"],
+                'repo': git_info["repo"],
+                'size': None,
+                'is_active': True,  # Overlay is always active
+                'type': 'overlay',
+                'needs_migration': True
+            })
 
-            openpilot_path = fork_dir / 'openpilot'
-            if not openpilot_path.exists():
-                continue
+        # List managed forks in /data/forks
+        if forks_dir.exists():
+            for fork_dir in forks_dir.iterdir():
+                if not fork_dir.is_dir():
+                    continue
 
-            # Get fork info
-            fork_name = fork_dir.name
-            is_active = (fork_name == current_fork)
+                openpilot_path = fork_dir / 'openpilot'
+                if not openpilot_path.exists():
+                    continue
 
-            # Get branch name if it's a git repo
-            branch = None
-            git_dir = openpilot_path / '.git'
-            if git_dir.exists():
+                # Get fork info using git
+                fork_dir_name = fork_dir.name
+                git_info = get_git_info(openpilot_path)
+                is_active = (fork_dir_name == current_managed_fork) and not is_overlay
+
+                # Get size
+                size = None
                 try:
                     result = subprocess.run(
-                        ['git', '-C', str(openpilot_path), 'rev-parse', '--abbrev-ref', 'HEAD'],
-                        capture_output=True, text=True, timeout=5
+                        ['du', '-sh', str(openpilot_path)],
+                        capture_output=True, text=True, timeout=10
                     )
                     if result.returncode == 0:
-                        branch = result.stdout.strip()
+                        size = result.stdout.split()[0]
                 except Exception:
                     pass
 
-            # Get size
-            size = None
-            try:
-                result = subprocess.run(
-                    ['du', '-sh', str(openpilot_path)],
-                    capture_output=True, text=True, timeout=10
-                )
-                if result.returncode == 0:
-                    size = result.stdout.split()[0]
-            except Exception:
-                pass
+                forks.append({
+                    'name': git_info["display_name"],
+                    'directory': fork_dir_name,
+                    'path': str(openpilot_path),
+                    'branch': git_info["branch"],
+                    'owner': git_info["owner"],
+                    'repo': git_info["repo"],
+                    'size': size,
+                    'is_active': is_active,
+                    'type': 'managed'
+                })
 
-            forks.append({
-                'name': fork_name,
-                'path': str(openpilot_path),
-                'branch': branch,
-                'size': size,
-                'is_active': is_active
-            })
-
-        # Sort: active first, then alphabetically
-        forks.sort(key=lambda x: (not x['is_active'], x['name']))
+        # Sort: active first, then overlay, then alphabetically
+        forks.sort(key=lambda x: (not x['is_active'], x.get('type') != 'overlay', x['name']))
 
         return jsonify(forks)
     except Exception as e:
