@@ -7,6 +7,7 @@ Uses aiohttp if available, falls back to http.server otherwise.
 Security: Input validation, operation locking, command allowlist
 Logging: Minimal operational logging to /data/forkswap/webui.log
 """
+from __future__ import annotations  # Python 3.8 compatibility for type hints
 
 import hmac
 import json
