@@ -19,6 +19,9 @@ const switchBtn = document.getElementById('switchBtn');
 const rebootBtn = document.getElementById('rebootBtn');
 const modalEl = document.getElementById('modal');
 const modalTextEl = document.getElementById('modalText');
+const modalSpinner = document.getElementById('modalSpinner');
+const modalIcon = document.getElementById('modalIcon');
+const modalActions = document.getElementById('modalActions');
 const errorEl = document.getElementById('error');
 const versionInfoEl = document.getElementById('versionInfo');
 const templateListEl = document.getElementById('templateList');
@@ -540,26 +543,33 @@ async function cloneTemplate(templateKey, displayName) {
         });
 
         const data = await res.json();
-        stopElapsedTimer();
-        hideModal();
+
+        // Refresh fork list first (so it shows up immediately)
+        await fetchStatus();
+        fetchTemplates();
 
         if (data.success) {
-            showSuccess(data.message || displayName + ' cloned successfully!');
-            // Refresh the fork list and templates
-            fetchStatus();
-            fetchTemplates();
+            // Show success completion with Switch Now option
+            var forkName = data.fork || templateKey;
+            showCloneComplete(true, forkName, displayName + ' cloned successfully!');
         } else {
-            showError(data.message || 'Clone failed');
+            // Show error completion
+            showCloneComplete(false, null, data.message || 'Clone failed');
         }
     } catch (err) {
         stopElapsedTimer();
-        hideModal();
-        showError('Clone failed - check connection');
+        showCloneComplete(false, null, 'Clone failed - check connection');
     }
 }
 
 // Modal helpers
 function showModal(text) {
+    // Reset to loading state
+    modalSpinner.classList.remove('hidden');
+    modalIcon.className = 'modal-icon';  // Reset icon
+    while (modalActions.firstChild) {
+        modalActions.removeChild(modalActions.firstChild);
+    }
     modalTextEl.textContent = text;
     modalEl.classList.add('show');
 }
@@ -567,6 +577,90 @@ function showModal(text) {
 function hideModal() {
     stopElapsedTimer();
     modalEl.classList.remove('show');
+    // Reset state after animation
+    setTimeout(function() {
+        modalSpinner.classList.remove('hidden');
+        modalIcon.className = 'modal-icon';
+        while (modalActions.firstChild) {
+            modalActions.removeChild(modalActions.firstChild);
+        }
+    }, 300);
+}
+
+// Show completion modal with success/error state and action buttons
+function showCloneComplete(success, forkName, message) {
+    stopElapsedTimer();
+
+    // Hide spinner, show appropriate icon
+    modalSpinner.classList.add('hidden');
+    modalIcon.className = 'modal-icon ' + (success ? 'success' : 'error');
+
+    // Set message
+    modalTextEl.textContent = message;
+
+    // Clear existing buttons
+    while (modalActions.firstChild) {
+        modalActions.removeChild(modalActions.firstChild);
+    }
+
+    if (success && forkName) {
+        // Add "Switch to this fork" button
+        var switchNowBtn = document.createElement('button');
+        switchNowBtn.className = 'btn-switch';
+        switchNowBtn.textContent = 'Switch to ' + forkName + ' Now';
+        switchNowBtn.addEventListener('click', function() {
+            hideModal();
+            // Trigger switch to the newly cloned fork
+            switchToFork(forkName);
+        });
+        modalActions.appendChild(switchNowBtn);
+
+        // Add "Close" button
+        var closeBtn = document.createElement('button');
+        closeBtn.className = 'btn-close';
+        closeBtn.textContent = 'Close';
+        closeBtn.addEventListener('click', function() {
+            hideModal();
+        });
+        modalActions.appendChild(closeBtn);
+    } else {
+        // Just show close button for errors
+        var closeBtn = document.createElement('button');
+        closeBtn.className = 'btn-close';
+        closeBtn.textContent = 'Close';
+        closeBtn.addEventListener('click', function() {
+            hideModal();
+        });
+        modalActions.appendChild(closeBtn);
+    }
+}
+
+// Switch to a specific fork (used by completion modal)
+async function switchToFork(forkName) {
+    showModal('Switching to ' + forkName + '...');
+    startElapsedTimer('Switching to ' + forkName, 60);
+
+    try {
+        const res = await fetch('/api/switch', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({fork: forkName})
+        });
+
+        const data = await res.json();
+        stopElapsedTimer();
+
+        if (data.success) {
+            waitForReboot();
+        } else {
+            hideModal();
+            showError(data.message);
+        }
+    } catch (err) {
+        stopElapsedTimer();
+        hideModal();
+        showError('Switch failed');
+    }
 }
 
 // Error display with dismissible close button

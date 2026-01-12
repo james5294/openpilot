@@ -243,8 +243,103 @@ button:disabled {
     margin: 20px auto;
 }
 
+.spinner.hidden {
+    display: none;
+}
+
 @keyframes spin {
     to { transform: rotate(360deg); }
+}
+
+/* Modal completion states */
+.modal-icon {
+    display: none;
+    width: 60px;
+    height: 60px;
+    margin: 15px auto;
+    border-radius: 50%;
+    position: relative;
+}
+
+.modal-icon.success {
+    display: block;
+    background: var(--success);
+}
+
+.modal-icon.success::after {
+    content: '';
+    position: absolute;
+    left: 22px;
+    top: 14px;
+    width: 14px;
+    height: 24px;
+    border: solid white;
+    border-width: 0 4px 4px 0;
+    transform: rotate(45deg);
+}
+
+.modal-icon.error {
+    display: block;
+    background: var(--danger);
+}
+
+.modal-icon.error::before,
+.modal-icon.error::after {
+    content: '';
+    position: absolute;
+    left: 28px;
+    top: 15px;
+    width: 4px;
+    height: 30px;
+    background: white;
+    border-radius: 2px;
+}
+
+.modal-icon.error::before {
+    transform: rotate(45deg);
+}
+
+.modal-icon.error::after {
+    transform: rotate(-45deg);
+}
+
+.modal-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 20px;
+}
+
+.modal-actions:empty {
+    display: none;
+}
+
+.modal-actions button {
+    padding: 12px 20px;
+    font-size: 14px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.modal-actions .btn-switch {
+    background: var(--success);
+    color: white;
+    border: none;
+}
+
+.modal-actions .btn-switch:hover {
+    background: #00b85c;
+}
+
+.modal-actions .btn-close {
+    background: var(--bg-card);
+    color: var(--text-primary);
+    border: none;
+}
+
+.modal-actions .btn-close:hover {
+    background: var(--bg-primary);
 }
 
 .error {
