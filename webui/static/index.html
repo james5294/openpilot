@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="theme-color" content="#1a1a2e">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>Fork Manager</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="container" role="main">
+        <header>
+            <h1>Fork Manager</h1>
+            <div class="subtitle" id="deviceInfo">Loading...</div>
+        </header>
+
+        <div class="status-bar">
+            <div class="disk-info" id="diskInfo" aria-live="polite">
+                -- GB free
+            </div>
+            <div class="connection-status" id="connectionStatus" aria-live="polite">
+                <div class="connection-dot" id="connectionDot"></div>
+                <span id="connectionText">Connected</span>
+            </div>
+        </div>
+
+        <div class="error" id="error" role="alert" aria-live="assertive"></div>
+
+        <div class="fork-list" id="forkList" role="listbox" aria-label="Available forks">
+            <!-- Fork cards inserted here via safe DOM methods -->
+            <div class="skeleton skeleton-card"></div>
+            <div class="skeleton skeleton-card"></div>
+            <div class="skeleton skeleton-card"></div>
+        </div>
+
+        <div class="actions">
+            <button class="btn-primary" id="switchBtn" disabled aria-label="Switch to selected fork">
+                Select a Fork
+            </button>
+            <button class="btn-secondary" id="rebootBtn" aria-label="Reboot device">
+                Reboot
+            </button>
+        </div>
+
+        <footer class="footer" id="footer">
+            <span id="versionInfo">Fork Swap Web UI</span>
+        </footer>
+    </div>
+
+    <div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modalText">
+        <div class="modal-content">
+            <div class="spinner" aria-hidden="true"></div>
+            <p id="modalText">Processing...</p>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
