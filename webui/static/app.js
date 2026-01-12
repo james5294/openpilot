@@ -499,7 +499,27 @@ function renderTemplates() {
 
 // Clone a fork from template
 async function cloneTemplate(templateKey, displayName) {
-    var confirmMsg = 'Clone ' + displayName + '?\n\n' +
+    // Get the template to show default branch
+    var template = templates[templateKey];
+    var defaultBranch = template ? template.branch : 'master';
+
+    // Prompt for branch - allows user to override or use default
+    var branch = prompt(
+        'Clone ' + displayName + '\n\n' +
+        'Enter branch name (or leave empty for default):\n' +
+        'Default: ' + defaultBranch,
+        defaultBranch
+    );
+
+    // User cancelled
+    if (branch === null) {
+        return;
+    }
+
+    // Use default if empty
+    branch = branch.trim() || defaultBranch;
+
+    var confirmMsg = 'Clone ' + displayName + ' (branch: ' + branch + ')?\n\n' +
         'This will:\n' +
         '\u2022 Download the fork (~2-5 GB)\n' +
         '\u2022 May take 5-10 minutes depending on connection\n\n' +
@@ -509,14 +529,14 @@ async function cloneTemplate(templateKey, displayName) {
         return;
     }
 
-    showModal('Cloning ' + displayName + '...');
+    showModal('Cloning ' + displayName + ' (' + branch + ')...');
     startElapsedTimer('Cloning ' + displayName, 600);  // 10 minute timeout
 
     try {
         const res = await fetch('/api/clone', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({template: templateKey})
+            body: JSON.stringify({template: templateKey, branch: branch})
         });
 
         const data = await res.json();
