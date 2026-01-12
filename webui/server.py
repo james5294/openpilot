@@ -36,7 +36,7 @@ except ImportError:
 # =============================================================================
 # Configuration
 # =============================================================================
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 PORT = int(os.environ.get("FORKSWAP_PORT", "8888"))
 # Security: Bind to localhost by default; set FORKSWAP_BIND_ALL=1 to expose to network
 HOST = "0.0.0.0" if os.environ.get("FORKSWAP_BIND_ALL", "1") == "1" else "127.0.0.1"
@@ -402,9 +402,25 @@ def run_fork_swap(command: str, *args) -> tuple[bool, str]:
         logger.error(f"Subprocess error: {e}")
         return False, str(e)
 
+# Known fork identifiers - maps owner/repo patterns to friendly names
+KNOWN_FORKS = {
+    "frogai/frogpilot": "FrogPilot",
+    "sunnypilot/sunnypilot": "SunnyPilot",
+    "commaai/openpilot": "Stock OpenPilot",
+    "dragonpilot-community/dragonpilot": "DragonPilot",
+    "ajouatom/carern": "CarrotPilot",
+}
+
 def get_git_info(repo_path: Path) -> dict:
     """Get git info (branch, remote URL, fork name) from a repository."""
-    info = {"branch": "unknown", "remote_url": "", "fork_name": "unknown"}
+    info = {
+        "branch": "unknown",
+        "remote_url": "",
+        "owner": "unknown",
+        "repo": "unknown",
+        "fork_name": "unknown",
+        "display_name": "unknown"
+    }
 
     if not repo_path.exists() or not (repo_path / ".git").exists():
         return info
@@ -425,17 +441,35 @@ def get_git_info(repo_path: Path) -> dict:
         )
         if result.returncode == 0:
             info["remote_url"] = result.stdout.strip()
-            # Extract fork name from URL (e.g., "FrogAi/FrogPilot" or "sunnypilot")
             url = info["remote_url"]
+
             # Handle both https and git@ URLs
             if "github.com" in url:
                 # Extract owner/repo from URL
                 parts = url.replace(".git", "").split("github.com")[-1]
                 parts = parts.lstrip("/:").split("/")
                 if len(parts) >= 2:
-                    info["fork_name"] = parts[1]  # repo name
+                    info["owner"] = parts[0]
+                    info["repo"] = parts[1]
                 elif len(parts) == 1:
-                    info["fork_name"] = parts[0]
+                    info["repo"] = parts[0]
+
+        # Generate display name
+        owner_repo = f"{info['owner']}/{info['repo']}".lower()
+
+        # Check if it's a known fork
+        if owner_repo in KNOWN_FORKS:
+            info["fork_name"] = KNOWN_FORKS[owner_repo]
+            info["display_name"] = f"{KNOWN_FORKS[owner_repo]} ({info['branch']})"
+        elif info["owner"] != "unknown" and info["repo"] != "unknown":
+            # Custom fork - show owner/repo
+            info["fork_name"] = f"{info['owner']}/{info['repo']}"
+            info["display_name"] = f"{info['owner']}/{info['repo']} ({info['branch']})"
+        elif info["branch"] != "unknown":
+            info["display_name"] = f"openpilot ({info['branch']})"
+        else:
+            info["display_name"] = "unknown"
+
     except Exception:
         pass
 
@@ -466,12 +500,33 @@ def get_current_fork() -> str:
     # Fallback: detect from git info at /data/openpilot (overlay installation)
     if openpilot_path.exists() and not openpilot_path.is_symlink():
         git_info = get_git_info(openpilot_path)
-        if git_info["fork_name"] != "unknown":
-            return f"{git_info['fork_name']} (overlay)"
-        elif git_info["branch"] != "unknown":
-            return f"openpilot ({git_info['branch']})"
+        # Use display_name which includes owner/repo and branch
+        return f"{git_info['display_name']} [overlay]"
 
     return "unknown"
+
+def detect_overlay_installation() -> dict | None:
+    """
+    Detect if there's an overlay installation at /data/openpilot that should be migrated.
+    Returns info about the overlay installation, or None if not present.
+    """
+    openpilot_path = Path("/data/openpilot")
+
+    # Only overlay if it's a directory, not a symlink
+    if not openpilot_path.exists() or openpilot_path.is_symlink():
+        return None
+
+    git_info = get_git_info(openpilot_path)
+
+    return {
+        "path": str(openpilot_path),
+        "git_info": git_info,
+        "needs_migration": True,  # Overlay should ideally be managed
+        "display_name": git_info["display_name"],
+        "owner": git_info["owner"],
+        "repo": git_info["repo"],
+        "branch": git_info["branch"]
+    }
 
 def get_fork_list() -> list[dict]:
     """
@@ -487,16 +542,16 @@ def get_fork_list() -> list[dict]:
     if openpilot_path.exists() and not openpilot_path.is_symlink():
         # This is an overlay installation (not managed by fork swap symlinks)
         git_info = get_git_info(openpilot_path)
-        fork_name = git_info["fork_name"]
-        if fork_name == "unknown":
-            fork_name = "openpilot"
 
         forks.append({
-            "name": f"{fork_name} (active)",
+            "name": git_info["display_name"],
             "branch": git_info["branch"],
+            "owner": git_info["owner"],
+            "repo": git_info["repo"],
             "active": True,
             "path": str(openpilot_path),
-            "type": "overlay"
+            "type": "overlay",
+            "needs_migration": True  # Flag that this should be migrated to managed
         })
 
     # Then, scan /data/forks for fork-managed installations
@@ -519,9 +574,17 @@ def get_fork_list() -> list[dict]:
             elif fork_dir.name in current:
                 is_active = True
 
+            # Use display_name if available, fall back to directory name
+            display_name = git_info["display_name"]
+            if display_name == "unknown":
+                display_name = fork_dir.name
+
             forks.append({
-                "name": fork_dir.name,
+                "name": display_name,
+                "directory": fork_dir.name,  # Original directory name for switching
                 "branch": git_info["branch"],
+                "owner": git_info["owner"],
+                "repo": git_info["repo"],
                 "active": is_active,
                 "path": str(openpilot_dir),
                 "type": "managed"
@@ -622,36 +685,57 @@ def run_startup_selfhealing() -> dict:
     results = {
         "ownership_fixes": 0,
         "safe_directory_configs": 0,
+        "overlay_detected": None,
         "errors": []
     }
 
-    forks_dir = Path("/data/forks")
-    if not forks_dir.exists():
-        return results
-
     logger.info("Running startup self-healing checks...")
 
-    for fork_dir in forks_dir.iterdir():
-        if not fork_dir.is_dir():
-            continue
+    # Check for overlay installation at /data/openpilot
+    overlay = detect_overlay_installation()
+    if overlay:
+        results["overlay_detected"] = overlay
+        logger.warning(f"Overlay installation detected: {overlay['display_name']}")
+        logger.warning("This fork is not managed by Fork Swap symlink system")
+        logger.info("To enable full fork switching, consider migrating to /data/forks/")
 
-        try:
-            # Fix ownership if needed
-            if fix_fork_ownership(fork_dir):
-                results["ownership_fixes"] += 1
+        # Configure git safe.directory for overlay installation
+        openpilot_path = Path("/data/openpilot")
+        if configure_git_safe_directory(openpilot_path):
+            results["safe_directory_configs"] += 1
 
-            # Configure git safe.directory
-            openpilot_dir = fork_dir / "openpilot"
-            if openpilot_dir.exists():
-                if configure_git_safe_directory(openpilot_dir):
-                    results["safe_directory_configs"] += 1
+    # Process managed forks in /data/forks
+    forks_dir = Path("/data/forks")
+    if forks_dir.exists():
+        for fork_dir in forks_dir.iterdir():
+            if not fork_dir.is_dir():
+                continue
 
-        except Exception as e:
-            results["errors"].append(f"{fork_dir.name}: {e}")
+            try:
+                # Fix ownership if needed
+                if fix_fork_ownership(fork_dir):
+                    results["ownership_fixes"] += 1
 
-    if results["ownership_fixes"] > 0 or results["safe_directory_configs"] > 0:
-        logger.info(f"Self-healing complete: {results['ownership_fixes']} ownership fixes, "
-                   f"{results['safe_directory_configs']} safe.directory configs")
+                # Configure git safe.directory
+                openpilot_dir = fork_dir / "openpilot"
+                if openpilot_dir.exists():
+                    if configure_git_safe_directory(openpilot_dir):
+                        results["safe_directory_configs"] += 1
+
+            except Exception as e:
+                results["errors"].append(f"{fork_dir.name}: {e}")
+
+    # Log summary
+    summary_parts = []
+    if results["ownership_fixes"] > 0:
+        summary_parts.append(f"{results['ownership_fixes']} ownership fixes")
+    if results["safe_directory_configs"] > 0:
+        summary_parts.append(f"{results['safe_directory_configs']} safe.directory configs")
+    if results["overlay_detected"]:
+        summary_parts.append("overlay detected")
+
+    if summary_parts:
+        logger.info(f"Self-healing complete: {', '.join(summary_parts)}")
 
     return results
 
