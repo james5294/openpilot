@@ -395,7 +395,7 @@ def is_cli_locked() -> bool:
     if not CLI_LOCK_FILE.exists():
         return False
     try:
-        # Read PID from lock file (fork_swap.sh writes its PID)
+        # Read PID from lock file (fork_swap.sh writes "PID timestamp")
         content = CLI_LOCK_FILE.read_text().strip()
 
         # Check if lock is stale (older than 10 minutes)
@@ -404,9 +404,10 @@ def is_cli_locked() -> bool:
             logger.warning("CLI lock is stale (>10min), ignoring")
             return False
 
-        # If we can parse a PID, check if process is actually running
-        if content.isdigit():
-            pid = int(content)
+        # Parse PID from content (format: "PID" or "PID timestamp")
+        pid_str = content.split()[0] if content else ""
+        if pid_str.isdigit():
+            pid = int(pid_str)
             try:
                 # Check if process exists (signal 0 doesn't kill, just checks)
                 os.kill(pid, 0)
@@ -420,8 +421,9 @@ def is_cli_locked() -> bool:
                 # Process exists but we can't signal it (still valid lock)
                 return True
 
-        # Lock file exists with recent mtime, honor it
-        return True
+        # Lock file exists but can't parse PID - treat as stale
+        logger.warning(f"CLI lock file has invalid content: '{content[:50]}', ignoring")
+        return False
     except Exception as e:
         logger.warning(f"Error checking CLI lock: {e}")
         return False
@@ -1447,9 +1449,10 @@ if USE_AIOHTTP:
                     status=400
                 )
 
-            # Validate fork exists
-            forks = [f["name"] for f in get_fork_list()]
-            if fork_name not in forks:
+            # Validate fork exists - check both directory name and display name
+            fork_list = get_fork_list()
+            valid_names = [f.get("directory", f["name"]) for f in fork_list] + [f["name"] for f in fork_list]
+            if fork_name not in valid_names:
                 return json_response(
                     {"success": False, "message": f"Fork '{fork_name}' not found"},
                     status=404
@@ -1530,9 +1533,10 @@ if USE_AIOHTTP:
                     status=400
                 )
 
-            # Validate fork exists
-            forks = [f["name"] for f in get_fork_list()]
-            if fork_name not in forks:
+            # Validate fork exists - check both directory name and display name
+            fork_list = get_fork_list()
+            valid_names = [f.get("directory", f["name"]) for f in fork_list] + [f["name"] for f in fork_list]
+            if fork_name not in valid_names:
                 return json_response(
                     {"success": False, "message": f"Fork '{fork_name}' not found"},
                     status=404
@@ -2009,9 +2013,10 @@ if not USE_AIOHTTP:
             if not fork_name or not validate_fork_name(fork_name):
                 self.send_json({"success": False, "message": "Invalid fork name"}, 400)
                 return
-            # Validate fork exists
-            forks = [f["name"] for f in get_fork_list()]
-            if fork_name not in forks:
+            # Validate fork exists - check both directory name and display name
+            fork_list = get_fork_list()
+            valid_names = [f.get("directory", f["name"]) for f in fork_list] + [f["name"] for f in fork_list]
+            if fork_name not in valid_names:
                 self.send_json({"success": False, "message": f"Fork '{fork_name}' not found"}, 404)
                 return
             # Check if already active
@@ -2040,9 +2045,10 @@ if not USE_AIOHTTP:
             if not validate_fork_name(fork_name):
                 self.send_json({"success": False, "message": "Invalid fork name"}, 400)
                 return
-            # Validate fork exists
-            forks = [f["name"] for f in get_fork_list()]
-            if fork_name not in forks:
+            # Validate fork exists - check both directory name and display name
+            fork_list = get_fork_list()
+            valid_names = [f.get("directory", f["name"]) for f in fork_list] + [f["name"] for f in fork_list]
+            if fork_name not in valid_names:
                 self.send_json({"success": False, "message": f"Fork '{fork_name}' not found"}, 404)
                 return
             if is_cli_locked() or operation_lock.locked():
