@@ -36,7 +36,7 @@ except ImportError:
 # =============================================================================
 # Configuration
 # =============================================================================
-VERSION = "5.0.0"
+VERSION = "5.1.0"
 PORT = int(os.environ.get("FORKSWAP_PORT", "8888"))
 # Security: Bind to localhost by default; set FORKSWAP_BIND_ALL=1 to expose to network
 HOST = "0.0.0.0" if os.environ.get("FORKSWAP_BIND_ALL", "1") == "1" else "127.0.0.1"
@@ -774,14 +774,189 @@ def configure_git_safe_directory(repo_path: Path) -> bool:
         logger.warning(f"Error configuring safe.directory for {repo_path}: {e}")
         return False
 
+def find_matching_fork(git_info: dict, forks_dir: Path) -> Path | None:
+    """
+    Find an existing fork directory that matches the given git info.
+    Matches by comparing git remote URL and branch.
+
+    Returns the fork's openpilot directory path if found, None otherwise.
+    """
+    if not forks_dir.exists():
+        return None
+
+    target_remote = git_info.get("remote_url", "")
+    target_branch = git_info.get("branch", "")
+
+    for fork_dir in forks_dir.iterdir():
+        if not fork_dir.is_dir():
+            continue
+        openpilot_dir = fork_dir / "openpilot"
+        if not openpilot_dir.exists():
+            continue
+
+        existing_info = get_git_info(openpilot_dir)
+        existing_remote = existing_info.get("remote_url", "")
+        existing_branch = existing_info.get("branch", "")
+
+        # Match if same remote URL and branch
+        if existing_remote == target_remote and existing_branch == target_branch:
+            return openpilot_dir
+
+    return None
+
+
+def find_duplicate_forks() -> list[dict]:
+    """
+    Find duplicate fork directories (same remote URL and branch).
+    Returns a list of duplicates that could be safely removed.
+    Keeps the one that's currently symlinked or the oldest one.
+    """
+    forks_dir = Path("/data/forks")
+    openpilot_path = Path("/data/openpilot")
+
+    if not forks_dir.exists():
+        return []
+
+    # Group forks by (remote_url, branch)
+    fork_groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
+
+    # Get current symlink target if exists
+    current_target = None
+    if openpilot_path.is_symlink():
+        try:
+            current_target = openpilot_path.resolve()
+        except Exception:
+            pass
+
+    for fork_dir in forks_dir.iterdir():
+        if not fork_dir.is_dir():
+            continue
+        openpilot_dir = fork_dir / "openpilot"
+        if not openpilot_dir.exists():
+            continue
+
+        info = get_git_info(openpilot_dir)
+        remote = info.get("remote_url", "")
+        branch = info.get("branch", "")
+
+        if not remote:
+            continue
+
+        is_active = current_target and openpilot_dir.resolve() == current_target
+
+        fork_groups[(remote, branch)].append({
+            "directory": fork_dir.name,
+            "path": str(fork_dir),
+            "openpilot_path": str(openpilot_dir),
+            "is_active": is_active,
+            "display_name": info.get("display_name", fork_dir.name),
+            "ctime": fork_dir.stat().st_ctime if fork_dir.exists() else 0
+        })
+
+    duplicates = []
+    for (remote, branch), forks in fork_groups.items():
+        if len(forks) <= 1:
+            continue
+
+        # Sort: active first, then by ctime (oldest first)
+        forks.sort(key=lambda f: (not f["is_active"], f["ctime"]))
+
+        # The first one is kept, rest are duplicates
+        kept = forks[0]
+        for dup in forks[1:]:
+            duplicates.append({
+                **dup,
+                "kept_version": kept["directory"],
+                "reason": "Duplicate of same fork (same remote URL and branch)"
+            })
+
+    return duplicates
+
+
+def cleanup_duplicate_forks(dry_run: bool = True) -> dict:
+    """
+    Remove duplicate fork directories, keeping the active one or oldest.
+
+    Args:
+        dry_run: If True, only report what would be deleted. If False, actually delete.
+
+    Returns:
+        Dict with cleanup results.
+    """
+    duplicates = find_duplicate_forks()
+
+    result = {
+        "dry_run": dry_run,
+        "found": len(duplicates),
+        "removed": [],
+        "failed": [],
+        "space_freed_mb": 0
+    }
+
+    if not duplicates:
+        return result
+
+    for dup in duplicates:
+        fork_path = Path(dup["path"])
+
+        if dry_run:
+            # Calculate size
+            try:
+                size_result = subprocess.run(
+                    ["du", "-sm", str(fork_path)],
+                    capture_output=True, text=True, timeout=30
+                )
+                if size_result.returncode == 0:
+                    size_mb = int(size_result.stdout.split()[0])
+                    result["space_freed_mb"] += size_mb
+            except Exception:
+                pass
+            result["removed"].append(dup)
+        else:
+            try:
+                # Actually remove
+                size_result = subprocess.run(
+                    ["du", "-sm", str(fork_path)],
+                    capture_output=True, text=True, timeout=30
+                )
+                size_mb = 0
+                if size_result.returncode == 0:
+                    size_mb = int(size_result.stdout.split()[0])
+
+                del_result = subprocess.run(
+                    ["sudo", "rm", "-rf", str(fork_path)],
+                    capture_output=True, text=True, timeout=120
+                )
+
+                if del_result.returncode == 0:
+                    result["removed"].append(dup)
+                    result["space_freed_mb"] += size_mb
+                    logger.info(f"Removed duplicate fork: {fork_path} ({size_mb}MB)")
+                else:
+                    result["failed"].append({**dup, "error": del_result.stderr})
+                    logger.error(f"Failed to remove {fork_path}: {del_result.stderr}")
+            except Exception as e:
+                result["failed"].append({**dup, "error": str(e)})
+                logger.error(f"Error removing {fork_path}: {e}")
+
+    return result
+
+
 def migrate_direct_installation() -> dict | None:
     """
     Auto-migrate a direct installation at /data/openpilot to proper /data/forks/ structure.
 
+    IMPORTANT: If an equivalent fork already exists (same remote URL and branch),
+    this will restore the symlink to that existing fork instead of creating a duplicate.
+    This handles the case where openpilot's update system replaced our symlink with
+    a finalized update directory.
+
     This enables full fork switching by:
-    1. Moving /data/openpilot to /data/forks/<fork-name>/openpilot
-    2. Creating symlink /data/openpilot -> /data/forks/<fork-name>/openpilot
-    3. Updating state file
+    1. Checking if an equivalent fork already exists in /data/forks/
+    2. If yes: Remove /data/openpilot and symlink to existing fork (no duplication)
+    3. If no: Move /data/openpilot to /data/forks/<fork-name>/openpilot
+    4. Creating symlink /data/openpilot -> /data/forks/<fork-name>/openpilot
+    5. Updating state file
 
     Returns migration result dict on success, None if no migration needed.
     """
@@ -792,24 +967,66 @@ def migrate_direct_installation() -> dict | None:
     if not openpilot_path.exists() or openpilot_path.is_symlink():
         return None  # Already managed or doesn't exist
 
-    logger.info("Direct installation detected at /data/openpilot - auto-migrating to /data/forks/")
+    logger.info("Direct installation detected at /data/openpilot - checking for existing equivalent fork...")
 
     try:
-        # Get fork info to generate directory name
+        # Get fork info from current installation
         git_info = get_git_info(openpilot_path)
         owner = git_info.get("owner", "unknown")
         repo = git_info.get("repo", "openpilot")
         branch = git_info.get("branch", "master")
+
+        # Check if an equivalent fork already exists (prevents duplicates after update swaps)
+        existing_fork = find_matching_fork(git_info, forks_dir)
+        if existing_fork:
+            logger.info(f"Found existing equivalent fork at: {existing_fork}")
+            logger.info("This appears to be a post-update restore - will symlink to existing fork")
+
+            # Remove the directory that was swapped in (it's a duplicate)
+            result = subprocess.run(
+                ["sudo", "rm", "-rf", str(openpilot_path)],
+                capture_output=True, text=True, timeout=120
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"Failed to remove duplicate directory: {result.stderr}")
+
+            logger.info(f"Removed duplicate installation at {openpilot_path}")
+
+            # Create symlink to existing fork
+            result = subprocess.run(
+                ["sudo", "ln", "-s", str(existing_fork), str(openpilot_path)],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"Symlink failed: {result.stderr}")
+
+            logger.info(f"Restored symlink: {openpilot_path} -> {existing_fork}")
+
+            # Update state file
+            state_file = FORKSWAP_DIR / "current_fork.txt"
+            state_file.parent.mkdir(parents=True, exist_ok=True)
+            state_file.write_text(git_info["display_name"])
+
+            return {
+                "migrated": True,
+                "action": "restored_symlink",
+                "fork_name": git_info["display_name"],
+                "target_path": str(existing_fork),
+                "message": "Restored symlink to existing fork (avoided duplication)"
+            }
+
+        # No existing equivalent fork - proceed with full migration
+        logger.info("No existing equivalent fork found - performing full migration to /data/forks/")
 
         # Generate directory name: owner-repo-branch
         fork_dir_name = f"{owner}-{repo}-{branch}".lower().replace("/", "-")
         fork_dir = forks_dir / fork_dir_name
         target_openpilot = fork_dir / "openpilot"
 
-        # Check if target already exists (collision)
+        # Check if target directory name exists but isn't an equivalent (different content)
         if fork_dir.exists():
-            logger.warning(f"Target directory already exists: {fork_dir}")
-            # Append timestamp to avoid collision
+            logger.warning(f"Directory name collision (different content): {fork_dir}")
+            # This shouldn't happen often now, but handle it gracefully
             import time
             fork_dir_name = f"{fork_dir_name}-{int(time.time())}"
             fork_dir = forks_dir / fork_dir_name
@@ -1410,6 +1627,49 @@ if USE_AIOHTTP:
                 status=400
             )
 
+    async def handle_cleanup(request: web.Request) -> web.Response:
+        """
+        Find and optionally remove duplicate fork directories.
+        GET: Dry run - shows what would be deleted
+        POST with {"confirm": true}: Actually delete duplicates
+        """
+        try:
+            if request.method == "GET":
+                # Dry run
+                result = cleanup_duplicate_forks(dry_run=True)
+                return json_response({
+                    "success": True,
+                    "dry_run": True,
+                    "duplicates_found": result["found"],
+                    "duplicates": result["removed"],
+                    "space_would_free_mb": result["space_freed_mb"],
+                    "message": f"Found {result['found']} duplicate(s) that would free ~{result['space_freed_mb']}MB"
+                })
+            else:
+                # POST - check for confirmation
+                body = await request.json()
+                if not body.get("confirm"):
+                    return json_response({
+                        "success": False,
+                        "message": "Add {\"confirm\": true} to actually delete duplicates"
+                    }, status=400)
+
+                result = cleanup_duplicate_forks(dry_run=False)
+                return json_response({
+                    "success": True,
+                    "dry_run": False,
+                    "removed_count": len(result["removed"]),
+                    "removed": result["removed"],
+                    "failed": result["failed"],
+                    "space_freed_mb": result["space_freed_mb"],
+                    "message": f"Removed {len(result['removed'])} duplicate(s), freed ~{result['space_freed_mb']}MB"
+                })
+        except json.JSONDecodeError:
+            return json_response(
+                {"success": False, "message": "Invalid JSON"},
+                status=400
+            )
+
 # =============================================================================
 # Application Setup (aiohttp)
 # =============================================================================
@@ -1431,6 +1691,8 @@ if USE_AIOHTTP:
         app.router.add_post("/api/update", handle_update)
         app.router.add_get("/api/templates", handle_templates)
         app.router.add_post("/api/clone", handle_clone)
+        app.router.add_get("/api/cleanup", handle_cleanup)
+        app.router.add_post("/api/cleanup", handle_cleanup)
         return app
 
 # =============================================================================
@@ -1618,6 +1880,17 @@ if not USE_AIOHTTP:
                 if issues:
                     data["issues"] = issues
                 self.send_json(data, status=200 if health_status == "healthy" else 503)
+            elif self.path == "/api/cleanup":
+                # GET = dry run, shows what would be deleted
+                result = cleanup_duplicate_forks(dry_run=True)
+                self.send_json({
+                    "success": True,
+                    "dry_run": True,
+                    "duplicates_found": result["found"],
+                    "duplicates": result["removed"],
+                    "space_would_free_mb": result["space_freed_mb"],
+                    "message": f"Found {result['found']} duplicate(s) that would free ~{result['space_freed_mb']}MB"
+                })
             else:
                 self.send_json({"error": "Not found"}, 404)
 
@@ -1655,6 +1928,8 @@ if not USE_AIOHTTP:
                 self._handle_reboot()
             elif self.path == "/api/clone":
                 self._handle_clone(data)
+            elif self.path == "/api/cleanup":
+                self._handle_cleanup(data)
             else:
                 self.send_json({"error": "Not found"}, 404)
 
@@ -1773,6 +2048,26 @@ if not USE_AIOHTTP:
                         self.send_json({"success": False, "message": f"Clone failed: {output[:200]}"}, 500)
                 finally:
                     clear_operation()
+
+        def _handle_cleanup(self, data: dict):
+            """Handle POST /api/cleanup - actually remove duplicate forks."""
+            if not data.get("confirm"):
+                self.send_json({
+                    "success": False,
+                    "message": "Add {\"confirm\": true} to actually delete duplicates"
+                }, 400)
+                return
+
+            result = cleanup_duplicate_forks(dry_run=False)
+            self.send_json({
+                "success": True,
+                "dry_run": False,
+                "removed_count": len(result["removed"]),
+                "removed": result["removed"],
+                "failed": result["failed"],
+                "space_freed_mb": result["space_freed_mb"],
+                "message": f"Removed {len(result['removed'])} duplicate(s), freed ~{result['space_freed_mb']}MB"
+            })
 
 # =============================================================================
 # Shutdown Handling
