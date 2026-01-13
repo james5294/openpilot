@@ -36,7 +36,7 @@ except ImportError:
 # =============================================================================
 # Configuration
 # =============================================================================
-VERSION = "2.0.1"
+VERSION = "2.1.0"
 PORT = int(os.environ.get("FORKSWAP_PORT", "8888"))
 # Security: Bind to localhost by default; set FORKSWAP_BIND_ALL=1 to expose to network
 HOST = "0.0.0.0" if os.environ.get("FORKSWAP_BIND_ALL", "1") == "1" else "127.0.0.1"
@@ -684,6 +684,115 @@ def configure_git_safe_directory(repo_path: Path) -> bool:
         logger.warning(f"Error configuring safe.directory for {repo_path}: {e}")
         return False
 
+def migrate_direct_installation() -> dict | None:
+    """
+    Auto-migrate a direct installation at /data/openpilot to proper /data/forks/ structure.
+
+    This enables full fork switching by:
+    1. Moving /data/openpilot to /data/forks/<fork-name>/openpilot
+    2. Creating symlink /data/openpilot -> /data/forks/<fork-name>/openpilot
+    3. Updating state file
+
+    Returns migration result dict on success, None if no migration needed.
+    """
+    openpilot_path = Path("/data/openpilot")
+    forks_dir = Path("/data/forks")
+
+    # Only migrate if /data/openpilot is a real directory (not already a symlink)
+    if not openpilot_path.exists() or openpilot_path.is_symlink():
+        return None  # Already managed or doesn't exist
+
+    logger.info("Direct installation detected at /data/openpilot - auto-migrating to /data/forks/")
+
+    try:
+        # Get fork info to generate directory name
+        git_info = get_git_info(openpilot_path)
+        owner = git_info.get("owner", "unknown")
+        repo = git_info.get("repo", "openpilot")
+        branch = git_info.get("branch", "master")
+
+        # Generate directory name: owner-repo-branch
+        fork_dir_name = f"{owner}-{repo}-{branch}".lower().replace("/", "-")
+        fork_dir = forks_dir / fork_dir_name
+        target_openpilot = fork_dir / "openpilot"
+
+        # Check if target already exists (collision)
+        if fork_dir.exists():
+            logger.warning(f"Target directory already exists: {fork_dir}")
+            # Append timestamp to avoid collision
+            import time
+            fork_dir_name = f"{fork_dir_name}-{int(time.time())}"
+            fork_dir = forks_dir / fork_dir_name
+            target_openpilot = fork_dir / "openpilot"
+
+        logger.info(f"Migrating to: {fork_dir}")
+
+        # Create /data/forks if it doesn't exist
+        forks_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create fork directory
+        fork_dir.mkdir(parents=True, exist_ok=True)
+
+        # Move /data/openpilot to /data/forks/<name>/openpilot
+        # Using subprocess for atomic move across filesystems if needed
+        result = subprocess.run(
+            ["sudo", "mv", str(openpilot_path), str(target_openpilot)],
+            capture_output=True, text=True, timeout=120
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"Move failed: {result.stderr}")
+
+        logger.info(f"Moved {openpilot_path} to {target_openpilot}")
+
+        # Create symlink /data/openpilot -> /data/forks/<name>/openpilot
+        result = subprocess.run(
+            ["sudo", "ln", "-s", str(target_openpilot), str(openpilot_path)],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"Symlink failed: {result.stderr}")
+
+        logger.info(f"Created symlink: {openpilot_path} -> {target_openpilot}")
+
+        # Fix ownership of new location
+        subprocess.run(
+            ["sudo", "chown", "-R", "comma:comma", str(fork_dir)],
+            capture_output=True, timeout=60
+        )
+
+        # Update state file
+        state_file = FORKSWAP_DIR / "current_fork.txt"
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text(git_info["display_name"])
+
+        # Configure git safe.directory
+        configure_git_safe_directory(target_openpilot)
+
+        logger.info(f"Migration complete: {git_info['display_name']} now managed by Fork Swap")
+
+        return {
+            "migrated": True,
+            "fork_name": git_info["display_name"],
+            "from_path": str(openpilot_path),
+            "to_path": str(target_openpilot),
+            "directory": fork_dir_name
+        }
+
+    except Exception as e:
+        logger.error(f"Migration failed: {e}")
+        # Try to restore if partial failure
+        if not openpilot_path.exists() and target_openpilot.exists():
+            logger.warning("Attempting rollback...")
+            try:
+                subprocess.run(
+                    ["sudo", "mv", str(target_openpilot), str(openpilot_path)],
+                    capture_output=True, timeout=120
+                )
+                logger.info("Rollback successful")
+            except Exception as rollback_err:
+                logger.error(f"Rollback failed: {rollback_err}")
+        return {"migrated": False, "error": str(e)}
+
 def run_startup_selfhealing() -> dict:
     """
     Run self-healing checks and fixes on startup.
@@ -692,24 +801,22 @@ def run_startup_selfhealing() -> dict:
     results = {
         "ownership_fixes": 0,
         "safe_directory_configs": 0,
-        "overlay_detected": None,
+        "migration": None,
         "errors": []
     }
 
     logger.info("Running startup self-healing checks...")
 
-    # Check for overlay installation at /data/openpilot
-    overlay = detect_overlay_installation()
-    if overlay:
-        results["overlay_detected"] = overlay
-        logger.warning(f"Overlay installation detected: {overlay['display_name']}")
-        logger.warning("This fork is not managed by Fork Swap symlink system")
-        logger.info("To enable full fork switching, consider migrating to /data/forks/")
-
-        # Configure git safe.directory for overlay installation
-        openpilot_path = Path("/data/openpilot")
-        if configure_git_safe_directory(openpilot_path):
-            results["safe_directory_configs"] += 1
+    # Auto-migrate direct installations to /data/forks/ structure
+    # This enables proper fork switching with symlinks
+    migration_result = migrate_direct_installation()
+    if migration_result:
+        results["migration"] = migration_result
+        if migration_result.get("migrated"):
+            logger.info(f"Auto-migration successful: {migration_result.get('fork_name')}")
+        else:
+            error = migration_result.get("error", "Unknown error")
+            results["errors"].append(f"Migration failed: {error}")
 
     # Process managed forks in /data/forks
     forks_dir = Path("/data/forks")
@@ -734,15 +841,17 @@ def run_startup_selfhealing() -> dict:
 
     # Log summary
     summary_parts = []
+    if results["migration"] and results["migration"].get("migrated"):
+        summary_parts.append(f"migrated {results['migration'].get('fork_name', 'fork')}")
     if results["ownership_fixes"] > 0:
         summary_parts.append(f"{results['ownership_fixes']} ownership fixes")
     if results["safe_directory_configs"] > 0:
         summary_parts.append(f"{results['safe_directory_configs']} safe.directory configs")
-    if results["overlay_detected"]:
-        summary_parts.append("overlay detected")
 
     if summary_parts:
         logger.info(f"Self-healing complete: {', '.join(summary_parts)}")
+    else:
+        logger.info("Self-healing complete: no issues found")
 
     return results
 
