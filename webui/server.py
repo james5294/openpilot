@@ -36,7 +36,7 @@ except ImportError:
 # =============================================================================
 # Configuration
 # =============================================================================
-VERSION = "5.2.0"
+VERSION = "5.2.1"
 PORT = int(os.environ.get("FORKSWAP_PORT", "8888"))
 # Security: Bind to localhost by default; set FORKSWAP_BIND_ALL=1 to expose to network
 HOST = "0.0.0.0" if os.environ.get("FORKSWAP_BIND_ALL", "1") == "1" else "127.0.0.1"
@@ -1025,12 +1025,11 @@ def migrate_direct_installation() -> dict | None:
 
         # Check if target directory name exists but isn't an equivalent (different content)
         if fork_dir.exists():
-            logger.warning(f"Directory name collision (different content): {fork_dir}")
-            # This shouldn't happen often now, but handle it gracefully
-            import time
-            fork_dir_name = f"{fork_dir_name}-{int(time.time())}"
-            fork_dir = forks_dir / fork_dir_name
-            target_openpilot = fork_dir / "openpilot"
+            # NEVER create timestamped directories - this causes confusion
+            # If directory exists and find_matching_fork didn't match it, something is wrong
+            logger.error(f"Cannot migrate: directory {fork_dir} exists but doesn't match current installation")
+            logger.error("This may indicate corrupted state. Manual intervention required.")
+            return None  # Don't proceed - let the system continue with current state
 
         logger.info(f"Migrating to: {fork_dir}")
 
