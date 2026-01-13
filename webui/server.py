@@ -36,7 +36,7 @@ except ImportError:
 # =============================================================================
 # Configuration
 # =============================================================================
-VERSION = "5.2.1"
+VERSION = "5.2.2"
 PORT = int(os.environ.get("FORKSWAP_PORT", "8888"))
 # Security: Bind to localhost by default; set FORKSWAP_BIND_ALL=1 to expose to network
 HOST = "0.0.0.0" if os.environ.get("FORKSWAP_BIND_ALL", "1") == "1" else "127.0.0.1"
@@ -1499,10 +1499,12 @@ if USE_AIOHTTP:
                     success, output = run_fork_swap("update", fork_name)
 
                     if success:
-                        logger.info(f"Update successful: {fork_name}")
+                        logger.info(f"Update successful, scheduling reboot")
+                        asyncio.create_task(delayed_reboot(5))
                         return json_response({
                             "success": True,
-                            "message": f"Updated {fork_name} successfully"
+                            "message": f"Updated {fork_name} successfully. Rebooting in 5 seconds to apply changes...",
+                            "rebooting": True
                         })
                     else:
                         logger.error(f"Update failed")
@@ -1982,7 +1984,9 @@ if not USE_AIOHTTP:
                     logger.info(f"Updating fork: {fork_name}")
                     success, output = run_fork_swap("update", fork_name)
                     if success:
-                        self.send_json({"success": True, "message": f"Updated {fork_name}"})
+                        logger.info(f"Update successful, scheduling reboot")
+                        threading.Thread(target=delayed_reboot_sync, args=(5,), daemon=True).start()
+                        self.send_json({"success": True, "message": f"Updated {fork_name}. Rebooting in 5 seconds...", "rebooting": True})
                     else:
                         logger.error("Update failed")
                         self.send_json({"success": False, "message": "Update failed. Check logs for details."}, 500)

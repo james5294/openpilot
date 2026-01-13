@@ -90,6 +90,12 @@ class ForkSwapService:
     self._set_overlay_status("ok")
     self.last_request_id: Optional[str] = None
 
+    # Check for symlink corruption from native updater and self-heal
+    try:
+      self._verify_symlink_structure()
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+      cloudlog.error("ForkSwapService symlink verification failed: %s", exc)
+
     try:
       self._verify_overlay()
     except Exception as exc:  # pylint: disable=broad-exception-caught
@@ -592,6 +598,94 @@ class ForkSwapService:
         cloudlog.debug("ForkSwapService asset refresh output: %s", result.stdout.strip())
     except subprocess.CalledProcessError as exc:
       cloudlog.error("ForkSwapService asset refresh failed (returncode=%s): %s", exc.returncode, exc.stderr.strip())
+
+  def _verify_symlink_structure(self) -> None:
+    """
+    Check if the native updater has replaced /data/openpilot symlink with a real directory.
+    If so, self-heal by moving the directory to the correct fork location and restoring the symlink.
+
+    This handles the case where:
+    1. User has ForkSwap managing forks via symlinks (/data/openpilot -> /data/forks/xxx/openpilot)
+    2. Native openpilot updater runs (via FrogPilot UI "check for update")
+    3. Updater does: mv /data/openpilot /data/safe_staging/old_openpilot
+                     mv /data/safe_staging/finalized /data/openpilot
+    4. This replaces our symlink with a real directory, breaking ForkSwap
+
+    Self-healing: Move the real directory into the active fork location and restore the symlink.
+    """
+    openpilot_path = Path(self.base_paths.get("openpilot_dir", DEFAULT_OPENPILOT_DIR))
+    forks_dir = Path(self.base_paths.get("forks_dir", DEFAULT_FORKS_DIR))
+    current_fork_file = Path("/data/forkswap/current_fork.txt")
+
+    # If /data/openpilot doesn't exist at all, nothing to do
+    if not openpilot_path.exists():
+      cloudlog.warning("ForkSwapService: /data/openpilot does not exist, cannot verify symlink")
+      return
+
+    # If it's already a symlink, structure is intact
+    if openpilot_path.is_symlink():
+      cloudlog.info("ForkSwapService: /data/openpilot is a symlink (structure intact)")
+      return
+
+    # /data/openpilot is a real directory - native updater has corrupted the symlink structure!
+    cloudlog.warning("ForkSwapService: /data/openpilot is a real directory (symlink corrupted by native updater)")
+
+    # Read current fork name
+    current_fork = None
+    if current_fork_file.exists():
+      try:
+        current_fork = current_fork_file.read_text().strip()
+      except OSError:
+        pass
+
+    if not current_fork:
+      cloudlog.error("ForkSwapService: Cannot self-heal - no current fork recorded in %s", current_fork_file)
+      cloudlog.error("ForkSwapService: Manual intervention required. Move /data/openpilot to /data/forks/<name>/openpilot and recreate symlink.")
+      return
+
+    # Target location for the fork
+    fork_path = forks_dir / current_fork
+    fork_openpilot_path = fork_path / "openpilot"
+
+    # Ensure forks directory exists
+    forks_dir.mkdir(parents=True, exist_ok=True)
+    fork_path.mkdir(parents=True, exist_ok=True)
+
+    # If target already exists, back it up
+    if fork_openpilot_path.exists():
+      backup_path = fork_path / f"openpilot.backup.{int(time.time())}"
+      cloudlog.warning("ForkSwapService: Backing up existing %s to %s", fork_openpilot_path, backup_path)
+      try:
+        import shutil
+        shutil.move(str(fork_openpilot_path), str(backup_path))
+      except Exception as exc:
+        cloudlog.error("ForkSwapService: Failed to backup existing fork: %s", exc)
+        return
+
+    # Move /data/openpilot to the fork location
+    cloudlog.info("ForkSwapService: Moving /data/openpilot to %s", fork_openpilot_path)
+    try:
+      import shutil
+      shutil.move(str(openpilot_path), str(fork_openpilot_path))
+    except Exception as exc:
+      cloudlog.error("ForkSwapService: Failed to move /data/openpilot: %s", exc)
+      return
+
+    # Recreate the symlink
+    cloudlog.info("ForkSwapService: Recreating symlink /data/openpilot -> %s", fork_openpilot_path)
+    try:
+      openpilot_path.symlink_to(fork_openpilot_path)
+    except Exception as exc:
+      cloudlog.error("ForkSwapService: Failed to create symlink: %s", exc)
+      # Try to restore the directory
+      try:
+        import shutil
+        shutil.move(str(fork_openpilot_path), str(openpilot_path))
+      except Exception:
+        pass
+      return
+
+    cloudlog.info("ForkSwapService: Successfully self-healed symlink structure for fork '%s'", current_fork)
 
   def _verify_overlay(self) -> None:
     openpilot_dir = Path(self.base_paths.get("openpilot_dir", DEFAULT_OPENPILOT_DIR))
