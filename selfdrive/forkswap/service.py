@@ -40,6 +40,8 @@ DEFAULT_CURRENT_FORK_FILE = "/data/current_fork.txt"
 DEFAULT_LOG_FILE = "/data/fork_swap.log"
 DEFAULT_POLL_INTERVAL = 1.0
 DEFAULT_TIMEOUT = 900.0  # 15 minutes
+WEBUI_SERVER_PATH = os.path.join(BASEDIR, "webui", "server.py")
+WEBUI_CHECK_INTERVAL = 30.0  # seconds between webui health checks
 GIT_URL_PATTERN = re.compile(r'^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?/?$')
 
 
@@ -93,15 +95,70 @@ class ForkSwapService:
     except Exception as exc:  # pylint: disable=broad-exception-caught
       cloudlog.error("ForkSwapService overlay verification failed: %s", exc)
 
+    # Web UI subprocess management
+    self._webui_process: Optional[subprocess.Popen] = None
+    self._webui_last_check: float = 0.0
+
+  # ------------------------------------------------------------------------- #
+  # Web UI subprocess management
+  # ------------------------------------------------------------------------- #
+  def _start_webui_server(self) -> bool:
+    """Start the webui server as a subprocess. Returns True if started successfully."""
+    if not os.path.exists(WEBUI_SERVER_PATH):
+      cloudlog.warning("WebUI server not found at %s", WEBUI_SERVER_PATH)
+      return False
+
+    # Check if already running
+    if self._webui_process is not None and self._webui_process.poll() is None:
+      return True  # Already running
+
+    try:
+      webui_dir = os.path.dirname(WEBUI_SERVER_PATH)
+      self._webui_process = subprocess.Popen(
+        ["python3", WEBUI_SERVER_PATH],
+        cwd=webui_dir,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,  # Detach from parent process group
+      )
+      cloudlog.info("ForkSwapService started WebUI server (PID %d)", self._webui_process.pid)
+      return True
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+      cloudlog.error("ForkSwapService failed to start WebUI server: %s", exc)
+      return False
+
+  def _check_webui_server(self) -> None:
+    """Check if webui is running and restart if needed."""
+    now = time.time()
+    if now - self._webui_last_check < WEBUI_CHECK_INTERVAL:
+      return  # Not time to check yet
+
+    self._webui_last_check = now
+
+    if self._webui_process is None:
+      # Never started, start now
+      self._start_webui_server()
+      return
+
+    retcode = self._webui_process.poll()
+    if retcode is not None:
+      # Process exited, restart it
+      cloudlog.warning("WebUI server exited with code %d, restarting...", retcode)
+      self._start_webui_server()
+
   # ------------------------------------------------------------------------- #
   # Public API
   # ------------------------------------------------------------------------- #
   def run_forever(self) -> None:
     """Main loop – monitor params and process requests."""
     self._publish_status()
+    # Start webui server on service startup
+    self._start_webui_server()
     while True:
       try:
         self.process_once()
+        # Periodically check webui health and restart if needed
+        self._check_webui_server()
       except Exception as exc:  # pylint: disable=broad-exception-caught
         self.status.update(
           state=ForkSwapState.ERROR,
