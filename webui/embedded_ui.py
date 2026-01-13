@@ -737,7 +737,10 @@ EMBEDDED_JS = '''
     function formatDate(dateStr) {
         if (!dateStr) return "Unknown";
         try {
-            var d = new Date(dateStr);
+            // Git date format: "2026-01-13 15:47:21 -0500" -> ISO 8601: "2026-01-13T15:47:21-05:00"
+            var isoStr = dateStr.replace(" ", "T").replace(/ ([+-])(\d{2})(\d{2})$/, "$1$2:$3");
+            var d = new Date(isoStr);
+            if (isNaN(d.getTime())) return dateStr; // Fallback if still invalid
             var now = new Date();
             var diff = Math.floor((now - d) / 1000);
             if (diff < 60) return "Just now";
