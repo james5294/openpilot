@@ -883,7 +883,7 @@ EMBEDDED_JS = '''
             fetchStatus(true);
         },
         showSwitchConfirm: function(forkName) {
-            modal.open("Switch Fork", "<p>Are you sure you want to switch to <strong>" + escapeHtml(forkName) + "</strong>?</p><p style=\\"color: var(--op-text-muted); margin-top: 12px;\\">The device will reboot after switching.</p>", [{ label: "Cancel", onclick: "modal.close()" }, { label: "Switch & Reboot", cls: "btn-primary", onclick: "app.switchFork(\\"" + escapeHtml(forkName) + "\\")" }]);
+            modal.open("Switch Fork", "<p>Are you sure you want to switch to <strong>" + escapeHtml(forkName) + "</strong>?</p><p style=\\"color: var(--op-text-muted); margin-top: 12px;\\">The device will reboot after switching.</p>", [{ label: "Cancel", onclick: "modal.close()" }, { label: "Switch & Reboot", cls: "btn-primary", onclick: "app.switchFork('" + escapeHtml(forkName) + "')" }]);
         },
         showRebootConfirm: function() {
             modal.open("Reboot Device", "<p>Are you sure you want to reboot the device?</p>", [{ label: "Cancel", onclick: "modal.close()" }, { label: "Reboot", cls: "btn-danger", onclick: "app.reboot()" }]);
