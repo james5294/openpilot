@@ -36,7 +36,7 @@ except ImportError:
 # =============================================================================
 # Configuration
 # =============================================================================
-VERSION = "2.0.0"
+VERSION = "2.0.1"
 PORT = int(os.environ.get("FORKSWAP_PORT", "8888"))
 # Security: Bind to localhost by default; set FORKSWAP_BIND_ALL=1 to expose to network
 HOST = "0.0.0.0" if os.environ.get("FORKSWAP_BIND_ALL", "1") == "1" else "127.0.0.1"
@@ -508,8 +508,8 @@ def get_current_fork() -> str:
     # Fallback: detect from git info at /data/openpilot (overlay installation)
     if openpilot_path.exists() and not openpilot_path.is_symlink():
         git_info = get_git_info(openpilot_path)
-        # Use display_name which includes owner/repo and branch
-        return f"{git_info['display_name']} [overlay]"
+        # Use display_name which includes owner/repo and branch (no internal labels)
+        return git_info['display_name']
 
     return "unknown"
 
@@ -548,7 +548,7 @@ def get_fork_list() -> list[dict]:
     # First, check for overlay installation at /data/openpilot
     openpilot_path = Path("/data/openpilot")
     if openpilot_path.exists() and not openpilot_path.is_symlink():
-        # This is an overlay installation (not managed by fork swap symlinks)
+        # This is a direct installation (not managed by fork swap symlinks)
         git_info = get_git_info(openpilot_path)
 
         forks.append({
@@ -558,8 +558,7 @@ def get_fork_list() -> list[dict]:
             "repo": git_info["repo"],
             "active": True,
             "path": str(openpilot_path),
-            "type": "overlay",
-            "needs_migration": True  # Flag that this should be migrated to managed
+            "install_type": "direct",  # Not symlink-managed
         })
 
     # Then, scan /data/forks for fork-managed installations
@@ -595,7 +594,7 @@ def get_fork_list() -> list[dict]:
                 "repo": git_info["repo"],
                 "active": is_active,
                 "path": str(openpilot_dir),
-                "type": "managed"
+                "install_type": "symlink",  # Managed via /data/forks symlinks
             })
 
     return forks
