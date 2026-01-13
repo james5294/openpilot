@@ -1,29 +1,36 @@
 {
-  "version": "2.2.0",
+  "version": "5.0.0",
   "description": "ForkSwap overlay - Modular fork management system with Web UI",
   "compatibility": "Works with ANY openpilot fork (comma official, FrogPilot, dragonpilot, etc.)",
   "features": [
-    "Web UI accessible from any device on network (port 8080)",
+    "Professional Web UI accessible from any device on network (port 8888)",
     "Fork switching, cloning, updating, deletion",
+    "Auto-migration of direct installations to managed structure",
+    "Activity log for system monitoring",
     "System maintenance (repair/refresh/verify overlay)",
     "Disk space monitoring",
     "Auto-starts on boot",
-    "Auto-installs Flask dependency on first run",
     "Auto-deploys overlay when switching or cloning forks",
-    "Zero fork dependencies - completely modular"
+    "Zero dependencies - uses stdlib http.server"
   ],
   "files": [
     {
       "source": "selfdrive/forkswap",
       "destination": "selfdrive/forkswap",
       "type": "directory",
-      "description": "ForkSwap Python backend and Web UI server (complete system)"
+      "description": "ForkSwap Python backend service"
+    },
+    {
+      "source": "webui",
+      "destination": "webui",
+      "type": "directory",
+      "description": "Fork Swap Web UI server"
     },
     {
       "source": "system/manager/process_config.py",
       "destination": "system/manager/process_config.py",
       "type": "file",
-      "description": "Manager config with forkswapd and forkswap_webui auto-start"
+      "description": "Manager config with forkswapd auto-start"
     },
     {
       "source": "tools/scripts/forkswap.sh",
@@ -34,9 +41,8 @@
   ],
   "deployment": {
     "method": "Automatic via overlay system",
-    "requirements": ["Python 3.8+", "Flask (auto-installed)"],
-    "access": "http://DEVICE_IP:8080 (after deployment)",
-    "disable_webui": "Set param ForkSwapWebUIDisabled=1 to disable auto-start",
+    "requirements": ["Python 3.8+"],
+    "access": "http://DEVICE_IP:8888 (after deployment)",
     "disable_service": "Set param ForkSwapServiceDisabled=1 to disable backend"
   }
 }
