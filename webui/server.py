@@ -36,7 +36,7 @@ except ImportError:
 # =============================================================================
 # Configuration
 # =============================================================================
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 PORT = int(os.environ.get("FORKSWAP_PORT", "8888"))
 # Security: Bind to localhost by default; set FORKSWAP_BIND_ALL=1 to expose to network
 HOST = "0.0.0.0" if os.environ.get("FORKSWAP_BIND_ALL", "1") == "1" else "127.0.0.1"
@@ -168,6 +168,97 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger("webui")
+
+# =============================================================================
+# Activity Log (in-memory buffer for UI visibility)
+# =============================================================================
+class ActivityLog:
+    """Circular buffer storing recent activity for UI display."""
+
+    def __init__(self, max_entries: int = 200):
+        self.max_entries = max_entries
+        self._entries: list[dict] = []
+        self._lock = threading.Lock()
+
+    def add(self, level: str, message: str, category: str = "system") -> None:
+        """Add an entry to the activity log."""
+        entry = {
+            "timestamp": datetime.now().isoformat(),
+            "level": level,
+            "message": message,
+            "category": category
+        }
+        with self._lock:
+            self._entries.append(entry)
+            # Trim to max size
+            if len(self._entries) > self.max_entries:
+                self._entries = self._entries[-self.max_entries:]
+
+    def get_entries(self, limit: int = 50, level: str = None, category: str = None) -> list[dict]:
+        """Get recent log entries with optional filtering."""
+        with self._lock:
+            entries = self._entries.copy()
+
+        # Filter by level
+        if level:
+            entries = [e for e in entries if e["level"] == level]
+
+        # Filter by category
+        if category:
+            entries = [e for e in entries if e["category"] == category]
+
+        # Return most recent entries (reversed so newest first)
+        return list(reversed(entries[-limit:]))
+
+    def clear(self) -> None:
+        """Clear all entries."""
+        with self._lock:
+            self._entries = []
+
+# Global activity log instance
+activity_log = ActivityLog()
+
+class ActivityLogHandler(logging.Handler):
+    """Custom logging handler that captures logs to activity buffer."""
+
+    # Map log messages to categories based on keywords
+    CATEGORY_KEYWORDS = {
+        "migration": ["migrat", "direct installation", "symlink"],
+        "switch": ["switch", "activat"],
+        "clone": ["clon", "download"],
+        "update": ["updat", "pull"],
+        "delete": ["delet", "remov"],
+        "startup": ["start", "self-heal", "running"],
+        "error": ["error", "fail", "exception"],
+    }
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = self.format(record)
+            level = record.levelname.lower()
+
+            # Determine category from message content
+            category = "system"
+            msg_lower = msg.lower()
+            for cat, keywords in self.CATEGORY_KEYWORDS.items():
+                if any(kw in msg_lower for kw in keywords):
+                    category = cat
+                    break
+
+            # Only log important messages (not HTTP requests)
+            if "HTTP/1.1" not in msg and len(msg) > 5:
+                activity_log.add(level, msg, category)
+        except Exception:
+            pass  # Don't let logging errors crash the app
+
+# Add activity log handler to logger
+_activity_handler = ActivityLogHandler()
+_activity_handler.setLevel(logging.INFO)
+_activity_handler.setFormatter(logging.Formatter('%(message)s'))
+logger.addHandler(_activity_handler)
+
+# Log startup
+activity_log.add("info", f"Fork Swap Web UI v{VERSION} initializing", "startup")
 
 # =============================================================================
 # Config File Loading
@@ -1046,6 +1137,21 @@ if USE_AIOHTTP:
             data["issues"] = issues
         return json_response(data, status=200 if health_status == "healthy" else 503)
 
+    async def handle_logs(request: web.Request) -> web.Response:
+        """Get recent activity logs for UI display."""
+        # Parse query params
+        limit = min(int(request.query.get("limit", 50)), 200)
+        level = request.query.get("level")  # info, warning, error
+        category = request.query.get("category")  # migration, switch, clone, etc.
+
+        entries = activity_log.get_entries(limit=limit, level=level, category=category)
+
+        return json_response({
+            "entries": entries,
+            "total": len(entries),
+            "categories": ["system", "startup", "migration", "switch", "clone", "update", "delete", "error"]
+        })
+
     async def handle_switch(request: web.Request) -> web.Response:
         """Switch to a different fork and reboot."""
         try:
@@ -1320,6 +1426,7 @@ if USE_AIOHTTP:
         app.router.add_get("/static/{filename}", handle_static)
         app.router.add_get("/api/status", handle_status)
         app.router.add_get("/api/health", handle_health)
+        app.router.add_get("/api/logs", handle_logs)
         app.router.add_post("/api/switch", handle_switch)
         app.router.add_post("/api/reboot", handle_reboot)
         app.router.add_post("/api/update", handle_update)
@@ -1464,6 +1571,22 @@ if not USE_AIOHTTP:
                 self.send_json({
                     "templates": FORK_TEMPLATES,
                     "count": len(FORK_TEMPLATES)
+                })
+            elif self.path.startswith("/api/logs"):
+                # Parse query params from URL
+                from urllib.parse import urlparse, parse_qs
+                parsed = urlparse(self.path)
+                params = parse_qs(parsed.query)
+
+                limit = min(int(params.get("limit", ["50"])[0]), 200)
+                level = params.get("level", [None])[0]
+                category = params.get("category", [None])[0]
+
+                entries = activity_log.get_entries(limit=limit, level=level, category=category)
+                self.send_json({
+                    "entries": entries,
+                    "total": len(entries),
+                    "categories": ["system", "startup", "migration", "switch", "clone", "update", "delete", "error"]
                 })
             elif self.path == "/api/health":
                 issues = verify_environment()

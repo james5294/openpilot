@@ -4,7 +4,7 @@ Embedded Frontend for Fork Swap Web UI
 Professional OpenPilot-style UI with embedded HTML/CSS/JS
 """
 
-VERSION = "2.0.0"
+VERSION = "2.2.0"
 
 # Embedded CSS - OpenPilot Design System
 EMBEDDED_CSS = '''
@@ -411,6 +411,73 @@ html, body {
 ::-webkit-scrollbar-track { background: var(--op-bg-secondary); }
 ::-webkit-scrollbar-thumb { background: var(--op-bg-hover); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--op-text-muted); }
+/* View System */
+.view { display: none; }
+.view.active { display: block; }
+/* Logs Styles */
+.logs-header { margin-bottom: 20px; }
+.logs-filters { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.logs-filters select {
+    padding: 8px 12px;
+    background: var(--op-bg-elevated);
+    border: 1px solid var(--op-border);
+    border-radius: var(--op-radius-md);
+    color: var(--op-text-primary);
+    font-size: 13px;
+    cursor: pointer;
+}
+.logs-filters select:focus { outline: none; border-color: var(--op-accent); }
+.logs-container {
+    background: var(--op-bg-card);
+    border: 1px solid var(--op-border);
+    border-radius: var(--op-radius-lg);
+    overflow: hidden;
+    max-height: calc(100vh - 240px);
+    overflow-y: auto;
+}
+.log-entry {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--op-border);
+    transition: background var(--op-transition);
+}
+.log-entry:last-child { border-bottom: none; }
+.log-entry:hover { background: var(--op-bg-elevated); }
+.log-level {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    padding: 2px 6px;
+    border-radius: var(--op-radius-sm);
+    min-width: 50px;
+    text-align: center;
+}
+.log-level.info { background: rgba(23, 134, 67, 0.2); color: var(--op-success); }
+.log-level.warning { background: rgba(255, 193, 7, 0.2); color: var(--op-warning); }
+.log-level.error { background: rgba(220, 53, 69, 0.2); color: var(--op-danger); }
+.log-time { font-size: 12px; color: var(--op-text-muted); min-width: 75px; }
+.log-category {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--op-text-muted);
+    background: var(--op-bg-hover);
+    padding: 2px 6px;
+    border-radius: var(--op-radius-sm);
+    min-width: 60px;
+    text-align: center;
+}
+.log-message { flex: 1; font-size: 13px; color: var(--op-text-secondary); word-break: break-word; }
+.logs-empty { text-align: center; padding: 48px 24px; color: var(--op-text-muted); }
+@media (max-width: 768px) {
+    .logs-filters { flex-direction: column; align-items: stretch; }
+    .logs-filters select, .logs-filters button { width: 100%; }
+    .log-entry { flex-wrap: wrap; }
+    .log-time, .log-category { order: 2; margin-top: 8px; }
+    .log-message { width: 100%; order: 3; margin-top: 8px; }
+}
 '''
 
 def get_embedded_html():
@@ -439,12 +506,19 @@ def get_embedded_html():
             <nav class="sidebar-nav">
                 <div class="nav-section">
                     <div class="nav-section-title">Navigation</div>
-                    <div class="nav-item active">
+                    <div class="nav-item active" onclick="app.showView('dashboard')" data-view="dashboard">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>
                             <path d="M9 22V12h6v10"/>
                         </svg>
                         Dashboard
+                    </div>
+                    <div class="nav-item" onclick="app.showView('logs')" data-view="logs">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+                            <path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/>
+                        </svg>
+                        Activity Log
                     </div>
                 </div>
                 <div class="nav-section">
@@ -492,20 +566,55 @@ def get_embedded_html():
                 </div>
             </header>
             <div class="content">
-                <div id="active-fork">
-                    <div class="active-fork-card">
-                        <div style="display: flex; align-items: center; justify-content: center; padding: 40px;">
-                            <div class="spinner"></div>
+                <!-- Dashboard View -->
+                <div id="view-dashboard" class="view active">
+                    <div id="active-fork">
+                        <div class="active-fork-card">
+                            <div style="display: flex; align-items: center; justify-content: center; padding: 40px;">
+                                <div class="spinner"></div>
+                            </div>
                         </div>
                     </div>
+                    <div class="section-header"><h2 class="section-title">Available Forks</h2></div>
+                    <div class="fork-grid" id="fork-list">
+                        <div class="empty-state"><div class="spinner"></div><p>Loading forks...</p></div>
+                    </div>
+                    <div class="templates-section">
+                        <div class="section-header"><h2 class="section-title">Popular Forks</h2></div>
+                        <div class="template-grid" id="template-list"></div>
+                    </div>
                 </div>
-                <div class="section-header"><h2 class="section-title">Available Forks</h2></div>
-                <div class="fork-grid" id="fork-list">
-                    <div class="empty-state"><div class="spinner"></div><p>Loading forks...</p></div>
-                </div>
-                <div class="templates-section">
-                    <div class="section-header"><h2 class="section-title">Popular Forks</h2></div>
-                    <div class="template-grid" id="template-list"></div>
+                <!-- Activity Log View -->
+                <div id="view-logs" class="view">
+                    <div class="logs-header">
+                        <div class="logs-filters">
+                            <select id="log-category" onchange="app.filterLogs()">
+                                <option value="">All Categories</option>
+                                <option value="startup">Startup</option>
+                                <option value="migration">Migration</option>
+                                <option value="switch">Switch</option>
+                                <option value="clone">Clone</option>
+                                <option value="update">Update</option>
+                                <option value="error">Errors</option>
+                            </select>
+                            <select id="log-level" onchange="app.filterLogs()">
+                                <option value="">All Levels</option>
+                                <option value="info">Info</option>
+                                <option value="warning">Warning</option>
+                                <option value="error">Error</option>
+                            </select>
+                            <button class="btn btn-secondary" onclick="app.refreshLogs()">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M23 4v6h-6M1 20v-6h6"/>
+                                    <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
+                                </svg>
+                                Refresh
+                            </button>
+                        </div>
+                    </div>
+                    <div class="logs-container" id="logs-container">
+                        <div class="empty-state"><div class="spinner"></div><p>Loading activity log...</p></div>
+                    </div>
                 </div>
             </div>
         </main>
@@ -548,6 +657,13 @@ EMBEDDED_JS = '''
         getStatus: function() { return this.get("/status"); },
         getHealth: function() { return this.get("/health"); },
         getTemplates: function() { return this.get("/templates"); },
+        getLogs: function(params) {
+            var query = [];
+            if (params.limit) query.push("limit=" + params.limit);
+            if (params.level) query.push("level=" + params.level);
+            if (params.category) query.push("category=" + params.category);
+            return this.get("/logs" + (query.length ? "?" + query.join("&") : ""));
+        },
         switchFork: function(fork) { return this.post("/switch", { fork: fork }); },
         updateFork: function(fork) { return this.post("/update", { fork: fork }); },
         cloneFork: function(data) { return this.post("/clone", data); },
@@ -664,6 +780,32 @@ EMBEDDED_JS = '''
             renderTemplates();
         }).catch(function(err) { console.error("Failed to fetch templates:", err); });
     }
+    function fetchLogs() {
+        var categoryEl = document.getElementById("log-category");
+        var levelEl = document.getElementById("log-level");
+        var container = document.getElementById("logs-container");
+        var params = { limit: 100 };
+        if (categoryEl && categoryEl.value) params.category = categoryEl.value;
+        if (levelEl && levelEl.value) params.level = levelEl.value;
+        api.getLogs(params).then(function(data) {
+            var entries = data.entries || [];
+            if (entries.length === 0) {
+                container.innerHTML = "<div class=\\"logs-empty\\"><p>No activity logs found</p></div>";
+                return;
+            }
+            var html = "";
+            for (var i = 0; i < entries.length; i++) {
+                var entry = entries[i];
+                var time = new Date(entry.timestamp);
+                var timeStr = time.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+                html += "<div class=\\"log-entry\\"><span class=\\"log-level " + (entry.level || "info") + "\\">" + escapeHtml(entry.level || "info") + "</span><span class=\\"log-time\\">" + timeStr + "</span><span class=\\"log-category\\">" + escapeHtml(entry.category || "system") + "</span><span class=\\"log-message\\">" + escapeHtml(entry.message) + "</span></div>";
+            }
+            container.innerHTML = html;
+        }).catch(function(err) {
+            console.error("Failed to fetch logs:", err);
+            container.innerHTML = "<div class=\\"logs-empty\\"><p>Failed to load activity logs</p></div>";
+        });
+    }
     function startPolling() { fetchStatus(); fetchTemplates(); state.pollInterval = setInterval(fetchStatus, 5000); }
     window.app = {
         switchFork: function(forkName) {
@@ -718,7 +860,24 @@ EMBEDDED_JS = '''
             if (!url) { toast.error("Please enter a repository URL"); return; }
             this.cloneFork({ url: url, branch: branch || undefined, name: name || undefined });
         },
-        toggleSidebar: function() { document.querySelector(".sidebar").classList.toggle("open"); }
+        toggleSidebar: function() { document.querySelector(".sidebar").classList.toggle("open"); },
+        showView: function(viewName) {
+            var views = document.querySelectorAll(".view");
+            var navItems = document.querySelectorAll(".nav-item[data-view]");
+            for (var i = 0; i < views.length; i++) { views[i].classList.remove("active"); }
+            for (var j = 0; j < navItems.length; j++) { navItems[j].classList.remove("active"); }
+            var targetView = document.getElementById("view-" + viewName);
+            if (targetView) targetView.classList.add("active");
+            var targetNav = document.querySelector(".nav-item[data-view=\\"" + viewName + "\\"]");
+            if (targetNav) targetNav.classList.add("active");
+            var titles = { dashboard: "Dashboard", logs: "Activity Log" };
+            document.querySelector(".page-title").textContent = titles[viewName] || viewName;
+            if (viewName === "logs") fetchLogs();
+            var sidebar = document.querySelector(".sidebar");
+            if (sidebar.classList.contains("open")) sidebar.classList.remove("open");
+        },
+        filterLogs: function() { fetchLogs(); },
+        refreshLogs: function() { fetchLogs(); toast.success("Logs refreshed"); }
     };
     document.addEventListener("DOMContentLoaded", function() {
         toast.init();
