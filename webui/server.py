@@ -124,11 +124,10 @@ CSP_HEADER = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src '
 
 # Import embedded UI (professional OpenPilot-style frontend)
 try:
-    from embedded_ui import get_embedded_html, VERSION as UI_VERSION
+    from embedded_ui import get_embedded_html
     USE_EMBEDDED_UI = True
 except ImportError:
     USE_EMBEDDED_UI = False
-    UI_VERSION = VERSION
 
 # Additional security headers (defense in depth)
 SECURITY_HEADERS = {
@@ -1020,7 +1019,7 @@ if USE_AIOHTTP:
         # Use embedded UI if available (professional OpenPilot-style frontend)
         if USE_EMBEDDED_UI:
             return web.Response(
-                text=get_embedded_html(),
+                text=get_embedded_html(VERSION),
                 content_type="text/html",
                 headers={
                     "Content-Security-Policy": CSP_HEADER,
@@ -1528,7 +1527,7 @@ if not USE_AIOHTTP:
             if self.path == "/":
                 # Use embedded UI if available (professional OpenPilot-style frontend)
                 if USE_EMBEDDED_UI:
-                    self.send_html(get_embedded_html())
+                    self.send_html(get_embedded_html(VERSION))
                 else:
                     index_path = STATIC_DIR / "index.html"
                     if index_path.exists():

@@ -4,8 +4,6 @@ Embedded Frontend for Fork Swap Web UI
 Professional OpenPilot-style UI with embedded HTML/CSS/JS
 """
 
-VERSION = "2.2.0"
-
 # Embedded CSS - OpenPilot Design System
 EMBEDDED_CSS = '''
 :root {
@@ -480,8 +478,12 @@ html, body {
 }
 '''
 
-def get_embedded_html():
-    """Generate the complete embedded HTML page."""
+def get_embedded_html(version: str = "0.0.0"):
+    """Generate the complete embedded HTML page.
+
+    Args:
+        version: Application version string from server.py
+    """
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -500,7 +502,7 @@ def get_embedded_html():
                 <div class="sidebar-logo">FS</div>
                 <div>
                     <div class="sidebar-title">Fork Swap</div>
-                    <div class="sidebar-version">v{VERSION}</div>
+                    <div class="sidebar-version">v{version}</div>
                 </div>
             </div>
             <nav class="sidebar-nav">
