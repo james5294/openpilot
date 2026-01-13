@@ -643,8 +643,15 @@ class ForkSwapService:
       cloudlog.error("ForkSwapService: Manual intervention required. Move /data/openpilot to /data/forks/<name>/openpilot and recreate symlink.")
       return
 
+    # Convert display format to directory format if needed
+    # "james5294/openpilot (forkswap)" -> "james5294-openpilot-forkswap"
+    fork_dir_name = current_fork
+    if "/" in current_fork or "(" in current_fork:
+      fork_dir_name = current_fork.replace("/", "-").replace(" (", "-").rstrip(")")
+      cloudlog.info("ForkSwapService: Converted fork name '%s' to directory format '%s'", current_fork, fork_dir_name)
+
     # Target location for the fork
-    fork_path = forks_dir / current_fork
+    fork_path = forks_dir / fork_dir_name
     fork_openpilot_path = fork_path / "openpilot"
 
     # Ensure forks directory exists
