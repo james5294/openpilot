@@ -36,7 +36,7 @@ except ImportError:
 # =============================================================================
 # Configuration
 # =============================================================================
-VERSION = "5.2.3"
+VERSION = "5.2.4"
 PORT = int(os.environ.get("FORKSWAP_PORT", "8888"))
 # Security: Bind to localhost by default; set FORKSWAP_BIND_ALL=1 to expose to network
 HOST = "0.0.0.0" if os.environ.get("FORKSWAP_BIND_ALL", "1") == "1" else "127.0.0.1"
@@ -509,15 +509,20 @@ KNOWN_FORKS = {
     "ajouatom/carern": "CarrotPilot",
 }
 
-def get_git_info(repo_path: Path) -> dict:
-    """Get git info (branch, remote URL, fork name) from a repository."""
+def get_git_info(repo_path: Path, check_updates: bool = False) -> dict:
+    """Get git info (branch, remote URL, fork name, commit info) from a repository."""
     info = {
         "branch": "unknown",
         "remote_url": "",
         "owner": "unknown",
         "repo": "unknown",
         "fork_name": "unknown",
-        "display_name": "unknown"
+        "display_name": "unknown",
+        "commit_hash": "unknown",
+        "commit_date": None,
+        "commit_message": "",
+        "has_updates": False,
+        "updates_checked": False
     }
 
     if not repo_path.exists() or not (repo_path / ".git").exists():
@@ -531,6 +536,30 @@ def get_git_info(repo_path: Path) -> dict:
         )
         if result.returncode == 0:
             info["branch"] = result.stdout.strip()
+
+        # Get commit hash (short)
+        result = subprocess.run(
+            ["git", "-C", str(repo_path), "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            info["commit_hash"] = result.stdout.strip().upper()
+
+        # Get commit date (ISO format)
+        result = subprocess.run(
+            ["git", "-C", str(repo_path), "log", "-1", "--format=%ci"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            info["commit_date"] = result.stdout.strip()
+
+        # Get commit message (first line)
+        result = subprocess.run(
+            ["git", "-C", str(repo_path), "log", "-1", "--format=%s"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            info["commit_message"] = result.stdout.strip()[:100]
 
         # Get remote URL
         result = subprocess.run(
@@ -567,6 +596,27 @@ def get_git_info(repo_path: Path) -> dict:
             info["display_name"] = f"openpilot ({info['branch']})"
         else:
             info["display_name"] = "unknown"
+
+        # Check for updates if requested (fetches from remote)
+        if check_updates and info["branch"] != "unknown":
+            try:
+                # Fetch latest from remote (quiet, no output)
+                subprocess.run(
+                    ["git", "-C", str(repo_path), "fetch", "origin", info["branch"]],
+                    capture_output=True, timeout=30
+                )
+                # Compare local HEAD with remote
+                result = subprocess.run(
+                    ["git", "-C", str(repo_path), "rev-list", "--count", f"HEAD..origin/{info['branch']}"],
+                    capture_output=True, text=True, timeout=5
+                )
+                if result.returncode == 0:
+                    behind_count = int(result.stdout.strip())
+                    info["has_updates"] = behind_count > 0
+                    info["updates_checked"] = True
+                    info["commits_behind"] = behind_count
+            except Exception:
+                pass  # Update check failed, leave defaults
 
     except Exception:
         pass
@@ -1305,8 +1355,18 @@ if USE_AIOHTTP:
 
     async def handle_status(request: web.Request) -> web.Response:
         """Return current system status."""
+        # Check if update check is requested (adds latency due to git fetch)
+        check_updates = request.query.get("check_updates", "").lower() == "true"
+
+        # Get active fork git details
+        openpilot_path = Path("/data/openpilot")
+        if openpilot_path.is_symlink():
+            openpilot_path = openpilot_path.resolve()
+        active_fork_details = get_git_info(openpilot_path, check_updates=check_updates)
+
         data = {
             "current_fork": get_current_fork(),
+            "active_fork_details": active_fork_details,
             "forks": get_fork_list(),
             "disk_free_gb": get_disk_free_gb(),
             "device": get_device_info(),
@@ -1821,9 +1881,19 @@ if not USE_AIOHTTP:
                     self.send_static(filename, content_type, is_binary)
                 else:
                     self.send_json({"error": "Not found"}, 404)
-            elif self.path == "/api/status":
+            elif self.path.startswith("/api/status"):
+                # Check for update check param
+                check_updates = "check_updates=true" in self.path.lower()
+
+                # Get active fork git details
+                openpilot_path = Path("/data/openpilot")
+                if openpilot_path.is_symlink():
+                    openpilot_path = openpilot_path.resolve()
+                active_fork_details = get_git_info(openpilot_path, check_updates=check_updates)
+
                 data = {
                     "current_fork": get_current_fork(),
+                    "active_fork_details": active_fork_details,
                     "forks": get_fork_list(),
                     "disk_free_gb": get_disk_free_gb(),
                     "device": get_device_info(),

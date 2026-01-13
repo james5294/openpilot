@@ -1,5 +1,5 @@
 {
-  "version": "5.2.3",
+  "version": "5.2.4",
   "description": "ForkSwap overlay - Modular fork management system with Web UI",
   "compatibility": "Works with ANY openpilot fork (comma official, FrogPilot, dragonpilot, etc.)",
   "features": [

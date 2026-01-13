@@ -219,6 +219,18 @@ html, body {
     border-radius: 20px;
 }
 .active-fork-actions { display: flex; gap: 8px; }
+.commit-info { background: rgba(0,0,0,0.2); border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; }
+.commit-row { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.commit-row + .commit-row { margin-top: 8px; }
+.commit-label { color: var(--op-text-muted); min-width: 60px; }
+.commit-hash { font-family: monospace; color: var(--op-accent); font-weight: 600; }
+.commit-date { color: var(--op-text-secondary); }
+.update-badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; margin-left: 8px; }
+.update-available { background: rgba(255,180,0,0.2); color: #ffb400; }
+.update-current { background: rgba(23,134,67,0.2); color: var(--op-accent); }
+.btn-xs { padding: 4px 8px; font-size: 11px; }
+.btn-ghost { background: transparent; border: none; color: var(--op-text-secondary); cursor: pointer; }
+.btn-ghost:hover { color: var(--op-accent); }
 .fork-meta { display: flex; gap: 24px; padding-top: 16px; border-top: 1px solid var(--op-border); }
 .fork-meta-item { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--op-text-secondary); }
 .fork-meta-item svg { width: 16px; height: 16px; opacity: 0.7; }
@@ -652,11 +664,11 @@ def get_embedded_html(version: str = "0.0.0"):
 EMBEDDED_JS = '''
 (function() {
     "use strict";
-    var state = { currentFork: null, forks: [], templates: {}, diskFreeGb: 0, device: "comma device", operationActive: false, pollInterval: null };
+    var state = { currentFork: null, forks: [], templates: {}, diskFreeGb: 0, device: "comma device", operationActive: false, pollInterval: null, activeForkDetails: {} };
     var api = {
         get: function(endpoint) { return fetch("/api" + endpoint).then(function(res) { if (!res.ok) throw new Error("API error: " + res.status); return res.json(); }); },
         post: function(endpoint, data) { return fetch("/api" + endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data || {}) }).then(function(res) { return res.json(); }); },
-        getStatus: function() { return this.get("/status"); },
+        getStatus: function(queryStr) { return this.get("/status" + (queryStr || "")); },
         getHealth: function() { return this.get("/health"); },
         getTemplates: function() { return this.get("/templates"); },
         getLogs: function(params) {
@@ -722,13 +734,33 @@ EMBEDDED_JS = '''
         return "🔀";
     }
     function escapeHtml(str) { if (!str) return ""; var div = document.createElement("div"); div.textContent = str; return div.innerHTML; }
+    function formatDate(dateStr) {
+        if (!dateStr) return "Unknown";
+        try {
+            var d = new Date(dateStr);
+            var now = new Date();
+            var diff = Math.floor((now - d) / 1000);
+            if (diff < 60) return "Just now";
+            if (diff < 3600) return Math.floor(diff / 60) + "m ago";
+            if (diff < 86400) return Math.floor(diff / 3600) + "h ago";
+            if (diff < 604800) return Math.floor(diff / 86400) + "d ago";
+            return d.toLocaleDateString();
+        } catch (e) { return dateStr; }
+    }
     function renderActiveFork() {
         var container = document.getElementById("active-fork");
         var fork = null;
         for (var i = 0; i < state.forks.length; i++) { if (state.forks[i].active) { fork = state.forks[i]; break; } }
         if (!fork) { container.innerHTML = "<div class=\\"empty-state\\"><svg viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M12 2v20M2 12h20\\"/></svg><h3>No Active Fork</h3><p>Clone or switch to a fork to get started</p></div>"; return; }
         var isOverlay = fork.type === "overlay";
-        container.innerHTML = "<div class=\\"active-fork-card\\"><div class=\\"active-fork-header\\"><div class=\\"active-fork-info\\"><div class=\\"active-fork-icon\\">" + getForkIcon(fork) + "</div><div class=\\"active-fork-details\\"><h2>" + escapeHtml(fork.name) + "</h2><div class=\\"branch\\"><svg width=\\"14\\" height=\\"14\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zM6 21a3 3 0 100-6 3 3 0 000 6zM18 9a9 9 0 01-9 9\\"/></svg>" + escapeHtml(fork.branch || "unknown") + "</div></div></div><div class=\\"active-badge\\"><span class=\\"device-status\\"></span>Active</div></div><div class=\\"active-fork-actions\\"><button class=\\"btn btn-primary\\" onclick=\\"app.updateCurrentFork()\\"><svg width=\\"16\\" height=\\"16\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M23 4v6h-6M1 20v-6h6\\"/><path d=\\"M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15\\"/></svg>Update</button><button class=\\"btn btn-secondary\\" onclick=\\"app.showRebootConfirm()\\"><svg width=\\"16\\" height=\\"16\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M1 4v6h6M23 20v-6h-6\\"/><path d=\\"M20.49 9A9 9 0 005.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 013.51 15\\"/></svg>Reboot</button></div><div class=\\"fork-meta\\"><div class=\\"fork-meta-item\\"><svg viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z\\"/></svg>" + escapeHtml(fork.path || "/data/openpilot") + "</div><div class=\\"fork-meta-item\\"><svg viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><circle cx=\\"12\\" cy=\\"12\\" r=\\"10\\"/><path d=\\"M12 6v6l4 2\\"/></svg>" + (isOverlay ? "Overlay Installation" : "Managed Fork") + "</div></div></div>";
+        var details = state.activeForkDetails || {};
+        var commitHash = details.commit_hash || "unknown";
+        var commitDate = formatDate(details.commit_date);
+        var hasUpdates = details.has_updates;
+        var updatesChecked = details.updates_checked;
+        var updateBadge = "";
+        if (updatesChecked) { updateBadge = hasUpdates ? "<span class=\\"update-badge update-available\\">Update Available</span>" : "<span class=\\"update-badge update-current\\">Up to Date</span>"; }
+        container.innerHTML = "<div class=\\"active-fork-card\\"><div class=\\"active-fork-header\\"><div class=\\"active-fork-info\\"><div class=\\"active-fork-icon\\">" + getForkIcon(fork) + "</div><div class=\\"active-fork-details\\"><h2>" + escapeHtml(fork.name) + "</h2><div class=\\"branch\\"><svg width=\\"14\\" height=\\"14\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zM6 21a3 3 0 100-6 3 3 0 000 6zM18 9a9 9 0 01-9 9\\"/></svg>" + escapeHtml(fork.branch || "unknown") + "</div></div></div><div class=\\"active-badge\\"><span class=\\"device-status\\"></span>ACTIVE</div></div><div class=\\"commit-info\\"><div class=\\"commit-row\\"><span class=\\"commit-label\\">Commit:</span><span class=\\"commit-hash\\">" + escapeHtml(commitHash) + "</span>" + updateBadge + "</div><div class=\\"commit-row\\"><span class=\\"commit-label\\">Updated:</span><span class=\\"commit-date\\">" + escapeHtml(commitDate) + "</span><button class=\\"btn btn-xs btn-ghost\\" onclick=\\"app.checkForUpdates()\\" title=\\"Check for updates\\"><svg width=\\"14\\" height=\\"14\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M23 4v6h-6M1 20v-6h6\\"/><path d=\\"M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15\\"/></svg></button></div></div><div class=\\"active-fork-actions\\"><button class=\\"btn btn-primary\\" onclick=\\"app.updateCurrentFork()\\"><svg width=\\"16\\" height=\\"16\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M23 4v6h-6M1 20v-6h6\\"/><path d=\\"M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15\\"/></svg>Update</button><button class=\\"btn btn-secondary\\" onclick=\\"app.showRebootConfirm()\\"><svg width=\\"16\\" height=\\"16\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M1 4v6h6M23 20v-6h-6\\"/><path d=\\"M20.49 9A9 9 0 005.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 013.51 15\\"/></svg>Reboot</button></div><div class=\\"fork-meta\\"><div class=\\"fork-meta-item\\"><svg viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z\\"/></svg>" + escapeHtml(fork.path || "/data/openpilot") + "</div><div class=\\"fork-meta-item\\"><svg viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><circle cx=\\"12\\" cy=\\"12\\" r=\\"10\\"/><path d=\\"M12 6v6l4 2\\"/></svg>" + (isOverlay ? "Overlay Installation" : "Managed Fork") + "</div></div></div>";
     }
     function renderForkList() {
         var container = document.getElementById("fork-list");
@@ -764,12 +796,14 @@ EMBEDDED_JS = '''
             if (diskText) diskText.textContent = state.diskFreeGb.toFixed(1) + " GB free";
         }
     }
-    function fetchStatus() {
-        api.getStatus().then(function(data) {
+    function fetchStatus(checkUpdates) {
+        var url = checkUpdates ? "?check_updates=true" : "";
+        api.getStatus(url).then(function(data) {
             state.currentFork = data.current_fork;
             state.forks = data.forks || [];
             state.diskFreeGb = data.disk_free_gb || 0;
             state.device = data.device || "comma device";
+            state.activeForkDetails = data.active_fork_details || {};
             document.getElementById("device-name").textContent = state.device;
             renderActiveFork();
             renderForkList();
@@ -840,6 +874,10 @@ EMBEDDED_JS = '''
             modal.close();
             operation.show("Rebooting", "Device will restart in a few seconds...");
             api.reboot().then(function() { toast.success("Rebooting device..."); }).catch(function(err) { operation.hide(); toast.error("Failed to reboot"); });
+        },
+        checkForUpdates: function() {
+            toast.info("Checking for updates...");
+            fetchStatus(true);
         },
         showSwitchConfirm: function(forkName) {
             modal.open("Switch Fork", "<p>Are you sure you want to switch to <strong>" + escapeHtml(forkName) + "</strong>?</p><p style=\\"color: var(--op-text-muted); margin-top: 12px;\\">The device will reboot after switching.</p>", [{ label: "Cancel", onclick: "modal.close()" }, { label: "Switch & Reboot", cls: "btn-primary", onclick: "app.switchFork(\\"" + escapeHtml(forkName) + "\\")" }]);
