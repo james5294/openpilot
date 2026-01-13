@@ -56,14 +56,6 @@ def run_forkswap_service(started, params, CP: car.CarParams, classic_model, tiny
   except Exception:
     return True
 
-def run_forkswap_webui(started, params, CP: car.CarParams, classic_model, tinygrad_model, frogpilot_toggles) -> bool:
-  # Web UI runs always (offroad and onroad) for fork management
-  # Allow disabling via param for diagnostics
-  try:
-    return not params.get_bool("ForkSwapWebUIDisabled")
-  except Exception:
-    return True
-
 def run_classic_modeld(started, params, CP: car.CarParams, classic_model, tinygrad_model, frogpilot_toggles) -> bool:
   return started and classic_model
 
@@ -120,7 +112,6 @@ procs = [
   PythonProcess("uploader", "system.loggerd.uploader", allow_uploads),
   PythonProcess("statsd", "system.statsd", allow_logging),
   PythonProcess("forkswapd", "selfdrive.forkswap.service", run_forkswap_service),
-  PythonProcess("forkswap_webui", "selfdrive.forkswap.webui", run_forkswap_webui),
 
   # debug procs
   NativeProcess("bridge", "cereal/messaging", ["./bridge"], notcar),
