@@ -725,7 +725,7 @@ EMBEDDED_JS = '''
             m.querySelector(".modal-header h3").textContent = title;
             m.querySelector(".modal-body").innerHTML = content;
             var footer = m.querySelector(".modal-footer");
-            footer.innerHTML = (buttons || []).map(function(btn) { return '<button class="btn ' + (btn.cls || 'btn-secondary') + '" onclick="' + btn.onclick + '">' + btn.label + '</button>'; }).join("");
+            footer.innerHTML = (buttons || []).map(function(btn) { return `<button class="btn ${btn.cls || "btn-secondary"}" onclick="${btn.onclick}">${btn.label}</button>`; }).join("");
             this.overlay.classList.add("active");
             document.body.style.overflow = "hidden";
         },
