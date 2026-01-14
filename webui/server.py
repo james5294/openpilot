@@ -655,6 +655,93 @@ def get_current_fork() -> str:
 
     return "unknown"
 
+# =============================================================================
+# AGNOS Version Detection
+# =============================================================================
+_device_agnos_version_cache: str | None = None
+
+def get_device_agnos_version() -> str:
+    """
+    Get the current AGNOS version running on the device.
+    Reads from /VERSION file. Result is cached for the session.
+    """
+    global _device_agnos_version_cache
+
+    if _device_agnos_version_cache is not None:
+        return _device_agnos_version_cache
+
+    version_file = Path("/VERSION")
+    try:
+        if version_file.exists():
+            version = version_file.read_text().strip()
+            _device_agnos_version_cache = version
+            logger.info(f"Device AGNOS version: {version}")
+            return version
+    except Exception as e:
+        logger.warning(f"Failed to read device AGNOS version: {e}")
+
+    return "unknown"
+
+def get_fork_agnos_version(fork_dir: Path) -> str:
+    """
+    Extract AGNOS_VERSION from a fork's launch_env.sh file.
+
+    Args:
+        fork_dir: Path to the fork directory (e.g., /data/forks/frogpilot)
+                  or the openpilot directory within it
+
+    Returns:
+        AGNOS version string (e.g., "10.1", "16") or "unknown" if not found
+    """
+    # Handle both fork_dir and fork_dir/openpilot
+    if fork_dir.name == "openpilot":
+        launch_env = fork_dir / "launch_env.sh"
+    else:
+        launch_env = fork_dir / "openpilot" / "launch_env.sh"
+
+    try:
+        if not launch_env.exists():
+            logger.debug(f"No launch_env.sh found at {launch_env}")
+            return "unknown"
+
+        content = launch_env.read_text()
+
+        # Parse: export AGNOS_VERSION="10.1" or AGNOS_VERSION="16"
+        # Handle various formats with or without export, single/double quotes
+        import re
+        patterns = [
+            r'export\s+AGNOS_VERSION\s*=\s*["\']([^"\']+)["\']',  # export AGNOS_VERSION="10.1"
+            r'export\s+AGNOS_VERSION\s*=\s*(\S+)',  # export AGNOS_VERSION=10.1
+            r'AGNOS_VERSION\s*=\s*["\']([^"\']+)["\']',  # AGNOS_VERSION="10.1"
+            r'AGNOS_VERSION\s*=\s*(\S+)',  # AGNOS_VERSION=10.1
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, content)
+            if match:
+                version = match.group(1).strip()
+                logger.debug(f"Found AGNOS version {version} in {launch_env}")
+                return version
+
+        logger.debug(f"No AGNOS_VERSION found in {launch_env}")
+        return "unknown"
+
+    except Exception as e:
+        logger.warning(f"Failed to read AGNOS version from {launch_env}: {e}")
+        return "unknown"
+
+def is_agnos_compatible(fork_version: str) -> bool:
+    """
+    Check if a fork's AGNOS version is compatible with the device.
+    Compatible means same version = instant switch, different = requires update.
+    """
+    device_version = get_device_agnos_version()
+
+    if device_version == "unknown" or fork_version == "unknown":
+        return True  # Assume compatible if we can't determine
+
+    return device_version == fork_version
+
 def detect_overlay_installation() -> dict | None:
     """
     Detect if there's an overlay installation at /data/openpilot that should be migrated.
@@ -687,11 +774,15 @@ def get_fork_list() -> list[dict]:
     forks = []
     current = get_current_fork()
 
+    # Get device AGNOS version for compatibility checks
+    device_agnos = get_device_agnos_version()
+
     # First, check for overlay installation at /data/openpilot
     openpilot_path = Path("/data/openpilot")
     if openpilot_path.exists() and not openpilot_path.is_symlink():
         # This is a direct installation (not managed by fork swap symlinks)
         git_info = get_git_info(openpilot_path)
+        fork_agnos = get_fork_agnos_version(openpilot_path)
 
         forks.append({
             "name": git_info["display_name"],
@@ -701,6 +792,8 @@ def get_fork_list() -> list[dict]:
             "active": True,
             "path": str(openpilot_path),
             "install_type": "direct",  # Not symlink-managed
+            "agnos_version": fork_agnos,
+            "agnos_compatible": is_agnos_compatible(fork_agnos),
         })
 
     # Then, scan /data/forks for fork-managed installations
@@ -728,6 +821,9 @@ def get_fork_list() -> list[dict]:
             if display_name == "unknown":
                 display_name = fork_dir.name
 
+            # Get AGNOS version from fork's launch_env.sh
+            fork_agnos = get_fork_agnos_version(fork_dir)
+
             forks.append({
                 "name": display_name,
                 "directory": fork_dir.name,  # Original directory name for switching
@@ -737,6 +833,8 @@ def get_fork_list() -> list[dict]:
                 "active": is_active,
                 "path": str(openpilot_dir),
                 "install_type": "symlink",  # Managed via /data/forks symlinks
+                "agnos_version": fork_agnos,
+                "agnos_compatible": is_agnos_compatible(fork_agnos),
             })
 
     return forks
@@ -1293,6 +1391,104 @@ def sync_webui_to_persistent() -> bool:
         return False
 
 
+# =============================================================================
+# Persistent WebUI Service Installation
+# =============================================================================
+
+WEBUI_SERVICE_CONTENT = """[Unit]
+Description=Fork Swap WebUI - Persistent Service
+After=network.target
+Documentation=https://github.com/openpilot
+
+[Service]
+Type=simple
+User=comma
+Group=comma
+WorkingDirectory=/data/forkswap/webui
+ExecStart=/usr/bin/python3 /data/forkswap/webui/server.py --persistent
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+Environment=PYTHONUNBUFFERED=1
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/data
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+def install_persistent_webui_service() -> bool:
+    """
+    Install the persistent WebUI systemd service.
+    This allows the WebUI to run even when the active fork doesn't include it.
+
+    Returns True if service was installed or updated.
+    """
+    service_path = Path("/etc/systemd/system/forkswap-webui.service")
+    persistent_webui = Path("/data/forkswap/webui/server.py")
+
+    # Don't install if persistent webui doesn't exist yet
+    if not persistent_webui.exists():
+        logger.debug("Persistent WebUI not yet synced, skipping service install")
+        return False
+
+    try:
+        # Check if service file needs updating
+        needs_update = False
+        if not service_path.exists():
+            needs_update = True
+            logger.info("Installing persistent WebUI service...")
+        else:
+            current_content = service_path.read_text()
+            if current_content.strip() != WEBUI_SERVICE_CONTENT.strip():
+                needs_update = True
+                logger.info("Updating persistent WebUI service...")
+
+        if not needs_update:
+            return False
+
+        # Write service file (requires sudo)
+        import subprocess
+
+        # Write to temp location first
+        temp_service = Path("/tmp/forkswap-webui.service")
+        temp_service.write_text(WEBUI_SERVICE_CONTENT)
+
+        # Copy to systemd directory
+        result = subprocess.run(
+            ["sudo", "cp", str(temp_service), str(service_path)],
+            capture_output=True, text=True, timeout=30
+        )
+        if result.returncode != 0:
+            # Handle read-only filesystem (common on AGNOS)
+            if "Read-only file system" in result.stderr:
+                logger.debug("Root filesystem is read-only - systemd service installation skipped")
+                logger.debug("WebUI is synced to /data/forkswap/webui/ for manual startup if needed")
+            else:
+                logger.warning(f"Failed to copy service file: {result.stderr}")
+            return False
+
+        # Set permissions
+        subprocess.run(["sudo", "chmod", "644", str(service_path)], timeout=10)
+
+        # Reload systemd
+        subprocess.run(["sudo", "systemctl", "daemon-reload"], timeout=30)
+
+        # Enable service (but don't start - let it start on next boot or manually)
+        subprocess.run(["sudo", "systemctl", "enable", "forkswap-webui.service"], timeout=30)
+
+        logger.info("Persistent WebUI service installed and enabled")
+        return True
+
+    except Exception as e:
+        logger.warning(f"Failed to install persistent WebUI service: {e}")
+        return False
+
+
 def run_startup_selfhealing() -> dict:
     """
     Run self-healing checks and fixes on startup.
@@ -1305,6 +1501,7 @@ def run_startup_selfhealing() -> dict:
         "script_installed": False,
         "lock_cleaned": False,
         "webui_synced": False,
+        "service_installed": False,
         "migration": None,
         "errors": []
     }
@@ -1323,7 +1520,11 @@ def run_startup_selfhealing() -> dict:
     if sync_webui_to_persistent():
         results["webui_synced"] = True
 
-    # 4. Auto-migrate direct installations to /data/forks/ structure
+    # 4. Install persistent WebUI systemd service
+    if install_persistent_webui_service():
+        results["service_installed"] = True
+
+    # 5. Auto-migrate direct installations to /data/forks/ structure
     # This enables proper fork switching with symlinks
     migration_result = migrate_direct_installation()
     if migration_result:
@@ -1534,6 +1735,7 @@ if USE_AIOHTTP:
             "forks": get_fork_list(),
             "disk_free_gb": get_disk_free_gb(),
             "device": get_device_info(),
+            "device_agnos_version": get_device_agnos_version(),
         }
         return json_response(data)
 
@@ -2063,6 +2265,7 @@ if not USE_AIOHTTP:
                     "forks": get_fork_list(),
                     "disk_free_gb": get_disk_free_gb(),
                     "device": get_device_info(),
+                    "device_agnos_version": get_device_agnos_version(),
                 }
                 self.send_json(data)
             elif self.path == "/api/templates":
@@ -2324,8 +2527,28 @@ def handle_shutdown(signum, frame):
 # =============================================================================
 # Main Entry Point
 # =============================================================================
+def is_port_in_use(port: int = PORT) -> bool:
+    """Check if the specified port is already in use."""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        return sock.connect_ex(('127.0.0.1', port)) == 0
+
+
 def main():
     """Run the web server."""
+    import sys
+
+    # Check for --persistent flag (used by systemd service)
+    persistent_mode = "--persistent" in sys.argv
+
+    if persistent_mode:
+        logger.info("Running in persistent mode (systemd service)")
+        # In persistent mode, check if another WebUI is already running on the port
+        # This prevents conflicts with fork-specific WebUIs
+        if is_port_in_use(PORT):
+            logger.info(f"Port {PORT} already in use - another WebUI is running. Exiting gracefully.")
+            sys.exit(0)
+
     # Run startup verification
     issues = verify_environment()
     if issues:

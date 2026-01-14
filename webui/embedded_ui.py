@@ -172,6 +172,8 @@ html, body {
 .btn-secondary:hover { background: var(--op-bg-hover); border-color: var(--op-border-hover); }
 .btn-danger { background: var(--op-danger); color: white; }
 .btn-danger:hover { background: var(--op-danger-hover); }
+.btn-warning { background: #ff8c00; color: white; }
+.btn-warning:hover { background: #e67e00; }
 .btn-sm { padding: 6px 12px; font-size: 12px; }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none !important; }
 .content { flex: 1; padding: 24px; }
@@ -228,6 +230,13 @@ html, body {
 .update-badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; margin-left: 8px; }
 .update-available { background: rgba(255,180,0,0.2); color: #ffb400; }
 .update-current { background: rgba(23,134,67,0.2); color: var(--op-accent); }
+.agnos-badge { font-size: 10px; padding: 2px 6px; border-radius: 8px; margin-left: 6px; font-weight: 600; white-space: nowrap; }
+.agnos-compatible { background: rgba(23,134,67,0.15); color: var(--op-accent); }
+.agnos-incompatible { background: rgba(255,140,0,0.2); color: #ff8c00; }
+.agnos-unknown { background: rgba(128,128,128,0.2); color: #888; }
+.agnos-header { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--op-text-secondary); }
+.agnos-header svg { width: 14px; height: 14px; opacity: 0.7; }
+.agnos-version-text { font-family: monospace; font-weight: 600; color: var(--op-text-primary); }
 .btn-xs { padding: 4px 8px; font-size: 11px; }
 .btn-ghost { background: transparent; border: none; color: var(--op-text-secondary); cursor: pointer; }
 .btn-ghost:hover { color: var(--op-accent); }
@@ -557,6 +566,10 @@ def get_embedded_html(version: str = "0.0.0"):
                     <span class="device-status"></span>
                     <span class="device-name" id="device-name">comma device</span>
                 </div>
+                <div class="agnos-header" id="agnos-info">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+                    <span id="device-agnos-version">AGNOS --</span>
+                </div>
             </div>
         </aside>
         <main class="main-content">
@@ -664,7 +677,7 @@ def get_embedded_html(version: str = "0.0.0"):
 EMBEDDED_JS = '''
 (function() {
     "use strict";
-    var state = { currentFork: null, forks: [], templates: {}, diskFreeGb: 0, device: "comma device", operationActive: false, pollInterval: null, activeForkDetails: {} };
+    var state = { currentFork: null, forks: [], templates: {}, diskFreeGb: 0, device: "comma device", operationActive: false, pollInterval: null, activeForkDetails: {}, deviceAgnosVersion: "unknown" };
     var api = {
         get: function(endpoint) { return fetch("/api" + endpoint).then(function(res) { if (!res.ok) throw new Error("API error: " + res.status); return res.json(); }); },
         post: function(endpoint, data) { return fetch("/api" + endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data || {}) }).then(function(res) { return res.json(); }); },
@@ -712,7 +725,7 @@ EMBEDDED_JS = '''
             m.querySelector(".modal-header h3").textContent = title;
             m.querySelector(".modal-body").innerHTML = content;
             var footer = m.querySelector(".modal-footer");
-            footer.innerHTML = (buttons || []).map(function(btn) { return "<button class=\\"btn " + (btn.cls || "btn-secondary") + "\\" onclick=\\"" + btn.onclick + "\\">" + btn.label + "</button>"; }).join("");
+            footer.innerHTML = (buttons || []).map(function(btn) { return '<button class="btn ' + (btn.cls || 'btn-secondary') + '" onclick="' + btn.onclick + '">' + btn.label + '</button>'; }).join("");
             this.overlay.classList.add("active");
             document.body.style.overflow = "hidden";
         },
@@ -763,7 +776,7 @@ EMBEDDED_JS = '''
         var updatesChecked = details.updates_checked;
         var updateBadge = "";
         if (updatesChecked) { updateBadge = hasUpdates ? "<span class=\\"update-badge update-available\\">Update Available</span>" : "<span class=\\"update-badge update-current\\">Up to Date</span>"; }
-        container.innerHTML = "<div class=\\"active-fork-card\\"><div class=\\"active-fork-header\\"><div class=\\"active-fork-info\\"><div class=\\"active-fork-icon\\">" + getForkIcon(fork) + "</div><div class=\\"active-fork-details\\"><h2>" + escapeHtml(fork.name) + "</h2><div class=\\"branch\\"><svg width=\\"14\\" height=\\"14\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zM6 21a3 3 0 100-6 3 3 0 000 6zM18 9a9 9 0 01-9 9\\"/></svg>" + escapeHtml(fork.branch || "unknown") + "</div></div></div><div class=\\"active-badge\\"><span class=\\"device-status\\"></span>ACTIVE</div></div><div class=\\"commit-info\\"><div class=\\"commit-row\\"><span class=\\"commit-label\\">Commit:</span><span class=\\"commit-hash\\">" + escapeHtml(commitHash) + "</span>" + updateBadge + "</div><div class=\\"commit-row\\"><span class=\\"commit-label\\">Updated:</span><span class=\\"commit-date\\">" + escapeHtml(commitDate) + "</span><button class=\\"btn btn-xs btn-ghost\\" onclick=\\"app.checkForUpdates()\\" title=\\"Check for updates\\"><svg width=\\"14\\" height=\\"14\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M23 4v6h-6M1 20v-6h6\\"/><path d=\\"M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15\\"/></svg></button></div></div><div class=\\"active-fork-actions\\"><button class=\\"btn btn-primary\\" onclick=\\"app.updateCurrentFork()\\"><svg width=\\"16\\" height=\\"16\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M23 4v6h-6M1 20v-6h6\\"/><path d=\\"M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15\\"/></svg>Update</button><button class=\\"btn btn-secondary\\" onclick=\\"app.showRebootConfirm()\\"><svg width=\\"16\\" height=\\"16\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M1 4v6h6M23 20v-6h-6\\"/><path d=\\"M20.49 9A9 9 0 005.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 013.51 15\\"/></svg>Reboot</button></div><div class=\\"fork-meta\\"><div class=\\"fork-meta-item\\"><svg viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z\\"/></svg>" + escapeHtml(fork.path || "/data/openpilot") + "</div><div class=\\"fork-meta-item\\"><svg viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><circle cx=\\"12\\" cy=\\"12\\" r=\\"10\\"/><path d=\\"M12 6v6l4 2\\"/></svg>" + (isOverlay ? "Overlay Installation" : "Managed Fork") + "</div></div></div>";
+        container.innerHTML = "<div class=\\"active-fork-card\\"><div class=\\"active-fork-header\\"><div class=\\"active-fork-info\\"><div class=\\"active-fork-icon\\">" + getForkIcon(fork) + "</div><div class=\\"active-fork-details\\"><h2>" + escapeHtml(fork.name) + "</h2><div class=\\"branch\\"><svg width=\\"14\\" height=\\"14\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zM6 21a3 3 0 100-6 3 3 0 000 6zM18 9a9 9 0 01-9 9\\"/></svg>" + escapeHtml(fork.branch || "unknown") + "</div></div></div><div class=\\"active-badge\\"><span class=\\"device-status\\"></span>ACTIVE</div></div><div class=\\"commit-info\\"><div class=\\"commit-row\\"><span class=\\"commit-label\\">Commit:</span><span class=\\"commit-hash\\">" + escapeHtml(commitHash) + "</span>" + updateBadge + "</div><div class=\\"commit-row\\"><span class=\\"commit-label\\">Updated:</span><span class=\\"commit-date\\">" + escapeHtml(commitDate) + "</span><button class=\\"btn btn-xs btn-ghost\\" onclick=\\"app.checkForUpdates()\\" title=\\"Check for updates\\"><svg width=\\"14\\" height=\\"14\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M23 4v6h-6M1 20v-6h6\\"/><path d=\\"M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15\\"/></svg></button></div></div><div class=\\"active-fork-actions\\"><button class=\\"btn btn-primary\\" onclick=\\"app.updateCurrentFork()\\"><svg width=\\"16\\" height=\\"16\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M23 4v6h-6M1 20v-6h6\\"/><path d=\\"M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15\\"/></svg>Update</button><button class=\\"btn btn-secondary\\" onclick=\\"app.showRebootConfirm()\\"><svg width=\\"16\\" height=\\"16\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M1 4v6h6M23 20v-6h-6\\"/><path d=\\"M20.49 9A9 9 0 005.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 013.51 15\\"/></svg>Reboot</button></div><div class=\\"fork-meta\\"><div class=\\"fork-meta-item\\"><svg viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z\\"/></svg>" + escapeHtml(fork.path || "/data/openpilot") + "</div><div class=\\"fork-meta-item\\"><svg viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><circle cx=\\"12\\" cy=\\"12\\" r=\\"10\\"/><path d=\\"M12 6v6l4 2\\"/></svg>" + (isOverlay ? "Overlay Installation" : "Managed Fork") + "</div><div class=\\"fork-meta-item\\">" + getAgnosBadge(fork) + "</div></div></div>";
     }
     function renderForkList() {
         var container = document.getElementById("fork-list");
@@ -773,7 +786,7 @@ EMBEDDED_JS = '''
         for (var j = 0; j < inactiveForks.length; j++) {
             var fork = inactiveForks[j];
             var forkId = escapeHtml(fork.directory || fork.name);
-            html += "<div class=\\"fork-card\\" onclick=\\"app.showSwitchConfirm('" + forkId + "')\\"><div class=\\"fork-card-header\\"><div class=\\"fork-card-icon\\">" + getForkIcon(fork) + "</div><div class=\\"fork-card-title\\"><h3>" + escapeHtml(fork.name) + "</h3><span class=\\"type\\">" + (fork.type === "overlay" ? "Overlay" : "Managed") + "</span></div></div><div class=\\"fork-card-body\\">Branch: " + escapeHtml(fork.branch || "unknown") + "</div><div class=\\"fork-card-footer\\"><button class=\\"btn btn-sm btn-primary\\" onclick=\\"event.stopPropagation(); app.showSwitchConfirm('" + forkId + "')\\">Switch</button></div></div>";
+            html += "<div class=\\"fork-card\\" onclick=\\"app.showSwitchConfirm('" + forkId + "')\\"><div class=\\"fork-card-header\\"><div class=\\"fork-card-icon\\">" + getForkIcon(fork) + "</div><div class=\\"fork-card-title\\"><h3>" + escapeHtml(fork.name) + "</h3><span class=\\"type\\">" + (fork.type === "overlay" ? "Overlay" : "Managed") + "</span></div></div><div class=\\"fork-card-body\\"><div>Branch: " + escapeHtml(fork.branch || "unknown") + "</div><div style=\\"margin-top:4px\\">" + getAgnosBadge(fork) + "</div></div><div class=\\"fork-card-footer\\"><button class=\\"btn btn-sm btn-primary\\" onclick=\\"event.stopPropagation(); app.showSwitchConfirm('" + forkId + "')\\">Switch</button></div></div>";
         }
         html += "<div class=\\"clone-card\\" onclick=\\"app.showCloneModal()\\"><svg viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M12 5v14M5 12h14\\"/></svg><span>Clone New Fork</span></div>";
         container.innerHTML = html;
@@ -799,6 +812,24 @@ EMBEDDED_JS = '''
             if (diskText) diskText.textContent = state.diskFreeGb.toFixed(1) + " GB free";
         }
     }
+    function updateAgnosDisplay() {
+        var agnosEl = document.getElementById("device-agnos-version");
+        if (agnosEl && state.deviceAgnosVersion) {
+            agnosEl.textContent = "AGNOS " + state.deviceAgnosVersion;
+        }
+    }
+    function getAgnosBadge(fork) {
+        var version = fork.agnos_version || "unknown";
+        var compatible = fork.agnos_compatible !== false;
+        if (version === "unknown") {
+            return "<span class=\\"agnos-badge agnos-unknown\\">AGNOS ?</span>";
+        }
+        if (compatible) {
+            return "<span class=\\"agnos-badge agnos-compatible\\" title=\\"Same AGNOS version - instant switch\\">AGNOS " + escapeHtml(version) + "</span>";
+        } else {
+            return "<span class=\\"agnos-badge agnos-incompatible\\" title=\\"Requires AGNOS update (~15-20 min)\\">AGNOS " + escapeHtml(version) + "</span>";
+        }
+    }
     function fetchStatus(checkUpdates) {
         var url = checkUpdates ? "?check_updates=true" : "";
         api.getStatus(url).then(function(data) {
@@ -807,7 +838,9 @@ EMBEDDED_JS = '''
             state.diskFreeGb = data.disk_free_gb || 0;
             state.device = data.device || "comma device";
             state.activeForkDetails = data.active_fork_details || {};
+            state.deviceAgnosVersion = data.device_agnos_version || "unknown";
             document.getElementById("device-name").textContent = state.device;
+            updateAgnosDisplay();
             renderActiveFork();
             renderForkList();
             updateDiskInfo();
@@ -883,7 +916,20 @@ EMBEDDED_JS = '''
             fetchStatus(true);
         },
         showSwitchConfirm: function(forkName) {
-            modal.open("Switch Fork", "<p>Are you sure you want to switch to <strong>" + escapeHtml(forkName) + "</strong>?</p><p style=\\"color: var(--op-text-muted); margin-top: 12px;\\">The device will reboot after switching.</p>", [{ label: "Cancel", onclick: "modal.close()" }, { label: "Switch & Reboot", cls: "btn-primary", onclick: "app.switchFork('" + escapeHtml(forkName) + "')" }]);
+            var fork = null;
+            for (var i = 0; i < state.forks.length; i++) {
+                if (state.forks[i].directory === forkName || state.forks[i].name === forkName) {
+                    fork = state.forks[i];
+                    break;
+                }
+            }
+            var forkAgnos = fork ? (fork.agnos_version || "unknown") : "unknown";
+            var isCompatible = !fork || fork.agnos_compatible !== false;
+            if (!isCompatible && forkAgnos !== "unknown" && state.deviceAgnosVersion !== "unknown") {
+                modal.open("⚠️ AGNOS Update Required", "<div style=\\"background: rgba(255,140,0,0.1); border: 1px solid rgba(255,140,0,0.3); border-radius: 8px; padding: 16px; margin-bottom: 16px;\\"><p style=\\"margin: 0; color: #ff8c00;\\"><strong>Switching to " + escapeHtml(forkName) + " requires AGNOS " + escapeHtml(forkAgnos) + "</strong></p><p style=\\"margin: 8px 0 0 0; color: var(--op-text-secondary);\\">Your device is currently running AGNOS " + escapeHtml(state.deviceAgnosVersion) + "</p></div><p style=\\"color: var(--op-text-muted);\\">This will trigger an OS update that takes <strong>~15-20 minutes</strong>.</p><p style=\\"color: var(--op-text-muted); margin-top: 8px;\\">The device will download and install the new AGNOS version before completing the fork switch.</p>", [{ label: "Cancel", onclick: "modal.close()" }, { label: "Proceed Anyway", cls: "btn-warning", onclick: "app.switchFork('" + escapeHtml(forkName) + "')" }]);
+            } else {
+                modal.open("Switch Fork", "<p>Are you sure you want to switch to <strong>" + escapeHtml(forkName) + "</strong>?</p><p style=\\"color: var(--op-text-muted); margin-top: 12px;\\">The device will reboot after switching.</p>", [{ label: "Cancel", onclick: "modal.close()" }, { label: "Switch & Reboot", cls: "btn-primary", onclick: "app.switchFork('" + escapeHtml(forkName) + "')" }]);
+            }
         },
         showRebootConfirm: function() {
             modal.open("Reboot Device", "<p>Are you sure you want to reboot the device?</p>", [{ label: "Cancel", onclick: "modal.close()" }, { label: "Reboot", cls: "btn-danger", onclick: "app.reboot()" }]);
