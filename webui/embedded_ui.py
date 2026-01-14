@@ -731,12 +731,14 @@ EMBEDDED_JS = '''
         },
         close: function() { this.overlay.classList.remove("active"); document.body.style.overflow = ""; }
     };
+    window.modal = modal;
     var operation = {
         overlay: null,
         init: function() { this.overlay = document.getElementById("operation-overlay"); },
         show: function(title, message) { state.operationActive = true; this.overlay.querySelector(".operation-title").textContent = title; this.overlay.querySelector(".operation-message").textContent = message; this.overlay.classList.add("active"); },
         hide: function() { state.operationActive = false; this.overlay.classList.remove("active"); }
     };
+    window.operation = operation;
     function getForkIcon(fork) {
         var name = ((fork && fork.name) || fork || "").toLowerCase();
         if (name.indexOf("frog") >= 0) return "🐸";
