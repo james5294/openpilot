@@ -1151,6 +1151,148 @@ def migrate_direct_installation() -> dict | None:
                 logger.error(f"Rollback failed: {rollback_err}")
         return {"migrated": False, "error": str(e)}
 
+def ensure_fork_info_exists(fork_dir: Path) -> bool:
+    """Create fork_info.json if it doesn't exist for a fork."""
+    info_path = fork_dir / "fork_info.json"
+    if info_path.exists():
+        return False
+
+    openpilot_dir = fork_dir / "openpilot"
+    if not openpilot_dir.exists():
+        return False
+
+    try:
+        # Try to get git info
+        url = "unknown"
+        branch = "unknown"
+        try:
+            result = subprocess.run(
+                ["git", "config", "--get", "remote.origin.url"],
+                cwd=openpilot_dir,
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0:
+                url = result.stdout.strip()
+        except Exception:
+            pass
+
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=openpilot_dir,
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0:
+                branch = result.stdout.strip()
+        except Exception:
+            pass
+
+        # Create minimal fork_info.json
+        import json
+        from datetime import datetime
+        info = {
+            "url": url,
+            "branch": branch,
+            "installed_at": datetime.now().isoformat() + "Z",
+            "updated_at": datetime.now().isoformat() + "Z",
+            "display_name": fork_dir.name
+        }
+        info_path.write_text(json.dumps(info))
+        logger.info(f"Created fork_info.json for {fork_dir.name}")
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to create fork_info.json for {fork_dir.name}: {e}")
+        return False
+
+
+def ensure_fork_swap_script() -> bool:
+    """Ensure fork_swap.sh exists at persistent location and is not a symlink."""
+    script_path = Path("/data/forkswap/fork_swap.sh")
+    source_path = Path("/data/openpilot/tools/scripts/forkswap.sh")
+
+    # Check if it's a symlink (bad) or doesn't exist
+    if script_path.is_symlink() or not script_path.exists():
+        if source_path.exists():
+            try:
+                # Remove symlink if exists
+                if script_path.is_symlink():
+                    script_path.unlink()
+                # Copy actual file
+                import shutil
+                shutil.copy2(source_path, script_path)
+                script_path.chmod(0o755)
+                logger.info(f"Installed fork_swap.sh to persistent location")
+                return True
+            except Exception as e:
+                logger.warning(f"Failed to install fork_swap.sh: {e}")
+    return False
+
+
+def clean_stale_cli_lock() -> bool:
+    """Remove stale CLI lock file if the process is dead."""
+    if not CLI_LOCK_FILE.exists():
+        return False
+
+    try:
+        content = CLI_LOCK_FILE.read_text().strip()
+        pid_str = content.split()[0] if content else ""
+
+        if pid_str.isdigit():
+            pid = int(pid_str)
+            try:
+                os.kill(pid, 0)  # Check if process exists
+                return False  # Process is alive, don't clean
+            except ProcessLookupError:
+                # Process is dead, clean up
+                CLI_LOCK_FILE.unlink()
+                logger.info(f"Cleaned stale CLI lock (dead process {pid})")
+                return True
+            except PermissionError:
+                return False  # Can't check, leave it alone
+
+        # Can't parse PID but file is old, check mtime
+        age = datetime.now().timestamp() - CLI_LOCK_FILE.stat().st_mtime
+        if age > 600:  # Older than 10 minutes
+            CLI_LOCK_FILE.unlink()
+            logger.info("Cleaned stale CLI lock (>10min old)")
+            return True
+    except Exception as e:
+        logger.warning(f"Error cleaning CLI lock: {e}")
+    return False
+
+
+def sync_webui_to_persistent() -> bool:
+    """Copy WebUI files to persistent location if newer."""
+    source_dir = Path("/data/openpilot/webui")
+    dest_dir = Path("/data/forkswap/webui")
+
+    if not source_dir.exists():
+        return False
+
+    try:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        synced = False
+
+        for filename in ["server.py", "embedded_ui.py"]:
+            source_file = source_dir / filename
+            dest_file = dest_dir / filename
+
+            if not source_file.exists():
+                continue
+
+            # Sync if dest doesn't exist or source is newer
+            if not dest_file.exists() or source_file.stat().st_mtime > dest_file.stat().st_mtime:
+                import shutil
+                shutil.copy2(source_file, dest_file)
+                logger.info(f"Synced {filename} to persistent location")
+                synced = True
+
+        return synced
+    except Exception as e:
+        logger.warning(f"Failed to sync WebUI to persistent: {e}")
+        return False
+
+
 def run_startup_selfhealing() -> dict:
     """
     Run self-healing checks and fixes on startup.
@@ -1159,13 +1301,29 @@ def run_startup_selfhealing() -> dict:
     results = {
         "ownership_fixes": 0,
         "safe_directory_configs": 0,
+        "fork_info_created": 0,
+        "script_installed": False,
+        "lock_cleaned": False,
+        "webui_synced": False,
         "migration": None,
         "errors": []
     }
 
     logger.info("Running startup self-healing checks...")
 
-    # Auto-migrate direct installations to /data/forks/ structure
+    # 1. Clean stale CLI lock first (prevents blocked operations)
+    if clean_stale_cli_lock():
+        results["lock_cleaned"] = True
+
+    # 2. Ensure fork_swap.sh is properly installed (not a symlink)
+    if ensure_fork_swap_script():
+        results["script_installed"] = True
+
+    # 3. Sync WebUI to persistent location
+    if sync_webui_to_persistent():
+        results["webui_synced"] = True
+
+    # 4. Auto-migrate direct installations to /data/forks/ structure
     # This enables proper fork switching with symlinks
     migration_result = migrate_direct_installation()
     if migration_result:
@@ -1176,7 +1334,7 @@ def run_startup_selfhealing() -> dict:
             error = migration_result.get("error", "Unknown error")
             results["errors"].append(f"Migration failed: {error}")
 
-    # Process managed forks in /data/forks
+    # 5. Process managed forks in /data/forks
     forks_dir = Path("/data/forks")
     if forks_dir.exists():
         for fork_dir in forks_dir.iterdir():
@@ -1193,6 +1351,10 @@ def run_startup_selfhealing() -> dict:
                 if openpilot_dir.exists():
                     if configure_git_safe_directory(openpilot_dir):
                         results["safe_directory_configs"] += 1
+
+                # Create fork_info.json if missing
+                if ensure_fork_info_exists(fork_dir):
+                    results["fork_info_created"] += 1
 
             except Exception as e:
                 results["errors"].append(f"{fork_dir.name}: {e}")
