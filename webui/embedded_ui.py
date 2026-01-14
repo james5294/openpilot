@@ -631,6 +631,12 @@ def get_embedded_html(version: str = "0.0.0"):
                                 <option value="warning">Warning</option>
                                 <option value="error">Error</option>
                             </select>
+                            <select id="log-days" onchange="app.filterLogs()">
+                                <option value="0">Recent (in memory)</option>
+                                <option value="1">Last 24 hours</option>
+                                <option value="2">Last 2 days</option>
+                                <option value="3">Last 3 days</option>
+                            </select>
                             <button class="btn btn-secondary" onclick="app.refreshLogs()">
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                     <path d="M23 4v6h-6M1 20v-6h6"/>
@@ -690,6 +696,7 @@ EMBEDDED_JS = '''
             if (params.limit) query.push("limit=" + params.limit);
             if (params.level) query.push("level=" + params.level);
             if (params.category) query.push("category=" + params.category);
+            if (params.days) query.push("days=" + params.days);
             return this.get("/logs" + (query.length ? "?" + query.join("&") : ""));
         },
         switchFork: function(fork) { return this.post("/switch", { fork: fork }); },
@@ -848,7 +855,7 @@ EMBEDDED_JS = '''
         var html = "";
         for (var key in state.templates) {
             var tpl = state.templates[key];
-            html += "<div class=\\"template-card\\" onclick=\\"app.cloneTemplate(\\\\\\"" + key + "\\\\\\")\\"><h4>" + getForkIcon({name: tpl.name}) + " " + escapeHtml(tpl.name) + "</h4><p>" + escapeHtml(tpl.description) + "</p></div>";
+            html += "<div class=\\"template-card\\" onclick=\\"app.cloneTemplate('" + key + "')\\"><h4>" + getForkIcon({name: tpl.name}) + " " + escapeHtml(tpl.name) + "</h4><p>" + escapeHtml(tpl.description) + "</p></div>";
         }
         container.innerHTML = html;
     }
@@ -906,23 +913,29 @@ EMBEDDED_JS = '''
     function fetchLogs() {
         var categoryEl = document.getElementById("log-category");
         var levelEl = document.getElementById("log-level");
+        var daysEl = document.getElementById("log-days");
         var container = document.getElementById("logs-container");
-        var params = { limit: 100 };
+        var days = daysEl ? parseInt(daysEl.value) || 0 : 0;
+        var params = { limit: days > 0 ? 500 : 100, days: days };
         if (categoryEl && categoryEl.value) params.category = categoryEl.value;
         if (levelEl && levelEl.value) params.level = levelEl.value;
         api.getLogs(params).then(function(data) {
             var entries = data.entries || [];
+            var stats = data.stats || {};
             if (entries.length === 0) {
-                container.innerHTML = "<div class=\\"logs-empty\\"><p>No activity logs found</p></div>";
+                container.innerHTML = "<div class=\\"logs-empty\\"><p>No activity logs found</p><p style=\\"color: var(--op-text-muted); font-size: 12px; margin-top: 8px;\\">File: " + stats.file_entries + " entries (" + stats.file_size_kb + " KB)</p></div>";
                 return;
             }
             var html = "";
+            var today = new Date().toDateString();
             for (var i = 0; i < entries.length; i++) {
                 var entry = entries[i];
                 var time = new Date(entry.timestamp);
-                var timeStr = time.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+                var isToday = time.toDateString() === today;
+                var timeStr = isToday ? time.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }) : time.toLocaleDateString("en-US", { month: "short", day: "numeric" }) + " " + time.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
                 html += "<div class=\\"log-entry\\"><span class=\\"log-level " + (entry.level || "info") + "\\">" + escapeHtml(entry.level || "info") + "</span><span class=\\"log-time\\">" + timeStr + "</span><span class=\\"log-category\\">" + escapeHtml(entry.category || "system") + "</span><span class=\\"log-message\\">" + escapeHtml(entry.message) + "</span></div>";
             }
+            html += "<div class=\\"logs-stats\\" style=\\"text-align: center; padding: 12px; color: var(--op-text-muted); font-size: 11px; border-top: 1px solid var(--op-border);\\">Showing " + entries.length + " of " + stats.file_entries + " total entries (" + stats.file_size_kb + " KB)</div>";
             container.innerHTML = html;
         }).catch(function(err) {
             console.error("Failed to fetch logs:", err);
@@ -1038,7 +1051,7 @@ EMBEDDED_JS = '''
             var templatesHtml = "";
             for (var key in state.templates) {
                 var tpl = state.templates[key];
-                templatesHtml += "<div class=\\"template-card\\" onclick=\\"app.cloneTemplate(\\\\\\"" + key + "\\\\\\")\\" style=\\"margin-bottom: 8px;\\"><h4>" + getForkIcon({name: tpl.name}) + " " + escapeHtml(tpl.name) + "</h4><p>" + escapeHtml(tpl.description) + "</p></div>";
+                templatesHtml += "<div class=\\"template-card\\" onclick=\\"app.cloneTemplate('" + key + "')\\" style=\\"margin-bottom: 8px;\\"><h4>" + getForkIcon({name: tpl.name}) + " " + escapeHtml(tpl.name) + "</h4><p>" + escapeHtml(tpl.description) + "</p></div>";
             }
             modal.open("Clone Fork", "<div class=\\"nav-section-title\\" style=\\"margin-bottom: 12px;\\">Popular Forks</div>" + templatesHtml + "<div class=\\"nav-section-title\\" style=\\"margin: 24px 0 12px;\\">Custom Repository</div><div class=\\"form-group\\"><label class=\\"form-label\\">Repository URL</label><input type=\\"text\\" class=\\"form-input\\" id=\\"clone-url\\" placeholder=\\"https://github.com/user/repo.git\\"></div><div class=\\"form-group\\"><label class=\\"form-label\\">Branch (optional)</label><input type=\\"text\\" class=\\"form-input\\" id=\\"clone-branch\\" placeholder=\\"master\\"></div><div class=\\"form-group\\"><label class=\\"form-label\\">Fork Name (optional)</label><input type=\\"text\\" class=\\"form-input\\" id=\\"clone-name\\" placeholder=\\"my-fork\\"></div>", [{ label: "Cancel", onclick: "modal.close()" }, { label: "Clone Custom", cls: "btn-primary", onclick: "app.cloneCustom()" }]);
         },

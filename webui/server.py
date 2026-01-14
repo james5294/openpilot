@@ -20,7 +20,7 @@ import sys
 import threading
 import time
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 # Try aiohttp first, fall back to http.server
@@ -173,12 +173,74 @@ logger = logging.getLogger("webui")
 # Activity Log (in-memory buffer for UI visibility)
 # =============================================================================
 class ActivityLog:
-    """Circular buffer storing recent activity for UI display."""
+    """Persistent activity log with file storage for multi-day retention."""
 
-    def __init__(self, max_entries: int = 200):
-        self.max_entries = max_entries
+    def __init__(self, max_memory_entries: int = 500, retention_days: int = 3):
+        self.max_memory_entries = max_memory_entries
+        self.retention_days = retention_days
         self._entries: list[dict] = []
         self._lock = threading.Lock()
+        self._log_dir = FORKSWAP_DIR / "logs"
+        self._log_file = self._log_dir / "activity.jsonl"
+        self._load_from_file()
+
+    def _load_from_file(self) -> None:
+        """Load recent entries from persistent log file on startup."""
+        if not self._log_file.exists():
+            return
+        try:
+            cutoff = datetime.now() - timedelta(days=self.retention_days)
+            entries = []
+            with open(self._log_file, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                        # Parse timestamp and filter by retention
+                        ts = datetime.fromisoformat(entry.get("timestamp", ""))
+                        if ts >= cutoff:
+                            entries.append(entry)
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+            self._entries = entries[-self.max_memory_entries:]
+        except Exception as e:
+            print(f"Warning: Could not load activity log: {e}")
+
+    def _write_to_file(self, entry: dict) -> None:
+        """Append entry to persistent log file."""
+        try:
+            self._log_dir.mkdir(parents=True, exist_ok=True)
+            with open(self._log_file, 'a') as f:
+                f.write(json.dumps(entry) + "\n")
+        except Exception:
+            pass  # Don't fail on write errors
+
+    def _prune_old_entries(self) -> None:
+        """Remove entries older than retention period from file (run periodically)."""
+        if not self._log_file.exists():
+            return
+        try:
+            cutoff = datetime.now() - timedelta(days=self.retention_days)
+            valid_entries = []
+            with open(self._log_file, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                        ts = datetime.fromisoformat(entry.get("timestamp", ""))
+                        if ts >= cutoff:
+                            valid_entries.append(line)
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+            # Rewrite file with only valid entries
+            with open(self._log_file, 'w') as f:
+                f.write("\n".join(valid_entries) + "\n" if valid_entries else "")
+        except Exception:
+            pass
 
     def add(self, level: str, message: str, category: str = "system") -> None:
         """Add an entry to the activity log."""
@@ -190,14 +252,21 @@ class ActivityLog:
         }
         with self._lock:
             self._entries.append(entry)
-            # Trim to max size
-            if len(self._entries) > self.max_entries:
-                self._entries = self._entries[-self.max_entries:]
+            # Trim memory buffer
+            if len(self._entries) > self.max_memory_entries:
+                self._entries = self._entries[-self.max_memory_entries:]
+        # Write to persistent file
+        self._write_to_file(entry)
 
-    def get_entries(self, limit: int = 50, level: str = None, category: str = None) -> list[dict]:
-        """Get recent log entries with optional filtering."""
-        with self._lock:
-            entries = self._entries.copy()
+    def get_entries(self, limit: int = 50, level: str = None, category: str = None,
+                    days_back: int = None) -> list[dict]:
+        """Get log entries with optional filtering. Set days_back to load from file."""
+        # If requesting more history than in memory, load from file
+        if days_back and days_back > 0:
+            entries = self._load_entries_from_file(days_back)
+        else:
+            with self._lock:
+                entries = self._entries.copy()
 
         # Filter by level
         if level:
@@ -210,10 +279,58 @@ class ActivityLog:
         # Return most recent entries (reversed so newest first)
         return list(reversed(entries[-limit:]))
 
+    def _load_entries_from_file(self, days_back: int) -> list[dict]:
+        """Load entries from file for the specified number of days."""
+        if not self._log_file.exists():
+            with self._lock:
+                return self._entries.copy()
+        try:
+            cutoff = datetime.now() - timedelta(days=days_back)
+            entries = []
+            with open(self._log_file, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                        ts = datetime.fromisoformat(entry.get("timestamp", ""))
+                        if ts >= cutoff:
+                            entries.append(entry)
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+            return entries
+        except Exception:
+            with self._lock:
+                return self._entries.copy()
+
     def clear(self) -> None:
-        """Clear all entries."""
+        """Clear all entries (both memory and file)."""
         with self._lock:
             self._entries = []
+        try:
+            if self._log_file.exists():
+                self._log_file.unlink()
+        except Exception:
+            pass
+
+    def get_stats(self) -> dict:
+        """Get log statistics."""
+        file_size = 0
+        file_entries = 0
+        if self._log_file.exists():
+            file_size = self._log_file.stat().st_size
+            try:
+                with open(self._log_file, 'r') as f:
+                    file_entries = sum(1 for _ in f)
+            except Exception:
+                pass
+        return {
+            "memory_entries": len(self._entries),
+            "file_entries": file_entries,
+            "file_size_kb": round(file_size / 1024, 1),
+            "retention_days": self.retention_days
+        }
 
 # Global activity log instance
 activity_log = ActivityLog()
@@ -1936,16 +2053,19 @@ if USE_AIOHTTP:
     async def handle_logs(request: web.Request) -> web.Response:
         """Get recent activity logs for UI display."""
         # Parse query params
-        limit = min(int(request.query.get("limit", 50)), 200)
+        limit = min(int(request.query.get("limit", 100)), 1000)
         level = request.query.get("level")  # info, warning, error
         category = request.query.get("category")  # migration, switch, clone, etc.
+        days_back = int(request.query.get("days", 0))  # 0 = memory only, 1-3 = load from file
 
-        entries = activity_log.get_entries(limit=limit, level=level, category=category)
+        entries = activity_log.get_entries(limit=limit, level=level, category=category, days_back=days_back)
+        stats = activity_log.get_stats()
 
         return json_response({
             "entries": entries,
             "total": len(entries),
-            "categories": ["system", "startup", "migration", "switch", "clone", "update", "delete", "error"]
+            "categories": ["system", "startup", "migration", "switch", "clone", "update", "delete", "error"],
+            "stats": stats
         })
 
     async def handle_switch(request: web.Request) -> web.Response:
@@ -2545,15 +2665,18 @@ if not USE_AIOHTTP:
                 parsed = urlparse(self.path)
                 params = parse_qs(parsed.query)
 
-                limit = min(int(params.get("limit", ["50"])[0]), 200)
+                limit = min(int(params.get("limit", ["100"])[0]), 1000)
                 level = params.get("level", [None])[0]
                 category = params.get("category", [None])[0]
+                days_back = int(params.get("days", ["0"])[0])
 
-                entries = activity_log.get_entries(limit=limit, level=level, category=category)
+                entries = activity_log.get_entries(limit=limit, level=level, category=category, days_back=days_back)
+                stats = activity_log.get_stats()
                 self.send_json({
                     "entries": entries,
                     "total": len(entries),
-                    "categories": ["system", "startup", "migration", "switch", "clone", "update", "delete", "error"]
+                    "categories": ["system", "startup", "migration", "switch", "clone", "update", "delete", "error"],
+                    "stats": stats
                 })
             elif self.path == "/api/health":
                 issues = verify_environment()
