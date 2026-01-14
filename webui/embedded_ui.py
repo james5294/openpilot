@@ -736,9 +736,51 @@ EMBEDDED_JS = '''
         overlay: null,
         init: function() { this.overlay = document.getElementById("operation-overlay"); },
         show: function(title, message) { state.operationActive = true; this.overlay.querySelector(".operation-title").textContent = title; this.overlay.querySelector(".operation-message").textContent = message; this.overlay.classList.add("active"); },
+        updateMessage: function(message) { this.overlay.querySelector(".operation-message").textContent = message; },
+        updateTitle: function(title) { this.overlay.querySelector(".operation-title").textContent = title; },
         hide: function() { state.operationActive = false; this.overlay.classList.remove("active"); }
     };
     window.operation = operation;
+    function waitForDeviceReboot(expectedFork, isAgnosUpdate) {
+        var startTime = Date.now();
+        var maxWaitMs = isAgnosUpdate ? 25 * 60 * 1000 : 5 * 60 * 1000;
+        var pollInterval = 3000;
+        var checkCount = 0;
+        function formatElapsed(ms) {
+            var secs = Math.floor(ms / 1000);
+            var mins = Math.floor(secs / 60);
+            secs = secs % 60;
+            return mins > 0 ? mins + "m " + secs + "s" : secs + "s";
+        }
+        function poll() {
+            checkCount++;
+            var elapsed = Date.now() - startTime;
+            if (elapsed > maxWaitMs) {
+                operation.hide();
+                toast.error("Device did not respond within " + formatElapsed(maxWaitMs) + ". Please check manually.");
+                return;
+            }
+            var msg = isAgnosUpdate ? "AGNOS update in progress... (" + formatElapsed(elapsed) + ")" : "Waiting for device to restart... (" + formatElapsed(elapsed) + ")";
+            operation.updateMessage(msg);
+            api.getStatus().then(function(data) {
+                operation.updateTitle("✓ Device Online");
+                var activeFork = "Unknown";
+                if (data.forks) {
+                    for (var i = 0; i < data.forks.length; i++) {
+                        if (data.forks[i].active) { activeFork = data.forks[i].name; break; }
+                    }
+                }
+                operation.updateMessage("Successfully switched to " + activeFork);
+                toast.success("Device restarted! Now running: " + activeFork);
+                fetchStatus();
+                setTimeout(function() { operation.hide(); }, 2500);
+            }).catch(function() {
+                setTimeout(poll, pollInterval);
+            });
+        }
+        setTimeout(poll, pollInterval);
+    }
+    window.waitForDeviceReboot = waitForDeviceReboot;
     function getForkIcon(fork) {
         var name = ((fork && fork.name) || fork || "").toLowerCase();
         if (name.indexOf("frog") >= 0) return "🐸";
@@ -882,11 +924,18 @@ EMBEDDED_JS = '''
     }
     function startPolling() { fetchStatus(); fetchTemplates(); state.pollInterval = setInterval(fetchStatus, 5000); }
     window.app = {
-        switchFork: function(forkName) {
+        switchFork: function(forkName, isAgnosUpdate) {
             modal.close();
-            operation.show("Switching Fork", "Switching to " + forkName + ". Device will reboot...");
+            var title = isAgnosUpdate ? "Switching Fork + AGNOS Update" : "Switching Fork";
+            var msg = isAgnosUpdate ? "Starting AGNOS update for " + forkName + "..." : "Switching to " + forkName + ". Device will reboot...";
+            operation.show(title, msg);
             api.switchFork(forkName).then(function(result) {
-                if (result.success) { toast.success(result.message); } else { operation.hide(); toast.error(result.message); }
+                if (result.success) {
+                    waitForDeviceReboot(forkName, isAgnosUpdate);
+                } else {
+                    operation.hide();
+                    toast.error(result.message);
+                }
             }).catch(function(err) { operation.hide(); toast.error("Failed to switch fork"); });
         },
         updateCurrentFork: function() {
@@ -911,7 +960,9 @@ EMBEDDED_JS = '''
         reboot: function() {
             modal.close();
             operation.show("Rebooting", "Device will restart in a few seconds...");
-            api.reboot().then(function() { toast.success("Rebooting device..."); }).catch(function(err) { operation.hide(); toast.error("Failed to reboot"); });
+            api.reboot().then(function() {
+                waitForDeviceReboot(null, false);
+            }).catch(function(err) { operation.hide(); toast.error("Failed to reboot"); });
         },
         checkForUpdates: function() {
             toast.info("Checking for updates...");
@@ -928,9 +979,9 @@ EMBEDDED_JS = '''
             var forkAgnos = fork ? (fork.agnos_version || "unknown") : "unknown";
             var isCompatible = !fork || fork.agnos_compatible !== false;
             if (!isCompatible && forkAgnos !== "unknown" && state.deviceAgnosVersion !== "unknown") {
-                modal.open("⚠️ AGNOS Update Required", "<div style=\\"background: rgba(255,140,0,0.1); border: 1px solid rgba(255,140,0,0.3); border-radius: 8px; padding: 16px; margin-bottom: 16px;\\"><p style=\\"margin: 0; color: #ff8c00;\\"><strong>Switching to " + escapeHtml(forkName) + " requires AGNOS " + escapeHtml(forkAgnos) + "</strong></p><p style=\\"margin: 8px 0 0 0; color: var(--op-text-secondary);\\">Your device is currently running AGNOS " + escapeHtml(state.deviceAgnosVersion) + "</p></div><p style=\\"color: var(--op-text-muted);\\">This will trigger an OS update that takes <strong>~15-20 minutes</strong>.</p><p style=\\"color: var(--op-text-muted); margin-top: 8px;\\">The device will download and install the new AGNOS version before completing the fork switch.</p>", [{ label: "Cancel", onclick: "modal.close()" }, { label: "Proceed Anyway", cls: "btn-warning", onclick: "app.switchFork('" + escapeHtml(forkName) + "')" }]);
+                modal.open("⚠️ AGNOS Update Required", "<div style=\\"background: rgba(255,140,0,0.1); border: 1px solid rgba(255,140,0,0.3); border-radius: 8px; padding: 16px; margin-bottom: 16px;\\"><p style=\\"margin: 0; color: #ff8c00;\\"><strong>Switching to " + escapeHtml(forkName) + " requires AGNOS " + escapeHtml(forkAgnos) + "</strong></p><p style=\\"margin: 8px 0 0 0; color: var(--op-text-secondary);\\">Your device is currently running AGNOS " + escapeHtml(state.deviceAgnosVersion) + "</p></div><p style=\\"color: var(--op-text-muted);\\">This will trigger an OS update that takes <strong>~15-20 minutes</strong>.</p><p style=\\"color: var(--op-text-muted); margin-top: 8px;\\">The device will download and install the new AGNOS version before completing the fork switch.</p>", [{ label: "Cancel", onclick: "modal.close()" }, { label: "Proceed Anyway", cls: "btn-warning", onclick: "app.switchFork('" + escapeHtml(forkName) + "', true)" }]);
             } else {
-                modal.open("Switch Fork", "<p>Are you sure you want to switch to <strong>" + escapeHtml(forkName) + "</strong>?</p><p style=\\"color: var(--op-text-muted); margin-top: 12px;\\">The device will reboot after switching.</p>", [{ label: "Cancel", onclick: "modal.close()" }, { label: "Switch & Reboot", cls: "btn-primary", onclick: "app.switchFork('" + escapeHtml(forkName) + "')" }]);
+                modal.open("Switch Fork", "<p>Are you sure you want to switch to <strong>" + escapeHtml(forkName) + "</strong>?</p><p style=\\"color: var(--op-text-muted); margin-top: 12px;\\">The device will reboot after switching.</p>", [{ label: "Cancel", onclick: "modal.close()" }, { label: "Switch & Reboot", cls: "btn-primary", onclick: "app.switchFork('" + escapeHtml(forkName) + "', false)" }]);
             }
         },
         showRebootConfirm: function() {
