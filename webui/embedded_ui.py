@@ -387,6 +387,7 @@ html, body {
 .toast.success { border-left: 3px solid var(--op-success); }
 .toast.error { border-left: 3px solid var(--op-danger); }
 .toast.warning { border-left: 3px solid var(--op-warning); }
+.toast.info { border-left: 3px solid var(--op-accent); }
 .toast-message { flex: 1; font-size: 13px; }
 .toast-close { background: none; border: none; color: var(--op-text-muted); cursor: pointer; padding: 4px; }
 .spinner { width: 20px; height: 20px; border: 2px solid var(--op-border); border-top-color: var(--op-accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
@@ -694,7 +695,10 @@ EMBEDDED_JS = '''
         switchFork: function(fork) { return this.post("/switch", { fork: fork }); },
         updateFork: function(fork) { return this.post("/update", { fork: fork }); },
         cloneFork: function(data) { return this.post("/clone", data); },
-        reboot: function() { return this.post("/reboot"); }
+        reboot: function() { return this.post("/reboot"); },
+        prepareAgnos: function(fork) { return this.post("/prepare-agnos", { fork: fork }); },
+        getAgnosProgress: function(version) { return this.get("/agnos-progress?version=" + encodeURIComponent(version)); },
+        getAgnosCache: function() { return this.get("/agnos-cache"); }
     };
     var toast = {
         container: null,
@@ -711,7 +715,8 @@ EMBEDDED_JS = '''
         },
         success: function(msg) { this.show(msg, "success"); },
         error: function(msg) { this.show(msg, "error", 6000); },
-        warning: function(msg) { this.show(msg, "warning"); }
+        warning: function(msg) { this.show(msg, "warning"); },
+        info: function(msg) { this.show(msg, "info"); }
     };
     var modal = {
         overlay: null,
@@ -830,7 +835,9 @@ EMBEDDED_JS = '''
         for (var j = 0; j < inactiveForks.length; j++) {
             var fork = inactiveForks[j];
             var forkId = escapeHtml(fork.directory || fork.name);
-            html += "<div class=\\"fork-card\\" onclick=\\"app.showSwitchConfirm('" + forkId + "')\\"><div class=\\"fork-card-header\\"><div class=\\"fork-card-icon\\">" + getForkIcon(fork) + "</div><div class=\\"fork-card-title\\"><h3>" + escapeHtml(fork.name) + "</h3><span class=\\"type\\">" + (fork.type === "overlay" ? "Overlay" : "Managed") + "</span></div></div><div class=\\"fork-card-body\\"><div>Branch: " + escapeHtml(fork.branch || "unknown") + "</div><div style=\\"margin-top:4px\\">" + getAgnosBadge(fork) + "</div></div><div class=\\"fork-card-footer\\"><button class=\\"btn btn-sm btn-primary\\" onclick=\\"event.stopPropagation(); app.showSwitchConfirm('" + forkId + "')\\">Switch</button></div></div>";
+            var needsAgnos = fork.agnos_compatible === false;
+            var prepareBtn = needsAgnos ? "<button class=\\"btn btn-sm btn-secondary\\" onclick=\\"event.stopPropagation(); app.prepareAgnos('" + forkId + "', '" + escapeHtml(fork.agnos_version || "") + "')\\" title=\\"Pre-download AGNOS to speed up switch\\">Prepare</button>" : "";
+            html += "<div class=\\"fork-card\\" onclick=\\"app.showSwitchConfirm('" + forkId + "')\\"><div class=\\"fork-card-header\\"><div class=\\"fork-card-icon\\">" + getForkIcon(fork) + "</div><div class=\\"fork-card-title\\"><h3>" + escapeHtml(fork.name) + "</h3><span class=\\"type\\">" + (fork.type === "overlay" ? "Overlay" : "Managed") + "</span></div></div><div class=\\"fork-card-body\\"><div>Branch: " + escapeHtml(fork.branch || "unknown") + "</div><div style=\\"margin-top:4px\\">" + getAgnosBadge(fork) + "</div></div><div class=\\"fork-card-footer\\">" + prepareBtn + "<button class=\\"btn btn-sm btn-primary\\" onclick=\\"event.stopPropagation(); app.showSwitchConfirm('" + forkId + "')\\">Switch</button></div></div>";
         }
         html += "<div class=\\"clone-card\\" onclick=\\"app.showCloneModal()\\"><svg viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M12 5v14M5 12h14\\"/></svg><span>Clone New Fork</span></div>";
         container.innerHTML = html;
@@ -967,6 +974,46 @@ EMBEDDED_JS = '''
         checkForUpdates: function() {
             toast.info("Checking for updates...");
             fetchStatus(true);
+        },
+        prepareAgnos: function(forkName, agnosVersion) {
+            toast.info("Preparing AGNOS " + agnosVersion + "...");
+            api.prepareAgnos(forkName).then(function(result) {
+                if (result.cached) {
+                    toast.success("AGNOS " + result.version + " already cached!");
+                } else if (result.downloading) {
+                    toast.success("Started downloading AGNOS " + result.version);
+                    app.pollAgnosProgress(result.version);
+                } else {
+                    toast.error(result.error || "Failed to prepare AGNOS");
+                }
+            }).catch(function(err) {
+                toast.error("Failed to start AGNOS download");
+            });
+        },
+        pollAgnosProgress: function(version) {
+            var pollCount = 0;
+            var maxPolls = 600;
+            function poll() {
+                pollCount++;
+                if (pollCount > maxPolls) {
+                    toast.error("AGNOS download timed out");
+                    return;
+                }
+                api.getAgnosProgress(version).then(function(progress) {
+                    if (progress.complete) {
+                        toast.success("AGNOS " + version + " download complete!");
+                        return;
+                    }
+                    if (progress.error) {
+                        toast.error("AGNOS download failed: " + progress.error);
+                        return;
+                    }
+                    setTimeout(poll, 3000);
+                }).catch(function() {
+                    setTimeout(poll, 3000);
+                });
+            }
+            setTimeout(poll, 2000);
         },
         showSwitchConfirm: function(forkName) {
             var fork = null;

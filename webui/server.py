@@ -45,6 +45,7 @@ FORK_SWAP_SCRIPT = FORKSWAP_DIR / "fork_swap.sh"
 STATIC_DIR = FORKSWAP_DIR / "webui" / "static"
 LOG_FILE = FORKSWAP_DIR / "webui.log"
 CONFIG_FILE = FORKSWAP_DIR / "config.json"
+AGNOS_CACHE_DIR = FORKSWAP_DIR / "agnos_cache"
 
 # Optional token authentication (set in config.json or env var)
 # If set, all API requests must include "Authorization: Bearer <token>" header
@@ -741,6 +742,160 @@ def is_agnos_compatible(fork_version: str) -> bool:
         return True  # Assume compatible if we can't determine
 
     return device_version == fork_version
+
+def get_agnos_manifest(fork_dir: Path) -> dict | None:
+    """
+    Read the AGNOS manifest from a fork's system/hardware/tici/agnos.json.
+    Returns the parsed JSON manifest or None if not found.
+    """
+    # Try both direct path and /openpilot subdirectory
+    manifest_paths = [
+        fork_dir / "system" / "hardware" / "tici" / "agnos.json",
+        fork_dir / "openpilot" / "system" / "hardware" / "tici" / "agnos.json",
+    ]
+
+    for manifest_path in manifest_paths:
+        if manifest_path.exists():
+            try:
+                with open(manifest_path, 'r') as f:
+                    manifest = json.load(f)
+                    logger.debug(f"Loaded AGNOS manifest from {manifest_path}")
+                    return manifest
+            except Exception as e:
+                logger.warning(f"Failed to parse AGNOS manifest {manifest_path}: {e}")
+                return None
+
+    logger.debug(f"No AGNOS manifest found for {fork_dir}")
+    return None
+
+def get_agnos_cache_status(version: str) -> dict:
+    """
+    Check the status of cached AGNOS images for a specific version.
+    Returns dict with cached files, total size, and completeness.
+    """
+    cache_dir = AGNOS_CACHE_DIR / version
+    status = {
+        "version": version,
+        "cached": False,
+        "complete": False,
+        "files": [],
+        "total_size": 0,
+        "expected_size": 0,
+    }
+
+    if not cache_dir.exists():
+        return status
+
+    status["cached"] = True
+    for f in cache_dir.iterdir():
+        if f.is_file():
+            size = f.stat().st_size
+            status["files"].append({"name": f.name, "size": size})
+            status["total_size"] += size
+
+    return status
+
+# Global to track download progress
+_agnos_download_progress = {}
+
+def download_agnos_images(fork_dir: Path, version: str) -> dict:
+    """
+    Download AGNOS images for a specific version to cache.
+    Returns status dict with progress info.
+    """
+    import urllib.request
+    import hashlib
+
+    manifest = get_agnos_manifest(fork_dir)
+    if not manifest:
+        return {"success": False, "error": "Could not find AGNOS manifest"}
+
+    cache_dir = AGNOS_CACHE_DIR / version
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    global _agnos_download_progress
+    _agnos_download_progress[version] = {
+        "status": "downloading",
+        "current_file": "",
+        "files_done": 0,
+        "files_total": len(manifest),
+        "bytes_done": 0,
+        "bytes_total": 0,
+    }
+
+    # Calculate total size
+    total_size = sum(p.get("size", 0) for p in manifest)
+    _agnos_download_progress[version]["bytes_total"] = total_size
+
+    downloaded_files = []
+    bytes_done = 0
+
+    try:
+        for i, partition in enumerate(manifest):
+            name = partition.get("name", f"partition_{i}")
+            url = partition.get("url", "")
+            expected_hash = partition.get("hash", "")
+            size = partition.get("size", 0)
+
+            # Use alternate URL if available (smaller compressed version)
+            alt = partition.get("alt", {})
+            if alt.get("url"):
+                url = alt["url"]
+                expected_hash = alt.get("hash", expected_hash)
+                size = alt.get("size", size)
+
+            if not url:
+                logger.warning(f"No URL for partition {name}")
+                continue
+
+            filename = url.split("/")[-1]
+            cache_file = cache_dir / filename
+
+            _agnos_download_progress[version]["current_file"] = name
+
+            # Skip if already downloaded and hash matches
+            if cache_file.exists():
+                logger.info(f"AGNOS {name} already cached: {filename}")
+                downloaded_files.append(filename)
+                bytes_done += cache_file.stat().st_size
+                _agnos_download_progress[version]["bytes_done"] = bytes_done
+                _agnos_download_progress[version]["files_done"] = i + 1
+                continue
+
+            logger.info(f"Downloading AGNOS {name}: {filename}")
+
+            # Download with progress tracking
+            def progress_hook(block_num, block_size, total_size):
+                global _agnos_download_progress
+                downloaded = block_num * block_size
+                _agnos_download_progress[version]["bytes_done"] = bytes_done + downloaded
+
+            urllib.request.urlretrieve(url, cache_file, reporthook=progress_hook)
+            downloaded_files.append(filename)
+            bytes_done += cache_file.stat().st_size
+            _agnos_download_progress[version]["bytes_done"] = bytes_done
+            _agnos_download_progress[version]["files_done"] = i + 1
+            logger.info(f"Downloaded {filename} ({cache_file.stat().st_size / 1024 / 1024:.1f} MB)")
+
+        _agnos_download_progress[version]["status"] = "complete"
+        return {
+            "success": True,
+            "version": version,
+            "files": downloaded_files,
+            "total_size": bytes_done,
+            "cache_dir": str(cache_dir)
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to download AGNOS images: {e}")
+        _agnos_download_progress[version]["status"] = "error"
+        _agnos_download_progress[version]["error"] = str(e)
+        return {"success": False, "error": str(e)}
+
+def get_agnos_download_progress(version: str) -> dict:
+    """Get the current download progress for a version."""
+    global _agnos_download_progress
+    return _agnos_download_progress.get(version, {"status": "not_started"})
 
 def detect_overlay_installation() -> dict | None:
     """
@@ -2099,6 +2254,113 @@ if USE_AIOHTTP:
                 status=400
             )
 
+    async def handle_prepare_agnos(request: web.Request) -> web.Response:
+        """
+        Download AGNOS images for a fork's required version.
+        POST with {"fork": "fork-name"} to start download.
+        """
+        try:
+            body = await request.json()
+            fork_name = body.get("fork")
+
+            if not fork_name:
+                return json_response(
+                    {"success": False, "message": "Missing 'fork' parameter"},
+                    status=400
+                )
+
+            # Find the fork directory
+            fork_dir = None
+            forks_dir = Path("/data/forks")
+            if forks_dir.exists():
+                for d in forks_dir.iterdir():
+                    if d.is_dir() and (d.name == fork_name or get_git_info(d / "openpilot").get("display_name") == fork_name):
+                        fork_dir = d
+                        break
+
+            if not fork_dir:
+                return json_response(
+                    {"success": False, "message": f"Fork '{fork_name}' not found"},
+                    status=404
+                )
+
+            # Get fork's AGNOS version
+            fork_agnos = get_fork_agnos_version(fork_dir)
+            if fork_agnos == "unknown":
+                return json_response(
+                    {"success": False, "message": "Could not determine fork's AGNOS version"},
+                    status=400
+                )
+
+            # Check if already cached
+            cache_status = get_agnos_cache_status(fork_agnos)
+            if cache_status.get("cached") and cache_status.get("files"):
+                return json_response({
+                    "success": True,
+                    "message": f"AGNOS {fork_agnos} already cached",
+                    "version": fork_agnos,
+                    "cached": True,
+                    "files": len(cache_status["files"]),
+                    "size_mb": cache_status["total_size"] / 1024 / 1024
+                })
+
+            # Start download in background thread
+            def do_download():
+                download_agnos_images(fork_dir, fork_agnos)
+
+            thread = threading.Thread(target=do_download, daemon=True)
+            thread.start()
+
+            return json_response({
+                "success": True,
+                "message": f"Started downloading AGNOS {fork_agnos}",
+                "version": fork_agnos,
+                "cached": False
+            })
+
+        except json.JSONDecodeError:
+            return json_response(
+                {"success": False, "message": "Invalid JSON"},
+                status=400
+            )
+
+    async def handle_agnos_progress(request: web.Request) -> web.Response:
+        """
+        Get download progress for AGNOS images.
+        GET with version parameter.
+        """
+        version = request.query.get("version", "")
+        if not version:
+            return json_response(
+                {"success": False, "message": "Missing 'version' parameter"},
+                status=400
+            )
+
+        progress = get_agnos_download_progress(version)
+        return json_response({
+            "success": True,
+            "version": version,
+            "progress": progress
+        })
+
+    async def handle_agnos_cache(request: web.Request) -> web.Response:
+        """
+        Get status of all cached AGNOS versions.
+        """
+        cached_versions = []
+        if AGNOS_CACHE_DIR.exists():
+            for d in AGNOS_CACHE_DIR.iterdir():
+                if d.is_dir():
+                    status = get_agnos_cache_status(d.name)
+                    status["size_mb"] = status["total_size"] / 1024 / 1024
+                    cached_versions.append(status)
+
+        return json_response({
+            "success": True,
+            "cached_versions": cached_versions,
+            "cache_dir": str(AGNOS_CACHE_DIR)
+        })
+
 # =============================================================================
 # Application Setup (aiohttp)
 # =============================================================================
@@ -2122,6 +2384,10 @@ if USE_AIOHTTP:
         app.router.add_post("/api/clone", handle_clone)
         app.router.add_get("/api/cleanup", handle_cleanup)
         app.router.add_post("/api/cleanup", handle_cleanup)
+        # AGNOS pre-download endpoints
+        app.router.add_post("/api/prepare-agnos", handle_prepare_agnos)
+        app.router.add_get("/api/agnos-progress", handle_agnos_progress)
+        app.router.add_get("/api/agnos-cache", handle_agnos_cache)
         return app
 
 # =============================================================================
@@ -2331,6 +2597,35 @@ if not USE_AIOHTTP:
                     "space_would_free_mb": result["space_freed_mb"],
                     "message": f"Found {result['found']} duplicate(s) that would free ~{result['space_freed_mb']}MB"
                 })
+            elif self.path.startswith("/api/agnos-progress"):
+                # Get AGNOS download progress
+                from urllib.parse import urlparse, parse_qs
+                parsed = urlparse(self.path)
+                params = parse_qs(parsed.query)
+                version = params.get("version", [None])[0]
+                if version:
+                    progress = get_agnos_download_progress(version)
+                    self.send_json(progress)
+                else:
+                    self.send_json({"error": "version parameter required"}, 400)
+            elif self.path == "/api/agnos-cache":
+                # Get all cached AGNOS versions
+                cache_info = []
+                if AGNOS_CACHE_DIR.exists():
+                    for version_dir in AGNOS_CACHE_DIR.iterdir():
+                        if version_dir.is_dir():
+                            files = list(version_dir.glob("*"))
+                            total_size = sum(f.stat().st_size for f in files if f.is_file())
+                            cache_info.append({
+                                "version": version_dir.name,
+                                "files": len(files),
+                                "size_mb": round(total_size / (1024 * 1024), 1)
+                            })
+                self.send_json({
+                    "success": True,
+                    "cached_versions": cache_info,
+                    "cache_dir": str(AGNOS_CACHE_DIR)
+                })
             else:
                 self.send_json({"error": "Not found"}, 404)
 
@@ -2370,6 +2665,8 @@ if not USE_AIOHTTP:
                 self._handle_clone(data)
             elif self.path == "/api/cleanup":
                 self._handle_cleanup(data)
+            elif self.path == "/api/prepare-agnos":
+                self._handle_prepare_agnos(data)
             else:
                 self.send_json({"error": "Not found"}, 404)
 
@@ -2511,6 +2808,57 @@ if not USE_AIOHTTP:
                 "failed": result["failed"],
                 "space_freed_mb": result["space_freed_mb"],
                 "message": f"Removed {len(result['removed'])} duplicate(s), freed ~{result['space_freed_mb']}MB"
+            })
+
+        def _handle_prepare_agnos(self, data: dict):
+            """Handle POST /api/prepare-agnos - download AGNOS images for a fork."""
+            fork_name = data.get("fork", "")
+            if not fork_name:
+                self.send_json({"success": False, "error": "fork parameter required"}, 400)
+                return
+
+            # Find the fork directory
+            fork_dir = None
+            for fork in get_fork_list():
+                dir_name = fork.get("directory", fork["name"])
+                if dir_name == fork_name or fork["name"] == fork_name:
+                    fork_dir = FORKS_DIR / dir_name
+                    break
+
+            if not fork_dir or not fork_dir.exists():
+                self.send_json({"success": False, "error": f"Fork '{fork_name}' not found"}, 404)
+                return
+
+            # Get the AGNOS version for this fork
+            version = get_fork_agnos_version(fork_dir)
+            if not version or version == "unknown":
+                self.send_json({"success": False, "error": "Could not determine AGNOS version"}, 400)
+                return
+
+            # Check if already cached
+            cache_status = get_agnos_cache_status(version)
+            if cache_status.get("complete"):
+                self.send_json({
+                    "success": True,
+                    "message": f"AGNOS {version} already cached",
+                    "version": version,
+                    "cached": True,
+                    "files": cache_status.get("files", 0)
+                })
+                return
+
+            # Start background download
+            def bg_download():
+                download_agnos_images(fork_dir, version)
+
+            thread = threading.Thread(target=bg_download, daemon=True)
+            thread.start()
+
+            self.send_json({
+                "success": True,
+                "message": f"Started downloading AGNOS {version}",
+                "version": version,
+                "downloading": True
             })
 
 # =============================================================================
