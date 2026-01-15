@@ -549,7 +549,7 @@ def get_embedded_html(version: str = "0.0.0"):
 <body>
     <div class="app-container">
         <aside class="sidebar">
-            <div class="sidebar-header">
+            <div class="sidebar-header" title="Fork Swap - openpilot fork management tool">
                 <div class="sidebar-logo">FS</div>
                 <div>
                     <div class="sidebar-title">Fork Swap</div>
@@ -559,21 +559,21 @@ def get_embedded_html(version: str = "0.0.0"):
             <nav class="sidebar-nav">
                 <div class="nav-section">
                     <div class="nav-section-title">Navigation</div>
-                    <div class="nav-item active" onclick="app.showView('dashboard')" data-view="dashboard">
+                    <div class="nav-item active" onclick="app.showView('dashboard')" data-view="dashboard" title="View installed forks and switch between them">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>
                             <path d="M9 22V12h6v10"/>
                         </svg>
                         Dashboard
                     </div>
-                    <div class="nav-item" onclick="app.showView('logs')" data-view="logs">
+                    <div class="nav-item" onclick="app.showView('logs')" data-view="logs" title="View system activity and operation history">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
                             <path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/>
                         </svg>
                         Activity Log
                     </div>
-                    <div class="nav-item" onclick="app.showView('agnos')" data-view="agnos">
+                    <div class="nav-item" onclick="app.showView('agnos')" data-view="agnos" title="Manage cached AGNOS OS versions">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <circle cx="12" cy="12" r="10"/>
                             <path d="M12 6v6l4 2"/>
@@ -583,13 +583,13 @@ def get_embedded_html(version: str = "0.0.0"):
                 </div>
                 <div class="nav-section">
                     <div class="nav-section-title">Quick Actions</div>
-                    <div class="nav-item" onclick="app.showCloneModal()">
+                    <div class="nav-item" onclick="app.showCloneModal()" title="Clone a new fork from popular templates or custom URL">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M12 5v14M5 12h14"/>
                         </svg>
                         Clone Fork
                     </div>
-                    <div class="nav-item" onclick="app.showRebootConfirm()">
+                    <div class="nav-item" onclick="app.showRebootConfirm()" title="Restart the comma device">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M23 4v6h-6M1 20v-6h6"/>
                             <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
@@ -599,11 +599,11 @@ def get_embedded_html(version: str = "0.0.0"):
                 </div>
             </nav>
             <div class="sidebar-footer">
-                <div class="device-info">
+                <div class="device-info" title="Device connection status">
                     <span class="device-status"></span>
                     <span class="device-name" id="device-name">comma device</span>
                 </div>
-                <div class="agnos-header" id="agnos-info">
+                <div class="agnos-header" id="agnos-info" title="Current AGNOS operating system version">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
                     <span id="device-agnos-version">AGNOS --</span>
                 </div>
@@ -612,7 +612,7 @@ def get_embedded_html(version: str = "0.0.0"):
         <main class="main-content">
             <header class="header">
                 <div class="header-left">
-                    <button class="hamburger" onclick="app.toggleSidebar()">
+                    <button class="hamburger" onclick="app.toggleSidebar()" title="Toggle navigation menu">
                         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M3 12h18M3 6h18M3 18h18"/>
                         </svg>
@@ -620,7 +620,7 @@ def get_embedded_html(version: str = "0.0.0"):
                     <h1 class="page-title">Dashboard</h1>
                 </div>
                 <div class="header-right">
-                    <div class="disk-info">
+                    <div class="disk-info" title="Available storage space on device">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M22 12H2M5.45 5.11L2 12v6a2 2 0 002 2h16a2 2 0 002-2v-6l-3.45-6.89A2 2 0 0016.76 4H7.24a2 2 0 00-1.79 1.11z"/>
                         </svg>
@@ -652,7 +652,7 @@ def get_embedded_html(version: str = "0.0.0"):
                 <div id="view-logs" class="view">
                     <div class="logs-header">
                         <div class="logs-filters">
-                            <select id="log-category" onchange="app.filterLogs()">
+                            <select id="log-category" onchange="app.filterLogs()" title="Filter logs by operation category">
                                 <option value="">All Categories</option>
                                 <option value="startup">Startup</option>
                                 <option value="migration">Migration</option>
@@ -661,19 +661,19 @@ def get_embedded_html(version: str = "0.0.0"):
                                 <option value="update">Update</option>
                                 <option value="error">Errors</option>
                             </select>
-                            <select id="log-level" onchange="app.filterLogs()">
+                            <select id="log-level" onchange="app.filterLogs()" title="Filter logs by severity level">
                                 <option value="">All Levels</option>
                                 <option value="info">Info</option>
                                 <option value="warning">Warning</option>
                                 <option value="error">Error</option>
                             </select>
-                            <select id="log-days" onchange="app.filterLogs()">
+                            <select id="log-days" onchange="app.filterLogs()" title="Show logs from specified time range">
                                 <option value="0">Recent (in memory)</option>
                                 <option value="1">Last 24 hours</option>
                                 <option value="2">Last 2 days</option>
                                 <option value="3">Last 3 days</option>
                             </select>
-                            <button class="btn btn-secondary" onclick="app.refreshLogs()">
+                            <button class="btn btn-secondary" onclick="app.refreshLogs()" title="Reload activity logs from device">
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                     <path d="M23 4v6h-6M1 20v-6h6"/>
                                     <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
@@ -709,7 +709,7 @@ def get_embedded_html(version: str = "0.0.0"):
                         <div class="section-card">
                             <div class="section-header">
                                 <h2>Cached OS Versions</h2>
-                                <button class="btn btn-sm btn-secondary" onclick="app.refreshAgnosCache()">
+                                <button class="btn btn-sm btn-secondary" onclick="app.refreshAgnosCache()" title="Reload cached AGNOS versions">
                                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                         <path d="M23 4v6h-6M1 20v-6h6"/>
                                         <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
@@ -742,7 +742,7 @@ def get_embedded_html(version: str = "0.0.0"):
         <div class="modal">
             <div class="modal-header">
                 <h3>Modal Title</h3>
-                <button class="modal-close" onclick="modal.close()">
+                <button class="modal-close" onclick="modal.close()" title="Close this dialog">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M18 6L6 18M6 6l12 12"/>
                     </svg>
@@ -800,7 +800,7 @@ EMBEDDED_JS = '''
             duration = duration || 4000;
             var t = document.createElement("div");
             t.className = "toast " + type;
-            t.innerHTML = "<span class=\\"toast-message\\">" + escapeHtml(message) + "</span><button class=\\"toast-close\\" onclick=\\"this.parentElement.remove()\\"><svg width=\\"16\\" height=\\"16\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M18 6L6 18M6 6l12 12\\"/></svg></button>";
+            t.innerHTML = "<span class=\\"toast-message\\">" + escapeHtml(message) + "</span><button class=\\"toast-close\\" onclick=\\"this.parentElement.remove()\\" title=\\"Dismiss notification\\"><svg width=\\"16\\" height=\\"16\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M18 6L6 18M6 6l12 12\\"/></svg></button>";
             this.container.appendChild(t);
             setTimeout(function() { t.remove(); }, duration);
         },
@@ -916,7 +916,7 @@ EMBEDDED_JS = '''
         var updatesChecked = details.updates_checked;
         var updateBadge = "";
         if (updatesChecked) { updateBadge = hasUpdates ? "<span class=\\"update-badge update-available\\">Update Available</span>" : "<span class=\\"update-badge update-current\\">Up to Date</span>"; }
-        container.innerHTML = "<div class=\\"active-fork-card\\"><div class=\\"active-fork-header\\"><div class=\\"active-fork-info\\"><div class=\\"active-fork-icon\\">" + getForkIcon(fork) + "</div><div class=\\"active-fork-details\\"><h2>" + escapeHtml(fork.name) + "</h2><div class=\\"branch\\"><svg width=\\"14\\" height=\\"14\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zM6 21a3 3 0 100-6 3 3 0 000 6zM18 9a9 9 0 01-9 9\\"/></svg>" + escapeHtml(fork.branch || "unknown") + "</div></div></div><div class=\\"active-badge\\"><span class=\\"device-status\\"></span>ACTIVE</div></div><div class=\\"commit-info\\"><div class=\\"commit-row\\"><span class=\\"commit-label\\">Commit:</span><span class=\\"commit-hash\\">" + escapeHtml(commitHash) + "</span>" + updateBadge + "</div><div class=\\"commit-row\\"><span class=\\"commit-label\\">Updated:</span><span class=\\"commit-date\\">" + escapeHtml(commitDate) + "</span><button class=\\"btn btn-xs btn-ghost\\" onclick=\\"app.checkForUpdates()\\" title=\\"Check for updates\\"><svg width=\\"14\\" height=\\"14\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M23 4v6h-6M1 20v-6h6\\"/><path d=\\"M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15\\"/></svg></button></div></div><div class=\\"active-fork-actions\\"><button class=\\"btn btn-primary\\" onclick=\\"app.updateCurrentFork()\\"><svg width=\\"16\\" height=\\"16\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M23 4v6h-6M1 20v-6h6\\"/><path d=\\"M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15\\"/></svg>Update</button><button class=\\"btn btn-secondary\\" onclick=\\"app.showRebootConfirm()\\"><svg width=\\"16\\" height=\\"16\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M1 4v6h6M23 20v-6h-6\\"/><path d=\\"M20.49 9A9 9 0 005.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 013.51 15\\"/></svg>Reboot</button></div><div class=\\"fork-meta\\"><div class=\\"fork-meta-item\\"><svg viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z\\"/></svg>" + escapeHtml(fork.path || "/data/openpilot") + "</div><div class=\\"fork-meta-item\\"><svg viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><circle cx=\\"12\\" cy=\\"12\\" r=\\"10\\"/><path d=\\"M12 6v6l4 2\\"/></svg>" + (isOverlay ? "Overlay Installation" : "Managed Fork") + "</div><div class=\\"fork-meta-item\\">" + getAgnosBadge(fork) + "</div></div></div>";
+        container.innerHTML = "<div class=\\"active-fork-card\\"><div class=\\"active-fork-header\\"><div class=\\"active-fork-info\\"><div class=\\"active-fork-icon\\">" + getForkIcon(fork) + "</div><div class=\\"active-fork-details\\"><h2>" + escapeHtml(fork.name) + "</h2><div class=\\"branch\\" title=\\"Current git branch\\"><svg width=\\"14\\" height=\\"14\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zM6 21a3 3 0 100-6 3 3 0 000 6zM18 9a9 9 0 01-9 9\\"/></svg>" + escapeHtml(fork.branch || "unknown") + "</div></div></div><div class=\\"active-badge\\" title=\\"This fork is currently running\\"><span class=\\"device-status\\"></span>ACTIVE</div></div><div class=\\"commit-info\\"><div class=\\"commit-row\\"><span class=\\"commit-label\\">Commit:</span><span class=\\"commit-hash\\" title=\\"Current commit hash\\">" + escapeHtml(commitHash) + "</span>" + updateBadge + "</div><div class=\\"commit-row\\"><span class=\\"commit-label\\">Updated:</span><span class=\\"commit-date\\">" + escapeHtml(commitDate) + "</span><button class=\\"btn btn-xs btn-ghost\\" onclick=\\"app.checkForUpdates()\\" title=\\"Check for updates from remote repository\\"><svg width=\\"14\\" height=\\"14\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M23 4v6h-6M1 20v-6h6\\"/><path d=\\"M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15\\"/></svg></button></div></div><div class=\\"active-fork-actions\\"><button class=\\"btn btn-primary\\" onclick=\\"app.updateCurrentFork()\\" title=\\"Pull latest changes from remote repository\\"><svg width=\\"16\\" height=\\"16\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M23 4v6h-6M1 20v-6h6\\"/><path d=\\"M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15\\"/></svg>Update</button><button class=\\"btn btn-secondary\\" onclick=\\"app.showRebootConfirm()\\" title=\\"Restart the comma device\\"><svg width=\\"16\\" height=\\"16\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M1 4v6h6M23 20v-6h-6\\"/><path d=\\"M20.49 9A9 9 0 005.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 013.51 15\\"/></svg>Reboot</button></div><div class=\\"fork-meta\\"><div class=\\"fork-meta-item\\" title=\\"Fork installation path\\"><svg viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z\\"/></svg>" + escapeHtml(fork.path || "/data/openpilot") + "</div><div class=\\"fork-meta-item\\" title=\\"Installation type\\"><svg viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><circle cx=\\"12\\" cy=\\"12\\" r=\\"10\\"/><path d=\\"M12 6v6l4 2\\"/></svg>" + (isOverlay ? "Overlay Installation" : "Managed Fork") + "</div><div class=\\"fork-meta-item\\">" + getAgnosBadge(fork) + "</div></div></div>";
     }
     function renderForkList() {
         var container = document.getElementById("fork-list");
@@ -936,9 +936,9 @@ EMBEDDED_JS = '''
                     prepareBtn = "<button class=\\"btn btn-sm btn-secondary\\" onclick=\\"event.stopPropagation(); app.prepareAgnos('" + forkId + "', '" + escapeHtml(fork.agnos_version || "") + "')\\" title=\\"Pre-download AGNOS " + escapeHtml(fork.agnos_version || "") + " to speed up switch\\">Prepare OS</button>";
                 }
             }
-            html += "<div class=\\"fork-card\\" onclick=\\"app.showSwitchConfirm('" + forkId + "')\\"><div class=\\"fork-card-header\\"><div class=\\"fork-card-icon\\">" + getForkIcon(fork) + "</div><div class=\\"fork-card-title\\"><h3>" + escapeHtml(fork.name) + "</h3><span class=\\"type\\">" + (fork.type === "overlay" ? "Overlay" : "Managed") + "</span></div></div><div class=\\"fork-card-body\\"><div>Branch: " + escapeHtml(fork.branch || "unknown") + "</div><div style=\\"margin-top:4px\\">" + getAgnosBadge(fork) + "</div></div><div class=\\"fork-card-footer\\">" + prepareBtn + "<button class=\\"btn btn-sm btn-primary\\" onclick=\\"event.stopPropagation(); app.showSwitchConfirm('" + forkId + "')\\">Switch</button></div></div>";
+            html += "<div class=\\"fork-card\\" onclick=\\"app.showSwitchConfirm('" + forkId + "')\\" title=\\"Click to switch to " + escapeHtml(fork.name) + "\\"><div class=\\"fork-card-header\\"><div class=\\"fork-card-icon\\">" + getForkIcon(fork) + "</div><div class=\\"fork-card-title\\"><h3>" + escapeHtml(fork.name) + "</h3><span class=\\"type\\">" + (fork.type === "overlay" ? "Overlay" : "Managed") + "</span></div></div><div class=\\"fork-card-body\\"><div>Branch: " + escapeHtml(fork.branch || "unknown") + "</div><div style=\\"margin-top:4px\\">" + getAgnosBadge(fork) + "</div></div><div class=\\"fork-card-footer\\">" + prepareBtn + "<button class=\\"btn btn-sm btn-primary\\" onclick=\\"event.stopPropagation(); app.showSwitchConfirm('" + forkId + "')\\" title=\\"Switch to this fork and reboot\\">Switch</button></div></div>";
         }
-        html += "<div class=\\"clone-card\\" onclick=\\"app.showCloneModal()\\"><svg viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M12 5v14M5 12h14\\"/></svg><span>Clone New Fork</span></div>";
+        html += "<div class=\\"clone-card\\" onclick=\\"app.showCloneModal()\\" title=\\"Clone a new fork from popular templates or custom URL\\"><svg viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M12 5v14M5 12h14\\"/></svg><span>Clone New Fork</span></div>";
         container.innerHTML = html;
     }
     function renderTemplates() {
@@ -947,7 +947,7 @@ EMBEDDED_JS = '''
         var html = "";
         for (var key in state.templates) {
             var tpl = state.templates[key];
-            html += "<div class=\\"template-card\\" onclick=\\"app.cloneTemplate('" + key + "')\\"><h4>" + getForkIcon({name: tpl.name}) + " " + escapeHtml(tpl.name) + "</h4><p>" + escapeHtml(tpl.description) + "</p></div>";
+            html += "<div class=\\"template-card\\" onclick=\\"app.cloneTemplate('" + key + "')\\" title=\\"Click to clone " + escapeHtml(tpl.name) + "\\"><h4>" + getForkIcon({name: tpl.name}) + " " + escapeHtml(tpl.name) + "</h4><p>" + escapeHtml(tpl.description) + "</p></div>";
         }
         container.innerHTML = html;
     }
@@ -1050,7 +1050,7 @@ EMBEDDED_JS = '''
                     var sizeStr = v.total_size > 1073741824 ? (v.total_size / 1073741824).toFixed(1) + " GB" : (v.total_size / 1048576).toFixed(0) + " MB";
                     var dateStr = v.downloaded_at ? new Date(v.downloaded_at).toLocaleDateString() : "Unknown";
                     var statusBadge = v.complete ? "<span class=\\"agnos-ready-badge\\"><svg width=\\"10\\" height=\\"10\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"3\\"><path d=\\"M20 6L9 17l-5-5\\"/></svg> Complete</span>" : "<span style=\\"color: var(--op-warning);\\">Incomplete</span>";
-                    html += "<div class=\\"agnos-cache-item\\"><div class=\\"agnos-cache-info\\"><div class=\\"agnos-cache-version\\">AGNOS " + escapeHtml(v.version) + "</div><div class=\\"agnos-cache-meta\\"><span>" + v.files.length + " files</span><span>" + sizeStr + "</span><span>Downloaded: " + dateStr + "</span>" + statusBadge + "</div></div><div class=\\"agnos-cache-actions\\"><button class=\\"btn btn-sm btn-danger\\" onclick=\\"app.deleteAgnosCache('" + escapeHtml(v.version) + "')\\">Delete</button></div></div>";
+                    html += "<div class=\\"agnos-cache-item\\"><div class=\\"agnos-cache-info\\"><div class=\\"agnos-cache-version\\">AGNOS " + escapeHtml(v.version) + "</div><div class=\\"agnos-cache-meta\\"><span>" + v.files.length + " files</span><span>" + sizeStr + "</span><span>Downloaded: " + dateStr + "</span>" + statusBadge + "</div></div><div class=\\"agnos-cache-actions\\"><button class=\\"btn btn-sm btn-danger\\" onclick=\\"app.deleteAgnosCache('" + escapeHtml(v.version) + "')\\" title=\\"Remove cached AGNOS " + escapeHtml(v.version) + " files\\">Delete</button></div></div>";
                 }
                 cacheList.innerHTML = html;
             }
@@ -1194,9 +1194,9 @@ EMBEDDED_JS = '''
             var templatesHtml = "";
             for (var key in state.templates) {
                 var tpl = state.templates[key];
-                templatesHtml += "<div class=\\"template-card\\" onclick=\\"app.cloneTemplate('" + key + "')\\" style=\\"margin-bottom: 8px;\\"><h4>" + getForkIcon({name: tpl.name}) + " " + escapeHtml(tpl.name) + "</h4><p>" + escapeHtml(tpl.description) + "</p></div>";
+                templatesHtml += "<div class=\\"template-card\\" onclick=\\"app.cloneTemplate('" + key + "')\\" style=\\"margin-bottom: 8px;\\" title=\\"Click to clone " + escapeHtml(tpl.name) + "\\"><h4>" + getForkIcon({name: tpl.name}) + " " + escapeHtml(tpl.name) + "</h4><p>" + escapeHtml(tpl.description) + "</p></div>";
             }
-            modal.open("Clone Fork", "<div class=\\"nav-section-title\\" style=\\"margin-bottom: 12px;\\">Popular Forks</div>" + templatesHtml + "<div class=\\"nav-section-title\\" style=\\"margin: 24px 0 12px;\\">Custom Repository</div><div class=\\"form-group\\"><label class=\\"form-label\\">Repository URL</label><input type=\\"text\\" class=\\"form-input\\" id=\\"clone-url\\" placeholder=\\"https://github.com/user/repo.git\\"></div><div class=\\"form-group\\"><label class=\\"form-label\\">Branch (optional)</label><input type=\\"text\\" class=\\"form-input\\" id=\\"clone-branch\\" placeholder=\\"master\\"></div><div class=\\"form-group\\"><label class=\\"form-label\\">Fork Name (optional)</label><input type=\\"text\\" class=\\"form-input\\" id=\\"clone-name\\" placeholder=\\"my-fork\\"></div>", [{ label: "Cancel", onclick: "modal.close()" }, { label: "Clone Custom", cls: "btn-primary", onclick: "app.cloneCustom()" }]);
+            modal.open("Clone Fork", "<div class=\\"nav-section-title\\" style=\\"margin-bottom: 12px;\\">Popular Forks</div>" + templatesHtml + "<div class=\\"nav-section-title\\" style=\\"margin: 24px 0 12px;\\">Custom Repository</div><div class=\\"form-group\\"><label class=\\"form-label\\">Repository URL</label><input type=\\"text\\" class=\\"form-input\\" id=\\"clone-url\\" placeholder=\\"https://github.com/user/repo.git\\" title=\\"GitHub URL of the openpilot fork to clone\\"></div><div class=\\"form-group\\"><label class=\\"form-label\\">Branch (optional)</label><input type=\\"text\\" class=\\"form-input\\" id=\\"clone-branch\\" placeholder=\\"master\\" title=\\"Git branch to clone (defaults to main/master)\\"></div><div class=\\"form-group\\"><label class=\\"form-label\\">Fork Name (optional)</label><input type=\\"text\\" class=\\"form-input\\" id=\\"clone-name\\" placeholder=\\"my-fork\\" title=\\"Custom name for this fork installation\\"></div>", [{ label: "Cancel", onclick: "modal.close()" }, { label: "Clone Custom", cls: "btn-primary", onclick: "app.cloneCustom()" }]);
         },
         cloneCustom: function() {
             var url = document.getElementById("clone-url").value.trim();
