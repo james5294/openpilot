@@ -166,6 +166,8 @@ html, body {
     cursor: pointer;
     transition: all var(--op-transition);
 }
+/* Make SVGs in interactive elements not capture hover - fixes tooltip visibility */
+.btn svg, .agnos-badge svg, .agnos-ready-badge svg, .nav-item svg, .fork-card svg, .template-card svg { pointer-events: none; }
 .btn-primary { background: var(--op-accent); color: white; }
 .btn-primary:hover { background: var(--op-accent-hover); transform: translateY(-1px); }
 .btn-secondary { background: var(--op-bg-elevated); color: var(--op-text-primary); border: 1px solid var(--op-border); }
