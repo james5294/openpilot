@@ -3004,10 +3004,11 @@ if not USE_AIOHTTP:
 
             # Find the fork directory
             fork_dir = None
+            forks_dir = Path("/data/forks")
             for fork in get_fork_list():
                 dir_name = fork.get("directory", fork["name"])
                 if dir_name == fork_name or fork["name"] == fork_name:
-                    fork_dir = FORKS_DIR / dir_name
+                    fork_dir = forks_dir / dir_name
                     break
 
             if not fork_dir or not fork_dir.exists():
@@ -3089,9 +3090,10 @@ if not USE_AIOHTTP:
 
             # Find a fork that uses this AGNOS version to get the manifest
             fork_dir = None
+            forks_dir = Path("/data/forks")
             for fork in get_fork_list():
                 dir_name = fork.get("directory", fork["name"])
-                candidate_dir = FORKS_DIR / dir_name
+                candidate_dir = forks_dir / dir_name
                 if candidate_dir.exists():
                     fork_version = get_fork_agnos_version(candidate_dir)
                     if fork_version == version:
