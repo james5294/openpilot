@@ -685,7 +685,7 @@ def get_embedded_html(version: str = "0.0.0"):
                     </div>
                 </div>
                 <!-- AGNOS Manager View -->
-                <div id="view-agnos" class="view" style="display:none;">
+                <div id="view-agnos" class="view">
                     <div class="agnos-manager">
                         <div class="section-card">
                             <div class="section-header">
