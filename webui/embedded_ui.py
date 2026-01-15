@@ -170,6 +170,8 @@ html, body {
 .btn-primary:hover { background: var(--op-accent-hover); transform: translateY(-1px); }
 .btn-secondary { background: var(--op-bg-elevated); color: var(--op-text-primary); border: 1px solid var(--op-border); }
 .btn-secondary:hover { background: var(--op-bg-hover); border-color: var(--op-border-hover); }
+.agnos-ready-badge { display: inline-flex; align-items: center; gap: 4px; padding: 4px 8px; font-size: 11px; font-weight: 500; color: #22c55e; background: rgba(34, 197, 94, 0.15); border-radius: 4px; }
+.agnos-ready-badge svg { stroke: currentColor; }
 .btn-danger { background: var(--op-danger); color: white; }
 .btn-danger:hover { background: var(--op-danger-hover); }
 .btn-warning { background: #ff8c00; color: white; }
@@ -498,6 +500,31 @@ html, body {
     .log-time, .log-category { order: 2; margin-top: 8px; }
     .log-message { width: 100%; order: 3; margin-top: 8px; }
 }
+/* AGNOS Manager */
+.agnos-manager { display: flex; flex-direction: column; gap: 20px; }
+.section-card { background: var(--op-bg-card); border: 1px solid var(--op-border); border-radius: var(--op-radius-lg); overflow: hidden; }
+.section-header { display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; border-bottom: 1px solid var(--op-border); }
+.section-header h2 { margin: 0; font-size: 16px; font-weight: 600; }
+.section-body { padding: 20px; }
+.device-agnos-info { display: flex; gap: 40px; }
+.agnos-stat { display: flex; flex-direction: column; gap: 4px; }
+.agnos-stat .label { font-size: 12px; color: var(--op-text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+.agnos-stat .value { font-size: 24px; font-weight: 600; color: var(--op-text-primary); }
+.agnos-cache-list { display: flex; flex-direction: column; gap: 12px; }
+.agnos-cache-item { display: flex; align-items: center; justify-content: space-between; padding: 16px; background: var(--op-bg-elevated); border-radius: var(--op-radius-md); }
+.agnos-cache-info { display: flex; flex-direction: column; gap: 4px; }
+.agnos-cache-version { font-size: 18px; font-weight: 600; }
+.agnos-cache-meta { display: flex; gap: 16px; font-size: 12px; color: var(--op-text-muted); }
+.agnos-cache-actions { display: flex; gap: 8px; }
+.agnos-required-list { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.agnos-required-item { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: var(--op-bg-elevated); border-radius: var(--op-radius-md); }
+.agnos-required-item .version { font-weight: 600; }
+.agnos-required-item .forks { font-size: 12px; color: var(--op-text-muted); }
+.agnos-required-item .status { display: flex; align-items: center; gap: 6px; }
+.agnos-required-item .status.cached { color: var(--op-success); }
+.agnos-required-item .status.missing { color: var(--op-warning); }
+.text-muted { color: var(--op-text-muted); font-size: 13px; }
+.agnos-empty { text-align: center; padding: 24px; color: var(--op-text-muted); }
 '''
 
 def get_embedded_html(version: str = "0.0.0"):
@@ -543,6 +570,13 @@ def get_embedded_html(version: str = "0.0.0"):
                             <path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/>
                         </svg>
                         Activity Log
+                    </div>
+                    <div class="nav-item" onclick="app.showView('agnos')" data-view="agnos">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="10"/>
+                            <path d="M12 6v6l4 2"/>
+                        </svg>
+                        AGNOS Manager
                     </div>
                 </div>
                 <div class="nav-section">
@@ -648,6 +682,54 @@ def get_embedded_html(version: str = "0.0.0"):
                     </div>
                     <div class="logs-container" id="logs-container">
                         <div class="empty-state"><div class="spinner"></div><p>Loading activity log...</p></div>
+                    </div>
+                </div>
+                <!-- AGNOS Manager View -->
+                <div id="view-agnos" class="view" style="display:none;">
+                    <div class="agnos-manager">
+                        <div class="section-card">
+                            <div class="section-header">
+                                <h2>Device AGNOS</h2>
+                            </div>
+                            <div class="section-body">
+                                <div class="device-agnos-info">
+                                    <div class="agnos-stat">
+                                        <span class="label">Current Version</span>
+                                        <span class="value" id="agnos-device-version">--</span>
+                                    </div>
+                                    <div class="agnos-stat">
+                                        <span class="label">Partition Scheme</span>
+                                        <span class="value">A/B Dual Slot</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="section-card">
+                            <div class="section-header">
+                                <h2>Cached OS Versions</h2>
+                                <button class="btn btn-sm btn-secondary" onclick="app.refreshAgnosCache()">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M23 4v6h-6M1 20v-6h6"/>
+                                        <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
+                                    </svg>
+                                    Refresh
+                                </button>
+                            </div>
+                            <div class="section-body">
+                                <div id="agnos-cache-list" class="agnos-cache-list">
+                                    <div class="empty-state"><div class="spinner"></div><p>Loading cached versions...</p></div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="section-card">
+                            <div class="section-header">
+                                <h2>Required OS Versions</h2>
+                            </div>
+                            <div class="section-body">
+                                <p class="text-muted">OS versions needed by your installed forks:</p>
+                                <div id="agnos-required-list" class="agnos-required-list"></div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -843,7 +925,15 @@ EMBEDDED_JS = '''
             var fork = inactiveForks[j];
             var forkId = escapeHtml(fork.directory || fork.name);
             var needsAgnos = fork.agnos_compatible === false;
-            var prepareBtn = needsAgnos ? "<button class=\\"btn btn-sm btn-secondary\\" onclick=\\"event.stopPropagation(); app.prepareAgnos('" + forkId + "', '" + escapeHtml(fork.agnos_version || "") + "')\\" title=\\"Pre-download AGNOS to speed up switch\\">Prepare</button>" : "";
+            var agnosCached = fork.agnos_cached === true;
+            var prepareBtn = "";
+            if (needsAgnos) {
+                if (agnosCached) {
+                    prepareBtn = "<span class=\\"agnos-ready-badge\\" title=\\"AGNOS " + escapeHtml(fork.agnos_version || "") + " is cached and ready\\"><svg width=\\"12\\" height=\\"12\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"3\\"><path d=\\"M20 6L9 17l-5-5\\"/></svg> OS Ready</span>";
+                } else {
+                    prepareBtn = "<button class=\\"btn btn-sm btn-secondary\\" onclick=\\"event.stopPropagation(); app.prepareAgnos('" + forkId + "', '" + escapeHtml(fork.agnos_version || "") + "')\\" title=\\"Pre-download AGNOS " + escapeHtml(fork.agnos_version || "") + " to speed up switch\\">Prepare OS</button>";
+                }
+            }
             html += "<div class=\\"fork-card\\" onclick=\\"app.showSwitchConfirm('" + forkId + "')\\"><div class=\\"fork-card-header\\"><div class=\\"fork-card-icon\\">" + getForkIcon(fork) + "</div><div class=\\"fork-card-title\\"><h3>" + escapeHtml(fork.name) + "</h3><span class=\\"type\\">" + (fork.type === "overlay" ? "Overlay" : "Managed") + "</span></div></div><div class=\\"fork-card-body\\"><div>Branch: " + escapeHtml(fork.branch || "unknown") + "</div><div style=\\"margin-top:4px\\">" + getAgnosBadge(fork) + "</div></div><div class=\\"fork-card-footer\\">" + prepareBtn + "<button class=\\"btn btn-sm btn-primary\\" onclick=\\"event.stopPropagation(); app.showSwitchConfirm('" + forkId + "')\\">Switch</button></div></div>";
         }
         html += "<div class=\\"clone-card\\" onclick=\\"app.showCloneModal()\\"><svg viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M12 5v14M5 12h14\\"/></svg><span>Clone New Fork</span></div>";
@@ -942,6 +1032,47 @@ EMBEDDED_JS = '''
             container.innerHTML = "<div class=\\"logs-empty\\"><p>Failed to load activity logs</p></div>";
         });
     }
+    function fetchAgnosCache() {
+        var cacheList = document.getElementById("agnos-cache-list");
+        var requiredList = document.getElementById("agnos-required-list");
+        var deviceVersion = document.getElementById("agnos-device-version");
+        if (deviceVersion) deviceVersion.textContent = state.deviceAgnosVersion || "--";
+        api.getAgnosCache().then(function(data) {
+            var versions = data.versions || [];
+            if (versions.length === 0) {
+                cacheList.innerHTML = "<div class=\\"agnos-empty\\">No cached AGNOS versions. Use \\"Prepare OS\\" on fork cards to pre-download.</div>";
+            } else {
+                var html = "";
+                for (var i = 0; i < versions.length; i++) {
+                    var v = versions[i];
+                    var sizeStr = v.total_size > 1073741824 ? (v.total_size / 1073741824).toFixed(1) + " GB" : (v.total_size / 1048576).toFixed(0) + " MB";
+                    var dateStr = v.downloaded_at ? new Date(v.downloaded_at).toLocaleDateString() : "Unknown";
+                    var statusBadge = v.complete ? "<span class=\\"agnos-ready-badge\\"><svg width=\\"10\\" height=\\"10\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"3\\"><path d=\\"M20 6L9 17l-5-5\\"/></svg> Complete</span>" : "<span style=\\"color: var(--op-warning);\\">Incomplete</span>";
+                    html += "<div class=\\"agnos-cache-item\\"><div class=\\"agnos-cache-info\\"><div class=\\"agnos-cache-version\\">AGNOS " + escapeHtml(v.version) + "</div><div class=\\"agnos-cache-meta\\"><span>" + v.files.length + " files</span><span>" + sizeStr + "</span><span>Downloaded: " + dateStr + "</span>" + statusBadge + "</div></div><div class=\\"agnos-cache-actions\\"><button class=\\"btn btn-sm btn-danger\\" onclick=\\"app.deleteAgnosCache('" + escapeHtml(v.version) + "')\\">Delete</button></div></div>";
+                }
+                cacheList.innerHTML = html;
+            }
+        }).catch(function() { cacheList.innerHTML = "<div class=\\"agnos-empty\\">Failed to load cache info</div>"; });
+        // Build required versions from forks
+        var requiredMap = {};
+        for (var j = 0; j < state.forks.length; j++) {
+            var fork = state.forks[j];
+            if (fork.agnos_version && fork.agnos_version !== "unknown") {
+                if (!requiredMap[fork.agnos_version]) requiredMap[fork.agnos_version] = { forks: [], cached: fork.agnos_cached };
+                requiredMap[fork.agnos_version].forks.push(fork.name);
+                if (fork.agnos_cached) requiredMap[fork.agnos_version].cached = true;
+            }
+        }
+        var requiredHtml = "";
+        for (var ver in requiredMap) {
+            var info = requiredMap[ver];
+            var statusClass = info.cached ? "cached" : "missing";
+            var statusIcon = info.cached ? "<svg width=\\"12\\" height=\\"12\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"3\\"><path d=\\"M20 6L9 17l-5-5\\"/></svg> Cached" : "<svg width=\\"12\\" height=\\"12\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><circle cx=\\"12\\" cy=\\"12\\" r=\\"10\\"/><path d=\\"M12 8v4M12 16h.01\\"/></svg> Not Cached";
+            requiredHtml += "<div class=\\"agnos-required-item\\"><div><div class=\\"version\\">AGNOS " + escapeHtml(ver) + "</div><div class=\\"forks\\">Used by: " + escapeHtml(info.forks.join(", ")) + "</div></div><div class=\\"status " + statusClass + "\\">" + statusIcon + "</div></div>";
+        }
+        if (requiredHtml === "") requiredHtml = "<div class=\\"agnos-empty\\">No forks with AGNOS version info found</div>";
+        requiredList.innerHTML = requiredHtml;
+    }
     function startPolling() { fetchStatus(); fetchTemplates(); state.pollInterval = setInterval(fetchStatus, 5000); }
     window.app = {
         switchFork: function(forkName, isAgnosUpdate) {
@@ -1006,6 +1137,7 @@ EMBEDDED_JS = '''
         pollAgnosProgress: function(version) {
             var pollCount = 0;
             var maxPolls = 600;
+            var lastNotify = 0;
             function poll() {
                 pollCount++;
                 if (pollCount > maxPolls) {
@@ -1013,13 +1145,22 @@ EMBEDDED_JS = '''
                     return;
                 }
                 api.getAgnosProgress(version).then(function(progress) {
-                    if (progress.complete) {
+                    if (progress.status === "complete") {
                         toast.success("AGNOS " + version + " download complete!");
+                        fetchStatus(true);  // Refresh to update UI
                         return;
                     }
-                    if (progress.error) {
-                        toast.error("AGNOS download failed: " + progress.error);
+                    if (progress.status === "error") {
+                        toast.error("AGNOS download failed: " + (progress.error || "Unknown error"));
                         return;
+                    }
+                    // Show progress every 30 seconds (10 polls)
+                    if (progress.status === "downloading" && pollCount - lastNotify >= 10) {
+                        lastNotify = pollCount;
+                        var pct = progress.bytes_total > 0 ? Math.round((progress.bytes_done / progress.bytes_total) * 100) : 0;
+                        var msg = "Downloading AGNOS " + version + ": " + progress.files_done + "/" + progress.files_total + " files";
+                        if (pct > 0) msg += " (" + pct + "%)";
+                        toast.info(msg);
                     }
                     setTimeout(poll, 3000);
                 }).catch(function() {
@@ -1072,14 +1213,28 @@ EMBEDDED_JS = '''
             if (targetView) targetView.classList.add("active");
             var targetNav = document.querySelector(".nav-item[data-view=\\"" + viewName + "\\"]");
             if (targetNav) targetNav.classList.add("active");
-            var titles = { dashboard: "Dashboard", logs: "Activity Log" };
+            var titles = { dashboard: "Dashboard", logs: "Activity Log", agnos: "AGNOS Manager" };
             document.querySelector(".page-title").textContent = titles[viewName] || viewName;
             if (viewName === "logs") fetchLogs();
+            if (viewName === "agnos") fetchAgnosCache();
             var sidebar = document.querySelector(".sidebar");
             if (sidebar.classList.contains("open")) sidebar.classList.remove("open");
         },
         filterLogs: function() { fetchLogs(); },
-        refreshLogs: function() { fetchLogs(); toast.success("Logs refreshed"); }
+        refreshLogs: function() { fetchLogs(); toast.success("Logs refreshed"); },
+        refreshAgnosCache: function() { fetchAgnosCache(); toast.success("AGNOS cache refreshed"); },
+        deleteAgnosCache: function(version) {
+            if (!confirm("Delete cached AGNOS " + version + "? You will need to re-download it.")) return;
+            api.post("/delete-agnos-cache", { version: version }).then(function(result) {
+                if (result.success) {
+                    toast.success("Deleted AGNOS " + version + " from cache");
+                    fetchAgnosCache();
+                    fetchStatus(true);
+                } else {
+                    toast.error(result.error || "Failed to delete cache");
+                }
+            }).catch(function() { toast.error("Failed to delete AGNOS cache"); });
+        }
     };
     document.addEventListener("DOMContentLoaded", function() {
         toast.init();

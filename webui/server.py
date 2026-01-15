@@ -898,14 +898,28 @@ def get_agnos_cache_status(version: str) -> dict:
         "files": [],
         "total_size": 0,
         "expected_size": 0,
+        "downloaded_at": None,
     }
 
     if not cache_dir.exists():
         return status
 
     status["cached"] = True
+
+    # Check for completion marker
+    marker_file = cache_dir / ".manifest.json"
+    if marker_file.exists():
+        try:
+            with open(marker_file) as f:
+                marker = json.load(f)
+            status["complete"] = marker.get("complete", False)
+            status["expected_size"] = marker.get("total_size", 0)
+            status["downloaded_at"] = marker.get("downloaded_at")
+        except (json.JSONDecodeError, IOError):
+            pass  # Marker corrupt, will show as incomplete
+
     for f in cache_dir.iterdir():
-        if f.is_file():
+        if f.is_file() and not f.name.startswith("."):
             size = f.stat().st_size
             status["files"].append({"name": f.name, "size": size})
             status["total_size"] += size
@@ -995,6 +1009,20 @@ def download_agnos_images(fork_dir: Path, version: str) -> dict:
             logger.info(f"Downloaded {filename} ({cache_file.stat().st_size / 1024 / 1024:.1f} MB)")
 
         _agnos_download_progress[version]["status"] = "complete"
+
+        # Write completion marker with manifest info for persistence
+        marker_file = cache_dir / ".manifest.json"
+        marker_data = {
+            "version": version,
+            "complete": True,
+            "files": downloaded_files,
+            "total_size": bytes_done,
+            "downloaded_at": datetime.now().isoformat()
+        }
+        with open(marker_file, "w") as f:
+            json.dump(marker_data, f)
+        logger.info(f"AGNOS {version} download complete - wrote marker file")
+
         return {
             "success": True,
             "version": version,
@@ -1056,6 +1084,9 @@ def get_fork_list() -> list[dict]:
         git_info = get_git_info(openpilot_path)
         fork_agnos = get_fork_agnos_version(openpilot_path)
 
+        # Check if this fork's AGNOS version is cached
+        agnos_cache = get_agnos_cache_status(fork_agnos) if fork_agnos and fork_agnos != "unknown" else {}
+
         forks.append({
             "name": git_info["display_name"],
             "branch": git_info["branch"],
@@ -1066,6 +1097,7 @@ def get_fork_list() -> list[dict]:
             "install_type": "direct",  # Not symlink-managed
             "agnos_version": fork_agnos,
             "agnos_compatible": is_agnos_compatible(fork_agnos),
+            "agnos_cached": agnos_cache.get("complete", False),
         })
 
     # Then, scan /data/forks for fork-managed installations
@@ -1096,6 +1128,9 @@ def get_fork_list() -> list[dict]:
             # Get AGNOS version from fork's launch_env.sh
             fork_agnos = get_fork_agnos_version(fork_dir)
 
+            # Check if this fork's AGNOS version is cached
+            agnos_cache = get_agnos_cache_status(fork_agnos) if fork_agnos and fork_agnos != "unknown" else {}
+
             forks.append({
                 "name": display_name,
                 "directory": fork_dir.name,  # Original directory name for switching
@@ -1107,6 +1142,7 @@ def get_fork_list() -> list[dict]:
                 "install_type": "symlink",  # Managed via /data/forks symlinks
                 "agnos_version": fork_agnos,
                 "agnos_compatible": is_agnos_compatible(fork_agnos),
+                "agnos_cached": agnos_cache.get("complete", False),
             })
 
     return forks
@@ -2467,19 +2503,45 @@ if USE_AIOHTTP:
         """
         Get status of all cached AGNOS versions.
         """
-        cached_versions = []
+        versions = []
         if AGNOS_CACHE_DIR.exists():
             for d in AGNOS_CACHE_DIR.iterdir():
                 if d.is_dir():
                     status = get_agnos_cache_status(d.name)
-                    status["size_mb"] = status["total_size"] / 1024 / 1024
-                    cached_versions.append(status)
+                    versions.append(status)
 
         return json_response({
             "success": True,
-            "cached_versions": cached_versions,
+            "versions": versions,
             "cache_dir": str(AGNOS_CACHE_DIR)
         })
+
+    async def handle_delete_agnos_cache(request: web.Request) -> web.Response:
+        """
+        Delete a cached AGNOS version.
+        """
+        try:
+            data = await request.json()
+        except Exception:
+            return json_response({"success": False, "error": "Invalid JSON"}, status=400)
+
+        version = data.get("version")
+        if not version:
+            return json_response({"success": False, "error": "version parameter required"}, status=400)
+
+        cache_dir = AGNOS_CACHE_DIR / version
+        if not cache_dir.exists():
+            return json_response({"success": False, "error": f"AGNOS {version} not cached"}, status=404)
+
+        try:
+            import shutil
+            shutil.rmtree(cache_dir)
+            activity_log.add("info", "agnos", f"Deleted cached AGNOS {version}")
+            logger.info(f"Deleted AGNOS cache: {version}")
+            return json_response({"success": True, "message": f"Deleted AGNOS {version}"})
+        except Exception as e:
+            logger.error(f"Failed to delete AGNOS cache: {e}")
+            return json_response({"success": False, "error": str(e)}, status=500)
 
 # =============================================================================
 # Application Setup (aiohttp)
@@ -2508,6 +2570,7 @@ if USE_AIOHTTP:
         app.router.add_post("/api/prepare-agnos", handle_prepare_agnos)
         app.router.add_get("/api/agnos-progress", handle_agnos_progress)
         app.router.add_get("/api/agnos-cache", handle_agnos_cache)
+        app.router.add_post("/api/delete-agnos-cache", handle_delete_agnos_cache)
         return app
 
 # =============================================================================
@@ -2732,21 +2795,16 @@ if not USE_AIOHTTP:
                 else:
                     self.send_json({"error": "version parameter required"}, 400)
             elif self.path == "/api/agnos-cache":
-                # Get all cached AGNOS versions
-                cache_info = []
+                # Get all cached AGNOS versions with full status
+                versions = []
                 if AGNOS_CACHE_DIR.exists():
                     for version_dir in AGNOS_CACHE_DIR.iterdir():
                         if version_dir.is_dir():
-                            files = list(version_dir.glob("*"))
-                            total_size = sum(f.stat().st_size for f in files if f.is_file())
-                            cache_info.append({
-                                "version": version_dir.name,
-                                "files": len(files),
-                                "size_mb": round(total_size / (1024 * 1024), 1)
-                            })
+                            status = get_agnos_cache_status(version_dir.name)
+                            versions.append(status)
                 self.send_json({
                     "success": True,
-                    "cached_versions": cache_info,
+                    "versions": versions,
                     "cache_dir": str(AGNOS_CACHE_DIR)
                 })
             else:
@@ -2790,6 +2848,8 @@ if not USE_AIOHTTP:
                 self._handle_cleanup(data)
             elif self.path == "/api/prepare-agnos":
                 self._handle_prepare_agnos(data)
+            elif self.path == "/api/delete-agnos-cache":
+                self._handle_delete_agnos_cache(data)
             else:
                 self.send_json({"error": "Not found"}, 404)
 
@@ -2983,6 +3043,28 @@ if not USE_AIOHTTP:
                 "version": version,
                 "downloading": True
             })
+
+        def _handle_delete_agnos_cache(self, data: dict):
+            """Handle POST /api/delete-agnos-cache - delete cached AGNOS version."""
+            version = data.get("version", "")
+            if not version:
+                self.send_json({"success": False, "error": "version parameter required"}, 400)
+                return
+
+            cache_dir = AGNOS_CACHE_DIR / version
+            if not cache_dir.exists():
+                self.send_json({"success": False, "error": f"AGNOS {version} not cached"}, 404)
+                return
+
+            try:
+                import shutil
+                shutil.rmtree(cache_dir)
+                activity_log.add("info", "agnos", f"Deleted cached AGNOS {version}")
+                logger.info(f"Deleted AGNOS cache: {version}")
+                self.send_json({"success": True, "message": f"Deleted AGNOS {version}"})
+            except Exception as e:
+                logger.error(f"Failed to delete AGNOS cache: {e}")
+                self.send_json({"success": False, "error": str(e)}, 500)
 
 # =============================================================================
 # Shutdown Handling
