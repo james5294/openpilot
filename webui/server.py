@@ -2569,6 +2569,64 @@ if USE_AIOHTTP:
             logger.error(f"Failed to delete AGNOS cache: {e}")
             return json_response({"success": False, "error": str(e)}, status=500)
 
+    async def handle_download_agnos_version(request: web.Request) -> web.Response:
+        """
+        Download AGNOS images by version directly.
+        POST with {"version": "16"} to start download.
+        """
+        try:
+            data = await request.json()
+        except Exception:
+            return json_response({"success": False, "error": "Invalid JSON"}, status=400)
+
+        version = data.get("version")
+        if not version:
+            return json_response({"success": False, "error": "version parameter required"}, status=400)
+
+        # Check if already cached
+        cache_status = get_agnos_cache_status(version)
+        if cache_status.get("complete"):
+            return json_response({
+                "success": True,
+                "message": f"AGNOS {version} already cached",
+                "version": version,
+                "cached": True,
+                "files": cache_status.get("files", 0)
+            })
+
+        # Find a fork that uses this AGNOS version to get the manifest
+        fork_dir = None
+        forks_dir = Path("/data/forks")
+        for fork in get_fork_list():
+            dir_name = fork.get("directory", fork["name"])
+            candidate_dir = forks_dir / dir_name
+            if candidate_dir.exists():
+                fork_version = get_fork_agnos_version(candidate_dir)
+                if fork_version == version:
+                    fork_dir = candidate_dir
+                    break
+
+        if not fork_dir:
+            return json_response({
+                "success": False,
+                "error": f"No installed fork requires AGNOS {version}"
+            }, status=404)
+
+        # Start background download
+        def bg_download():
+            download_agnos_images(fork_dir, version)
+
+        thread = threading.Thread(target=bg_download, daemon=True)
+        thread.start()
+
+        activity_log.add("info", "agnos", f"Started downloading AGNOS {version}")
+        return json_response({
+            "success": True,
+            "message": f"Started downloading AGNOS {version}",
+            "version": version,
+            "downloading": True
+        })
+
 # =============================================================================
 # Application Setup (aiohttp)
 # =============================================================================
@@ -2597,6 +2655,7 @@ if USE_AIOHTTP:
         app.router.add_get("/api/agnos-progress", handle_agnos_progress)
         app.router.add_get("/api/agnos-cache", handle_agnos_cache)
         app.router.add_post("/api/delete-agnos-cache", handle_delete_agnos_cache)
+        app.router.add_post("/api/download-agnos-version", handle_download_agnos_version)
         return app
 
 # =============================================================================
