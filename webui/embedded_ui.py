@@ -1182,21 +1182,22 @@ EMBEDDED_JS = '''
                     toast.error("AGNOS download timed out");
                     return;
                 }
-                api.getAgnosProgress(version).then(function(progress) {
-                    if (progress.status === "complete") {
+                api.getAgnosProgress(version).then(function(response) {
+                    var p = response.progress || {};
+                    if (p.status === "complete") {
                         toast.success("AGNOS " + version + " download complete!");
                         fetchStatus(true);  // Refresh to update UI
                         return;
                     }
-                    if (progress.status === "error") {
-                        toast.error("AGNOS download failed: " + (progress.error || "Unknown error"));
+                    if (p.status === "error") {
+                        toast.error("AGNOS download failed: " + (p.error || "Unknown error"));
                         return;
                     }
                     // Show progress every 30 seconds (10 polls)
-                    if (progress.status === "downloading" && pollCount - lastNotify >= 10) {
+                    if (p.status === "downloading" && pollCount - lastNotify >= 10) {
                         lastNotify = pollCount;
-                        var pct = progress.bytes_total > 0 ? Math.round((progress.bytes_done / progress.bytes_total) * 100) : 0;
-                        var msg = "Downloading AGNOS " + version + ": " + progress.files_done + "/" + progress.files_total + " files";
+                        var pct = p.bytes_total > 0 ? Math.round((p.bytes_done / p.bytes_total) * 100) : 0;
+                        var msg = "Downloading AGNOS " + version + ": " + p.files_done + "/" + p.files_total + " files";
                         if (pct > 0) msg += " (" + pct + "%)";
                         toast.info(msg);
                     }
@@ -1332,22 +1333,23 @@ EMBEDDED_JS = '''
             }
             function poll() {
                 if (!state.agnosDownloads[version] || !state.agnosDownloads[version].active) return;
-                api.getAgnosProgress(version).then(function(progress) {
-                    if (progress.status === "complete") {
+                api.getAgnosProgress(version).then(function(response) {
+                    var p = response.progress || {};
+                    if (p.status === "complete") {
                         toast.success("AGNOS " + version + " download complete!");
                         delete state.agnosDownloads[version];
                         fetchAgnosCache();
                         fetchStatus(true);
                         return;
                     }
-                    if (progress.status === "error") {
-                        toast.error("AGNOS download failed: " + (progress.error || "Unknown error"));
+                    if (p.status === "error") {
+                        toast.error("AGNOS download failed: " + (p.error || "Unknown error"));
                         delete state.agnosDownloads[version];
                         fetchAgnosCache();
                         return;
                     }
-                    if (progress.status === "downloading") {
-                        updateProgressUI(progress);
+                    if (p.status === "downloading") {
+                        updateProgressUI(p);
                     }
                     setTimeout(poll, 2000);
                 }).catch(function() {
