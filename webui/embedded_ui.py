@@ -891,11 +891,14 @@ EMBEDDED_JS = '''
     window.waitForDeviceReboot = waitForDeviceReboot;
     function getForkIcon(fork) {
         var name = ((fork && fork.name) || fork || "").toLowerCase();
-        if (name.indexOf("frog") >= 0) return "🐸";
-        if (name.indexOf("sunny") >= 0) return "☀️";
-        if (name.indexOf("dragon") >= 0) return "🐲";
-        if (name.indexOf("carrot") >= 0) return "🥕";
-        if (name.indexOf("stock") >= 0 || name.indexOf("comma") >= 0) return "📱";
+        var branch = ((fork && fork.branch) || "").toLowerCase();
+        var combined = name + " " + branch;
+        if (combined.indexOf("frog") >= 0) return "🐸";
+        if (combined.indexOf("sunny") >= 0) return "☀️";
+        if (combined.indexOf("dragon") >= 0) return "🐲";
+        if (combined.indexOf("carrot") >= 0) return "🥕";
+        if (combined.indexOf("stock") >= 0 || combined.indexOf("comma") >= 0) return "📱";
+        if (name.indexOf("openpilot") >= 0 && branch === "master") return "📱";
         return "🔀";
     }
     function escapeHtml(str) { if (!str) return ""; var div = document.createElement("div"); div.textContent = str; return div.innerHTML; }
