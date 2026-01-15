@@ -102,8 +102,8 @@ FORK_TEMPLATES = {
     },
     "carrot": {
         "name": "CarrotPilot",
-        "url": "https://github.com/ajouatom/carern.git",
-        "branch": "carrot",
+        "url": "https://github.com/ajouatom/openpilot.git",
+        "branch": "carrot2-v9",
         "description": "Korean community fork with local optimizations"
     },
     "stock": {
@@ -589,6 +589,22 @@ def get_device_info() -> str:
 # =============================================================================
 # Fork Operations
 # =============================================================================
+def validate_git_url(url: str) -> bool:
+    """Validate git URL format (HTTPS GitHub URLs only for security)."""
+    if not url or not isinstance(url, str):
+        return False
+    # Allow only HTTPS GitHub URLs to prevent arbitrary command injection
+    pattern = re.compile(r'^https://github\.com/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+(?:\.git)?$')
+    return bool(pattern.match(url))
+
+def validate_branch_name(branch: str) -> bool:
+    """Validate git branch name format."""
+    if not branch or not isinstance(branch, str):
+        return False
+    # Git branch names: allow alphanumeric, dash, underscore, dot, slash
+    pattern = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_./\-]{0,127}$')
+    return bool(pattern.match(branch))
+
 def run_fork_swap(command: str, *args) -> tuple[bool, str]:
     """
     Execute fork_swap.sh with given command and arguments.
@@ -597,10 +613,20 @@ def run_fork_swap(command: str, *args) -> tuple[bool, str]:
     if not validate_command(command):
         return False, f"Command '{command}' not allowed"
 
-    # Validate all arguments that look like fork names
-    for arg in args:
-        if arg and not validate_fork_name(arg):
-            return False, f"Invalid argument: '{arg}'"
+    # Command-specific argument validation
+    if command == "clone":
+        # clone args: (fork_name, url, branch)
+        if len(args) >= 1 and args[0] and not validate_fork_name(args[0]):
+            return False, f"Invalid fork name: '{args[0]}'"
+        if len(args) >= 2 and args[1] and not validate_git_url(args[1]):
+            return False, f"Invalid git URL: '{args[1]}'"
+        if len(args) >= 3 and args[2] and not validate_branch_name(args[2]):
+            return False, f"Invalid branch name: '{args[2]}'"
+    else:
+        # For other commands, validate all arguments as fork names
+        for arg in args:
+            if arg and not validate_fork_name(arg):
+                return False, f"Invalid argument: '{arg}'"
 
     timeout = COMMAND_TIMEOUTS.get(command, 30)
 
