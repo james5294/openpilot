@@ -2850,6 +2850,8 @@ if not USE_AIOHTTP:
                 self._handle_prepare_agnos(data)
             elif self.path == "/api/delete-agnos-cache":
                 self._handle_delete_agnos_cache(data)
+            elif self.path == "/api/download-agnos-version":
+                self._handle_download_agnos_version(data)
             else:
                 self.send_json({"error": "Not found"}, 404)
 
@@ -3065,6 +3067,58 @@ if not USE_AIOHTTP:
             except Exception as e:
                 logger.error(f"Failed to delete AGNOS cache: {e}")
                 self.send_json({"success": False, "error": str(e)}, 500)
+
+        def _handle_download_agnos_version(self, data: dict):
+            """Handle POST /api/download-agnos-version - download AGNOS by version directly."""
+            version = data.get("version", "")
+            if not version:
+                self.send_json({"success": False, "error": "version parameter required"}, 400)
+                return
+
+            # Check if already cached
+            cache_status = get_agnos_cache_status(version)
+            if cache_status.get("complete"):
+                self.send_json({
+                    "success": True,
+                    "message": f"AGNOS {version} already cached",
+                    "version": version,
+                    "cached": True,
+                    "files": cache_status.get("files", 0)
+                })
+                return
+
+            # Find a fork that uses this AGNOS version to get the manifest
+            fork_dir = None
+            for fork in get_fork_list():
+                dir_name = fork.get("directory", fork["name"])
+                candidate_dir = FORKS_DIR / dir_name
+                if candidate_dir.exists():
+                    fork_version = get_fork_agnos_version(candidate_dir)
+                    if fork_version == version:
+                        fork_dir = candidate_dir
+                        break
+
+            if not fork_dir:
+                self.send_json({
+                    "success": False,
+                    "error": f"No installed fork requires AGNOS {version}"
+                }, 404)
+                return
+
+            # Start background download
+            def bg_download():
+                download_agnos_images(fork_dir, version)
+
+            thread = threading.Thread(target=bg_download, daemon=True)
+            thread.start()
+
+            activity_log.add("info", "agnos", f"Started downloading AGNOS {version}")
+            self.send_json({
+                "success": True,
+                "message": f"Started downloading AGNOS {version}",
+                "version": version,
+                "downloading": True
+            })
 
 # =============================================================================
 # Shutdown Handling

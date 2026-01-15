@@ -525,6 +525,11 @@ html, body {
 .agnos-required-item .status { display: flex; align-items: center; gap: 6px; }
 .agnos-required-item .status.cached { color: var(--op-success); }
 .agnos-required-item .status.missing { color: var(--op-warning); }
+.agnos-required-item .actions { display: flex; align-items: center; gap: 12px; }
+.agnos-progress { display: flex; flex-direction: column; gap: 4px; min-width: 200px; }
+.agnos-progress-bar { height: 8px; background: var(--op-bg-hover); border-radius: 4px; overflow: hidden; }
+.agnos-progress-bar-fill { height: 100%; background: var(--op-accent); border-radius: 4px; transition: width 0.3s ease; }
+.agnos-progress-text { font-size: 11px; color: var(--op-text-secondary); display: flex; justify-content: space-between; }
 .text-muted { color: var(--op-text-muted); font-size: 13px; }
 .agnos-empty { text-align: center; padding: 24px; color: var(--op-text-muted); }
 '''
@@ -768,7 +773,7 @@ def get_embedded_html(version: str = "0.0.0"):
 EMBEDDED_JS = '''
 (function() {
     "use strict";
-    var state = { currentFork: null, forks: [], templates: {}, diskFreeGb: 0, device: "comma device", operationActive: false, pollInterval: null, activeForkDetails: {}, deviceAgnosVersion: "unknown" };
+    var state = { currentFork: null, forks: [], templates: {}, diskFreeGb: 0, device: "comma device", operationActive: false, pollInterval: null, activeForkDetails: {}, deviceAgnosVersion: "unknown", agnosDownloads: {} };
     var api = {
         get: function(endpoint) { return fetch("/api" + endpoint).then(function(res) { if (!res.ok) throw new Error("API error: " + res.status); return res.json(); }); },
         post: function(endpoint, data) { return fetch("/api" + endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data || {}) }).then(function(res) { return res.json(); }); },
@@ -789,7 +794,8 @@ EMBEDDED_JS = '''
         reboot: function() { return this.post("/reboot"); },
         prepareAgnos: function(fork) { return this.post("/prepare-agnos", { fork: fork }); },
         getAgnosProgress: function(version) { return this.get("/agnos-progress?version=" + encodeURIComponent(version)); },
-        getAgnosCache: function() { return this.get("/agnos-cache"); }
+        getAgnosCache: function() { return this.get("/agnos-cache"); },
+        downloadAgnosVersion: function(version) { return this.post("/download-agnos-version", { version: version }); }
     };
     var toast = {
         container: null,
@@ -1068,12 +1074,33 @@ EMBEDDED_JS = '''
         var requiredHtml = "";
         for (var ver in requiredMap) {
             var info = requiredMap[ver];
-            var statusClass = info.cached ? "cached" : "missing";
-            var statusIcon = info.cached ? "<svg width=\\"12\\" height=\\"12\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"3\\"><path d=\\"M20 6L9 17l-5-5\\"/></svg> Cached" : "<svg width=\\"12\\" height=\\"12\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><circle cx=\\"12\\" cy=\\"12\\" r=\\"10\\"/><path d=\\"M12 8v4M12 16h.01\\"/></svg> Not Cached";
-            requiredHtml += "<div class=\\"agnos-required-item\\"><div><div class=\\"version\\">AGNOS " + escapeHtml(ver) + "</div><div class=\\"forks\\">Used by: " + escapeHtml(info.forks.join(", ")) + "</div></div><div class=\\"status " + statusClass + "\\">" + statusIcon + "</div></div>";
+            var isDownloading = state.agnosDownloads[ver] && state.agnosDownloads[ver].active;
+            var actionHtml = "";
+            if (info.cached) {
+                actionHtml = "<div class=\\"status cached\\"><svg width=\\"12\\" height=\\"12\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"3\\"><path d=\\"M20 6L9 17l-5-5\\"/></svg> Cached</div>";
+            } else if (isDownloading) {
+                var dl = state.agnosDownloads[ver];
+                var pct = dl.percent || 0;
+                var eta = dl.eta || "";
+                actionHtml = "<div class=\\"agnos-progress\\" id=\\"agnos-progress-" + escapeHtml(ver) + "\\"><div class=\\"agnos-progress-bar\\"><div class=\\"agnos-progress-bar-fill\\" style=\\"width: " + pct + "%\\"></div></div><div class=\\"agnos-progress-text\\"><span>" + pct + "% - " + (dl.files_done || 0) + "/" + (dl.files_total || 0) + " files</span><span>" + eta + "</span></div></div>";
+            } else {
+                actionHtml = "<div class=\\"actions\\"><div class=\\"status missing\\"><svg width=\\"12\\" height=\\"12\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><circle cx=\\"12\\" cy=\\"12\\" r=\\"10\\"/><path d=\\"M12 8v4M12 16h.01\\"/></svg> Not Cached</div><button class=\\"btn btn-sm btn-primary\\" onclick=\\"app.downloadAgnosVersion('" + escapeHtml(ver) + "')\\" title=\\"Download AGNOS " + escapeHtml(ver) + " (~4GB)\\">Download</button></div>";
+            }
+            requiredHtml += "<div class=\\"agnos-required-item\\" id=\\"agnos-required-" + escapeHtml(ver) + "\\"><div><div class=\\"version\\">AGNOS " + escapeHtml(ver) + "</div><div class=\\"forks\\">Used by: " + escapeHtml(info.forks.join(", ")) + "</div></div>" + actionHtml + "</div>";
         }
         if (requiredHtml === "") requiredHtml = "<div class=\\"agnos-empty\\">No forks with AGNOS version info found</div>";
         requiredList.innerHTML = requiredHtml;
+    }
+    function formatBytes(bytes) {
+        if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(1) + " GB";
+        if (bytes >= 1048576) return (bytes / 1048576).toFixed(0) + " MB";
+        return bytes + " B";
+    }
+    function formatEta(seconds) {
+        if (seconds <= 0 || !isFinite(seconds)) return "";
+        if (seconds < 60) return "~" + Math.round(seconds) + "s remaining";
+        if (seconds < 3600) return "~" + Math.round(seconds / 60) + "m remaining";
+        return "~" + Math.round(seconds / 3600) + "h remaining";
     }
     function startPolling() { fetchStatus(); fetchTemplates(); state.pollInterval = setInterval(fetchStatus, 5000); }
     window.app = {
@@ -1236,6 +1263,89 @@ EMBEDDED_JS = '''
                     toast.error(result.error || "Failed to delete cache");
                 }
             }).catch(function() { toast.error("Failed to delete AGNOS cache"); });
+        },
+        downloadAgnosVersion: function(version) {
+            toast.info("Starting AGNOS " + version + " download...");
+            state.agnosDownloads[version] = { active: true, percent: 0, files_done: 0, files_total: 0, eta: "Calculating...", startTime: Date.now() };
+            fetchAgnosCache();  // Re-render to show progress bar
+            api.downloadAgnosVersion(version).then(function(result) {
+                if (result.cached) {
+                    toast.success("AGNOS " + version + " already cached!");
+                    delete state.agnosDownloads[version];
+                    fetchAgnosCache();
+                    fetchStatus(true);
+                } else if (result.downloading) {
+                    app.pollAgnosDownload(version);
+                } else {
+                    toast.error(result.error || "Failed to start download");
+                    delete state.agnosDownloads[version];
+                    fetchAgnosCache();
+                }
+            }).catch(function(err) {
+                toast.error("Failed to start AGNOS download");
+                delete state.agnosDownloads[version];
+                fetchAgnosCache();
+            });
+        },
+        pollAgnosDownload: function(version) {
+            var startTime = state.agnosDownloads[version] ? state.agnosDownloads[version].startTime : Date.now();
+            var lastBytes = 0;
+            var lastTime = Date.now();
+            function updateProgressUI(progress) {
+                var dl = state.agnosDownloads[version];
+                if (!dl) return;
+                var pct = progress.bytes_total > 0 ? Math.round((progress.bytes_done / progress.bytes_total) * 100) : 0;
+                // Calculate ETA based on download speed
+                var now = Date.now();
+                var bytesPerSec = 0;
+                if (now > lastTime && progress.bytes_done > lastBytes) {
+                    bytesPerSec = (progress.bytes_done - lastBytes) / ((now - lastTime) / 1000);
+                    lastBytes = progress.bytes_done;
+                    lastTime = now;
+                }
+                var remaining = progress.bytes_total - progress.bytes_done;
+                var etaSec = bytesPerSec > 0 ? remaining / bytesPerSec : 0;
+                dl.percent = pct;
+                dl.files_done = progress.files_done || 0;
+                dl.files_total = progress.files_total || 0;
+                dl.eta = formatEta(etaSec);
+                // Update the progress bar in-place without full re-render
+                var progEl = document.getElementById("agnos-progress-" + version);
+                if (progEl) {
+                    var barFill = progEl.querySelector(".agnos-progress-bar-fill");
+                    var textEl = progEl.querySelector(".agnos-progress-text");
+                    if (barFill) barFill.style.width = pct + "%";
+                    if (textEl) textEl.innerHTML = "<span>" + pct + "% - " + dl.files_done + "/" + dl.files_total + " files (" + formatBytes(progress.bytes_done) + "/" + formatBytes(progress.bytes_total) + ")</span><span>" + dl.eta + "</span>";
+                } else {
+                    // Re-render if element not found (first update)
+                    fetchAgnosCache();
+                }
+            }
+            function poll() {
+                if (!state.agnosDownloads[version] || !state.agnosDownloads[version].active) return;
+                api.getAgnosProgress(version).then(function(progress) {
+                    if (progress.status === "complete") {
+                        toast.success("AGNOS " + version + " download complete!");
+                        delete state.agnosDownloads[version];
+                        fetchAgnosCache();
+                        fetchStatus(true);
+                        return;
+                    }
+                    if (progress.status === "error") {
+                        toast.error("AGNOS download failed: " + (progress.error || "Unknown error"));
+                        delete state.agnosDownloads[version];
+                        fetchAgnosCache();
+                        return;
+                    }
+                    if (progress.status === "downloading") {
+                        updateProgressUI(progress);
+                    }
+                    setTimeout(poll, 2000);
+                }).catch(function() {
+                    setTimeout(poll, 3000);
+                });
+            }
+            setTimeout(poll, 1000);
         }
     };
     document.addEventListener("DOMContentLoaded", function() {
