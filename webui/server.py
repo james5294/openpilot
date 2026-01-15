@@ -727,19 +727,19 @@ def get_git_info(repo_path: Path, check_updates: bool = False) -> dict:
                 elif len(parts) == 1:
                     info["repo"] = parts[0]
 
-        # Generate display name
+        # Generate display name (without branch - branch shown separately in UI)
         owner_repo = f"{info['owner']}/{info['repo']}".lower()
 
         # Check if it's a known fork
         if owner_repo in KNOWN_FORKS:
             info["fork_name"] = KNOWN_FORKS[owner_repo]
-            info["display_name"] = f"{KNOWN_FORKS[owner_repo]} ({info['branch']})"
+            info["display_name"] = KNOWN_FORKS[owner_repo]
         elif info["owner"] != "unknown" and info["repo"] != "unknown":
             # Custom fork - show owner/repo
             info["fork_name"] = f"{info['owner']}/{info['repo']}"
-            info["display_name"] = f"{info['owner']}/{info['repo']} ({info['branch']})"
+            info["display_name"] = f"{info['owner']}/{info['repo']}"
         elif info["branch"] != "unknown":
-            info["display_name"] = f"openpilot ({info['branch']})"
+            info["display_name"] = "openpilot"
         else:
             info["display_name"] = "unknown"
 

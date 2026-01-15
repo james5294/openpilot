@@ -257,6 +257,9 @@ html, body {
     padding: 20px;
     transition: all var(--op-transition);
     cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    min-height: 180px;
 }
 .fork-card:hover {
     background: var(--op-bg-elevated);
@@ -265,10 +268,11 @@ html, body {
     box-shadow: var(--op-shadow);
 }
 .fork-card.active { border-color: var(--op-accent); background: var(--op-accent-light); }
-.fork-card-header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.fork-card-header { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 8px; }
 .fork-card-icon {
     width: 40px;
     height: 40px;
+    min-width: 40px;
     background: var(--op-bg-hover);
     border-radius: var(--op-radius-md);
     display: flex;
@@ -276,11 +280,13 @@ html, body {
     justify-content: center;
     font-size: 18px;
 }
-.fork-card-title { flex: 1; }
-.fork-card-title h3 { font-size: 15px; font-weight: 600; margin-bottom: 2px; }
+.fork-card-title { flex: 1; min-width: 0; }
+.fork-card-title h3 { font-size: 15px; font-weight: 600; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fork-card-title .type { font-size: 11px; color: var(--op-text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
-.fork-card-body { font-size: 13px; color: var(--op-text-secondary); margin-bottom: 16px; }
-.fork-card-footer { display: flex; justify-content: flex-end; gap: 8px; }
+.fork-card-body { font-size: 13px; color: var(--op-text-secondary); flex: 1; }
+.fork-card-body .branch-row { margin-bottom: 6px; }
+.fork-card-body .agnos-row { margin-top: 8px; }
+.fork-card-footer { display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-top: auto; padding-top: 12px; }
 .clone-card {
     background: var(--op-bg-card);
     border: 2px dashed var(--op-border);
@@ -942,7 +948,7 @@ EMBEDDED_JS = '''
                     prepareBtn = "<button class=\\"btn btn-sm btn-secondary\\" onclick=\\"event.stopPropagation(); app.prepareAgnos('" + forkId + "', '" + escapeHtml(fork.agnos_version || "") + "')\\" title=\\"Pre-download AGNOS " + escapeHtml(fork.agnos_version || "") + " to speed up switch\\">Prepare OS</button>";
                 }
             }
-            html += "<div class=\\"fork-card\\" onclick=\\"app.showSwitchConfirm('" + forkId + "')\\" title=\\"Click to switch to " + escapeHtml(fork.name) + "\\"><div class=\\"fork-card-header\\"><div class=\\"fork-card-icon\\">" + getForkIcon(fork) + "</div><div class=\\"fork-card-title\\"><h3>" + escapeHtml(fork.name) + "</h3><span class=\\"type\\">" + (fork.type === "overlay" ? "Overlay" : "Managed") + "</span></div></div><div class=\\"fork-card-body\\"><div>Branch: " + escapeHtml(fork.branch || "unknown") + "</div><div style=\\"margin-top:4px\\">" + getAgnosBadge(fork) + "</div></div><div class=\\"fork-card-footer\\">" + prepareBtn + "<button class=\\"btn btn-sm btn-primary\\" onclick=\\"event.stopPropagation(); app.showSwitchConfirm('" + forkId + "')\\" title=\\"Switch to this fork and reboot\\">Switch</button></div></div>";
+            html += "<div class=\\"fork-card\\" onclick=\\"app.showSwitchConfirm('" + forkId + "')\\" title=\\"Click to switch to " + escapeHtml(fork.name) + "\\"><div class=\\"fork-card-header\\"><div class=\\"fork-card-icon\\">" + getForkIcon(fork) + "</div><div class=\\"fork-card-title\\"><h3>" + escapeHtml(fork.name) + "</h3><span class=\\"type\\">" + (fork.type === "overlay" ? "Overlay" : "Managed") + "</span></div></div><div class=\\"fork-card-body\\"><div class=\\"branch-row\\">Branch: " + escapeHtml(fork.branch || "unknown") + "</div><div class=\\"agnos-row\\">" + getAgnosBadge(fork) + "</div></div><div class=\\"fork-card-footer\\">" + prepareBtn + "<button class=\\"btn btn-sm btn-primary\\" onclick=\\"event.stopPropagation(); app.showSwitchConfirm('" + forkId + "')\\" title=\\"Switch to this fork and reboot\\">Switch</button></div></div>";
         }
         html += "<div class=\\"clone-card\\" onclick=\\"app.showCloneModal()\\" title=\\"Clone a new fork from popular templates or custom URL\\"><svg viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M12 5v14M5 12h14\\"/></svg><span>Clone New Fork</span></div>";
         container.innerHTML = html;
