@@ -448,11 +448,11 @@ get_stage_bounds() {
     case "$stage" in
         prep) base=0; span=2 ;;
         counting) base=2; span=6 ;;
-        compressing) base=8; span=12 ;;
-        receiving) base=20; span=60 ;;
-        resolving) base=80; span=15 ;;
-        checking) base=95; span=5 ;;
-        finalize) base=98; span=2 ;;
+        compressing) base=8; span=10 ;;
+        receiving) base=18; span=55 ;;
+        resolving) base=73; span=15 ;;
+        checking) base=88; span=8 ;;
+        finalize) base=96; span=3 ;;
         complete) base=100; span=0 ;;
         error) base=0; span=0 ;;
     esac
@@ -1986,6 +1986,10 @@ format_bytes() {
 confirm_action() {
     local prompt="${1:-Are you sure?}"
     local default="${2:-n}"
+
+    if [[ "$RUN_INTERACTIVE" != "true" ]]; then
+        [[ "$default" == "y" ]] && return 0 || return 1
+    fi
 
     local yn_prompt
     if [[ "$default" == "y" ]]; then
@@ -6427,10 +6431,14 @@ clone_fork() {
         return 1
     fi
 
+    progress_update "finalize" 10 "Setting permissions"
+
     # Fix ownership so openpilot (running as comma user) can access the files
     local fork_path
     fork_path=$(get_fork_path "$fork_name")
     fix_fork_ownership "$fork_path"
+
+    progress_update "finalize" 40 "Recording metadata"
 
     # Apply git hardening (safe.directory, gc settings)
     harden_git_config "$clone_target"
@@ -6439,6 +6447,8 @@ clone_fork() {
     if ! create_fork_info "$fork_name" "$git_url" "$branch"; then
         log_warn "Failed to create fork info (continuing anyway)"
     fi
+
+    progress_update "finalize" 70 "Finalizing setup"
 
     log_operation_success "Fork '$fork_name' cloned"
 
@@ -6450,6 +6460,8 @@ clone_fork() {
 
     # Run post-clone hook
     run_post_hook "clone" "$fork_name" "$git_url" "$branch"
+
+    progress_update "finalize" 95 "Wrapping up"
 
     progress_finish "true"
 
