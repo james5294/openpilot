@@ -311,10 +311,21 @@ def find_cached_file(cache_dir: Path, partition: dict) -> Optional[Path]:
     Find the cached file for a partition.
     Files may be named by URL filename or partition name.
     """
-    url = partition.get('url', '')
-    if url:
-        # Try URL-based filename
+    def add_url_candidates(url: str, bucket: list[str]) -> None:
+        if not url:
+            return
         filename = url.split('/')[-1]
+        if filename:
+            bucket.append(filename)
+            if filename.endswith('.xz'):
+                bucket.append(filename[:-3])
+
+    candidates: list[str] = []
+    add_url_candidates(partition.get('url', ''), candidates)
+    alt = partition.get('alt', {}) or {}
+    add_url_candidates(alt.get('url', ''), candidates)
+
+    for filename in candidates:
         cache_file = cache_dir / filename
         if cache_file.exists():
             return cache_file

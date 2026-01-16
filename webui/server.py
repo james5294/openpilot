@@ -975,6 +975,7 @@ try:
 except ImportError:
     logger.warning("Local AGNOS flasher not available - AGNOS pre-flash disabled")
     _flash_agnos_module = False
+    verify_agnos_from_cache = None
 
 
 def get_fork_dir_by_name(fork_name: str) -> Optional[Path]:
@@ -1178,6 +1179,18 @@ def get_agnos_cache_status(version: str) -> dict:
 
     return status
 
+
+def get_agnos_verification(version: str) -> Optional[dict]:
+    if not version or version == "unknown":
+        return None
+    if not _flash_agnos_module or verify_agnos_from_cache is None:
+        return None
+    try:
+        return verify_agnos_from_cache(version)
+    except Exception as e:
+        logger.warning(f"AGNOS cache verify failed for {version}: {e}")
+        return {"valid": False, "error": str(e)}
+
 # Global to track download progress
 _agnos_download_progress = {}
 
@@ -1338,8 +1351,11 @@ def get_fork_list() -> list[dict]:
         git_info = get_git_info(openpilot_path)
         fork_agnos = get_fork_agnos_version(openpilot_path)
 
-        # Check if this fork's AGNOS version is cached
+        # Check if this fork's AGNOS version is cached/verified
         agnos_cache = get_agnos_cache_status(fork_agnos) if fork_agnos and fork_agnos != "unknown" else {}
+        agnos_verify = get_agnos_verification(fork_agnos)
+        agnos_cached = agnos_verify.get("valid", False) if agnos_verify is not None else agnos_cache.get("complete", False)
+        agnos_missing = agnos_verify.get("missing", []) if agnos_verify and not agnos_verify.get("valid") else []
 
         forks.append({
             "name": git_info["display_name"],
@@ -1351,7 +1367,8 @@ def get_fork_list() -> list[dict]:
             "install_type": "direct",  # Not symlink-managed
             "agnos_version": fork_agnos,
             "agnos_compatible": is_agnos_compatible(fork_agnos),
-            "agnos_cached": agnos_cache.get("complete", False),
+            "agnos_cached": agnos_cached,
+            "agnos_missing": agnos_missing,
         })
 
     # Then, scan /data/forks for fork-managed installations
@@ -1382,8 +1399,11 @@ def get_fork_list() -> list[dict]:
             # Get AGNOS version from fork's launch_env.sh
             fork_agnos = get_fork_agnos_version(fork_dir)
 
-            # Check if this fork's AGNOS version is cached
+            # Check if this fork's AGNOS version is cached/verified
             agnos_cache = get_agnos_cache_status(fork_agnos) if fork_agnos and fork_agnos != "unknown" else {}
+            agnos_verify = get_agnos_verification(fork_agnos)
+            agnos_cached = agnos_verify.get("valid", False) if agnos_verify is not None else agnos_cache.get("complete", False)
+            agnos_missing = agnos_verify.get("missing", []) if agnos_verify and not agnos_verify.get("valid") else []
 
             forks.append({
                 "name": display_name,
@@ -1396,7 +1416,8 @@ def get_fork_list() -> list[dict]:
                 "install_type": "symlink",  # Managed via /data/forks symlinks
                 "agnos_version": fork_agnos,
                 "agnos_compatible": is_agnos_compatible(fork_agnos),
-                "agnos_cached": agnos_cache.get("complete", False),
+                "agnos_cached": agnos_cached,
+                "agnos_missing": agnos_missing,
             })
 
     return forks
@@ -2735,7 +2756,8 @@ if USE_AIOHTTP:
 
             # Check if already cached
             cache_status = get_agnos_cache_status(fork_agnos)
-            if cache_status.get("cached") and cache_status.get("files"):
+            verify = get_agnos_verification(fork_agnos)
+            if cache_status.get("cached") and cache_status.get("files") and (verify is None or verify.get("valid")):
                 return json_response({
                     "success": True,
                     "message": f"AGNOS {fork_agnos} already cached",
@@ -2744,6 +2766,8 @@ if USE_AIOHTTP:
                     "files": len(cache_status["files"]),
                     "size_mb": cache_status["total_size"] / 1024 / 1024
                 })
+            if verify is not None and not verify.get("valid"):
+                logger.warning(f"AGNOS {fork_agnos} cache invalid, re-downloading")
 
             # Start download in background thread
             def do_download():
@@ -2793,6 +2817,12 @@ if USE_AIOHTTP:
             for d in AGNOS_CACHE_DIR.iterdir():
                 if d.is_dir():
                     status = get_agnos_cache_status(d.name)
+                    verify = get_agnos_verification(d.name)
+                    if verify is not None:
+                        status["valid"] = verify.get("valid", False)
+                        status["missing"] = verify.get("missing", [])
+                        if verify.get("error"):
+                            status["error"] = verify.get("error")
                     versions.append(status)
 
         return json_response({
@@ -2844,7 +2874,8 @@ if USE_AIOHTTP:
 
         # Check if already cached
         cache_status = get_agnos_cache_status(version)
-        if cache_status.get("complete"):
+        verify = get_agnos_verification(version)
+        if cache_status.get("complete") and (verify is None or verify.get("valid")):
             return json_response({
                 "success": True,
                 "message": f"AGNOS {version} already cached",
@@ -3151,6 +3182,12 @@ if not USE_AIOHTTP:
                     for version_dir in AGNOS_CACHE_DIR.iterdir():
                         if version_dir.is_dir():
                             status = get_agnos_cache_status(version_dir.name)
+                            verify = get_agnos_verification(version_dir.name)
+                            if verify is not None:
+                                status["valid"] = verify.get("valid", False)
+                                status["missing"] = verify.get("missing", [])
+                                if verify.get("error"):
+                                    status["error"] = verify.get("error")
                             versions.append(status)
                 self.send_json({
                     "success": True,

@@ -174,6 +174,8 @@ html, body {
 .btn-secondary:hover { background: var(--op-bg-hover); border-color: var(--op-border-hover); }
 .agnos-ready-badge { display: inline-flex; align-items: center; gap: 4px; padding: 4px 8px; font-size: 11px; font-weight: 500; color: #22c55e; background: rgba(34, 197, 94, 0.15); border-radius: 4px; }
 .agnos-ready-badge svg { stroke: currentColor; }
+.agnos-invalid-badge { display: inline-flex; align-items: center; gap: 4px; padding: 4px 8px; font-size: 11px; font-weight: 500; color: #f59e0b; background: rgba(245, 158, 11, 0.18); border-radius: 4px; }
+.agnos-invalid-badge svg { stroke: currentColor; }
 .btn-danger { background: var(--op-danger); color: white; }
 .btn-danger:hover { background: var(--op-danger-hover); }
 .btn-warning { background: #ff8c00; color: white; }
@@ -1171,10 +1173,15 @@ EMBEDDED_JS = '''
             var forkId = escapeHtml(fork.directory || fork.name);
             var needsAgnos = fork.agnos_compatible === false;
             var agnosCached = fork.agnos_cached === true;
+            var agnosMissing = fork.agnos_missing || [];
+            var agnosInvalid = agnosMissing.length > 0;
             var prepareBtn = "";
             if (needsAgnos) {
                 if (agnosCached) {
                     prepareBtn = "<span class=\\"agnos-ready-badge\\" title=\\"AGNOS " + escapeHtml(fork.agnos_version || "") + " is cached and ready\\"><svg width=\\"12\\" height=\\"12\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"3\\"><path d=\\"M20 6L9 17l-5-5\\"/></svg> OS Ready</span>";
+                } else if (agnosInvalid) {
+                    var missingText = "Missing: " + agnosMissing.join(", ");
+                    prepareBtn = "<span class=\\"agnos-invalid-badge\\" title=\\"AGNOS " + escapeHtml(fork.agnos_version || "") + " cache invalid. " + escapeHtml(missingText) + "\\"><svg width=\\"12\\" height=\\"12\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"3\\"><path d=\\"M12 3l9 16H3l9-16z\\"/><path d=\\"M12 9v4\\"/><path d=\\"M12 17h.01\\"/></svg> OS Invalid</span><button class=\\"btn btn-sm btn-secondary\\" onclick=\\"event.stopPropagation(); app.prepareAgnos('" + forkId + "', '" + escapeHtml(fork.agnos_version || "") + "')\\" title=\\"Re-download AGNOS " + escapeHtml(fork.agnos_version || "") + "\\">Repair OS</button>";
                 } else {
                     prepareBtn = "<button class=\\"btn btn-sm btn-secondary\\" onclick=\\"event.stopPropagation(); app.prepareAgnos('" + forkId + "', '" + escapeHtml(fork.agnos_version || "") + "')\\" title=\\"Pre-download AGNOS " + escapeHtml(fork.agnos_version || "") + " to speed up switch\\">Prepare OS</button>";
                 }
@@ -1292,7 +1299,19 @@ EMBEDDED_JS = '''
                     var v = versions[i];
                     var sizeStr = v.total_size > 1073741824 ? (v.total_size / 1073741824).toFixed(1) + " GB" : (v.total_size / 1048576).toFixed(0) + " MB";
                     var dateStr = v.downloaded_at ? new Date(v.downloaded_at).toLocaleDateString() : "Unknown";
-                    var statusBadge = v.complete ? "<span class=\\"agnos-ready-badge\\"><svg width=\\"10\\" height=\\"10\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"3\\"><path d=\\"M20 6L9 17l-5-5\\"/></svg> Complete</span>" : "<span style=\\"color: var(--op-warning);\\">Incomplete</span>";
+                    var statusBadge = "";
+                    if (typeof v.valid !== "undefined") {
+                        if (v.valid) {
+                            statusBadge = "<span class=\\"agnos-ready-badge\\" title=\\"Cache verified\\"><svg width=\\"10\\" height=\\"10\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"3\\"><path d=\\"M20 6L9 17l-5-5\\"/></svg> Verified</span>";
+                        } else if (v.complete) {
+                            var missingText = v.missing && v.missing.length ? "Missing: " + v.missing.join(", ") : "Cache verification failed";
+                            statusBadge = "<span class=\\"agnos-invalid-badge\\" title=\\"" + escapeHtml(missingText) + "\\"><svg width=\\"10\\" height=\\"10\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"3\\"><path d=\\"M12 3l9 16H3l9-16z\\"/><path d=\\"M12 9v4\\"/><path d=\\"M12 17h.01\\"/></svg> Invalid</span>";
+                        } else {
+                            statusBadge = "<span style=\\"color: var(--op-warning);\\">Incomplete</span>";
+                        }
+                    } else {
+                        statusBadge = v.complete ? "<span class=\\"agnos-ready-badge\\"><svg width=\\"10\\" height=\\"10\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"3\\"><path d=\\"M20 6L9 17l-5-5\\"/></svg> Complete</span>" : "<span style=\\"color: var(--op-warning);\\">Incomplete</span>";
+                    }
                     html += "<div class=\\"agnos-cache-item\\"><div class=\\"agnos-cache-info\\"><div class=\\"agnos-cache-version\\">AGNOS " + escapeHtml(v.version) + "</div><div class=\\"agnos-cache-meta\\"><span>" + v.files.length + " files</span><span>" + sizeStr + "</span><span>Downloaded: " + dateStr + "</span>" + statusBadge + "</div></div><div class=\\"agnos-cache-actions\\"><button class=\\"btn btn-sm btn-danger\\" onclick=\\"app.deleteAgnosCache('" + escapeHtml(v.version) + "')\\" title=\\"Remove cached AGNOS " + escapeHtml(v.version) + " files\\">Delete</button></div></div>";
                 }
                 cacheList.innerHTML = html;
@@ -1466,10 +1485,15 @@ EMBEDDED_JS = '''
             var forkAgnos = fork ? (fork.agnos_version || "unknown") : "unknown";
             var isCompatible = !fork || fork.agnos_compatible !== false;
             var agnosCached = fork ? fork.agnos_cached : false;
+            var agnosMissing = fork ? (fork.agnos_missing || []) : [];
+            var agnosInvalid = agnosMissing.length > 0;
             if (!isCompatible && forkAgnos !== "unknown" && state.deviceAgnosVersion !== "unknown") {
                 if (agnosCached) {
                     // AGNOS is cached - can flash locally (fast)
                     modal.open("🔄 AGNOS Update Required", "<div style=\\"background: rgba(34,197,94,0.1); border: 1px solid rgba(34,197,94,0.3); border-radius: 8px; padding: 16px; margin-bottom: 16px;\\"><p style=\\"margin: 0; color: #22c55e;\\"><strong>✓ AGNOS " + escapeHtml(forkAgnos) + " is cached and ready</strong></p><p style=\\"margin: 8px 0 0 0; color: var(--op-text-secondary);\\">Will flash from local cache (~2-5 min)</p></div><div style=\\"background: var(--op-bg-elevated); border-radius: 8px; padding: 12px; margin-bottom: 16px;\\"><p style=\\"margin: 0; font-size: 13px;\\">Current: <strong>AGNOS " + escapeHtml(state.deviceAgnosVersion) + "</strong> → New: <strong>AGNOS " + escapeHtml(forkAgnos) + "</strong></p></div><p style=\\"color: var(--op-text-muted);\\">The AGNOS update will be flashed to your device before switching to <strong>" + escapeHtml(forkName) + "</strong>.</p>", [{ label: "Cancel", onclick: "modal.close()" }, { label: "Flash AGNOS & Switch", cls: "btn-primary", onclick: "app.switchFork('" + escapeHtml(forkName) + "', true)" }]);
+                } else if (agnosInvalid) {
+                    var missingText = agnosMissing.join(", ");
+                    modal.open("⚠️ AGNOS Cache Invalid", "<div style=\\"background: rgba(255,140,0,0.1); border: 1px solid rgba(255,140,0,0.3); border-radius: 8px; padding: 16px; margin-bottom: 16px;\\"><p style=\\"margin: 0; color: #ff8c00;\\"><strong>AGNOS " + escapeHtml(forkAgnos) + " cache is incomplete</strong></p><p style=\\"margin: 8px 0 0 0; color: var(--op-text-secondary);\\">Missing files: " + escapeHtml(missingText) + "</p></div><div style=\\"background: var(--op-bg-elevated); border-radius: 8px; padding: 12px; margin-bottom: 16px;\\"><p style=\\"margin: 0; font-size: 13px;\\">Current: <strong>AGNOS " + escapeHtml(state.deviceAgnosVersion) + "</strong> → Required: <strong>AGNOS " + escapeHtml(forkAgnos) + "</strong></p></div><p style=\\"color: var(--op-text-muted);\\">Re-download the AGNOS cache before switching.</p>", [{ label: "Cancel", onclick: "modal.close()" }, { label: "Repair Cache", cls: "btn-primary", onclick: "modal.close(); app.prepareAgnos('" + escapeHtml(forkName) + "', '" + escapeHtml(forkAgnos) + "'); app.showView('agnos');" }]);
                 } else {
                     // AGNOS not cached - need to download first
                     modal.open("⚠️ AGNOS Download Required", "<div style=\\"background: rgba(255,140,0,0.1); border: 1px solid rgba(255,140,0,0.3); border-radius: 8px; padding: 16px; margin-bottom: 16px;\\"><p style=\\"margin: 0; color: #ff8c00;\\"><strong>AGNOS " + escapeHtml(forkAgnos) + " not cached</strong></p><p style=\\"margin: 8px 0 0 0; color: var(--op-text-secondary);\\">Download it first before switching</p></div><div style=\\"background: var(--op-bg-elevated); border-radius: 8px; padding: 12px; margin-bottom: 16px;\\"><p style=\\"margin: 0; font-size: 13px;\\">Current: <strong>AGNOS " + escapeHtml(state.deviceAgnosVersion) + "</strong> → Required: <strong>AGNOS " + escapeHtml(forkAgnos) + "</strong></p></div><p style=\\"color: var(--op-text-muted);\\">Go to <strong>AGNOS Manager</strong> to download AGNOS " + escapeHtml(forkAgnos) + " first, then return here to switch.</p>", [{ label: "Cancel", onclick: "modal.close()" }, { label: "Go to AGNOS Manager", cls: "btn-primary", onclick: "modal.close(); app.showView('agnos');" }]);
