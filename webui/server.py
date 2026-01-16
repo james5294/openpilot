@@ -6,6 +6,18 @@ Lightweight server for managing OpenPilot forks.
 Uses aiohttp if available, falls back to http.server otherwise.
 Security: Input validation, operation locking, command allowlist
 Logging: Minimal operational logging to /data/forkswap/webui.log
+
+SECURITY WARNING:
+    This server does NOT provide TLS encryption. For production deployments
+    exposed to untrusted networks, run behind a reverse proxy (nginx, caddy)
+    with TLS termination. Example nginx config:
+
+        location /forkswap/ {
+            proxy_pass http://127.0.0.1:8888/;
+            proxy_set_header X-Forwarded-For $remote_addr;
+        }
+
+    Set FORKSWAP_BIND_ALL=0 when using a local reverse proxy.
 """
 from __future__ import annotations  # Python 3.8 compatibility for type hints
 
@@ -41,12 +53,16 @@ VERSION = "5.2.4"
 PORT = int(os.environ.get("FORKSWAP_PORT", "8888"))
 # Security: Bind to localhost by default; set FORKSWAP_BIND_ALL=1 to expose to network
 HOST = "0.0.0.0" if os.environ.get("FORKSWAP_BIND_ALL", "1") == "1" else "127.0.0.1"
-FORKSWAP_DIR = Path("/data/forkswap")
-FORK_SWAP_SCRIPT = FORKSWAP_DIR / "fork_swap.sh"
-STATIC_DIR = FORKSWAP_DIR / "webui" / "static"
-LOG_FILE = FORKSWAP_DIR / "webui.log"
-CONFIG_FILE = FORKSWAP_DIR / "config.json"
-AGNOS_CACHE_DIR = FORKSWAP_DIR / "agnos_cache"
+
+# Test mode: Allow all paths to be overridden via environment variables
+# Set FORKSWAP_TEST_MODE=1 to enable path overrides for testing
+TEST_MODE = os.environ.get("FORKSWAP_TEST_MODE", "") == "1"
+FORKSWAP_DIR = Path(os.environ.get("FORKSWAP_DIR", "/data/forkswap"))
+FORK_SWAP_SCRIPT = Path(os.environ.get("FORK_SWAP_SCRIPT", str(FORKSWAP_DIR / "fork_swap.sh")))
+STATIC_DIR = Path(os.environ.get("FORKSWAP_STATIC_DIR", str(FORKSWAP_DIR / "webui" / "static")))
+LOG_FILE = Path(os.environ.get("FORKSWAP_LOG_FILE", str(FORKSWAP_DIR / "webui.log")))
+CONFIG_FILE = Path(os.environ.get("FORKSWAP_CONFIG_FILE", str(FORKSWAP_DIR / "config.json")))
+AGNOS_CACHE_DIR = Path(os.environ.get("FORKSWAP_AGNOS_CACHE_DIR", str(FORKSWAP_DIR / "agnos_cache")))
 
 # Optional token authentication (set in config.json or env var)
 # If set, all API requests must include "Authorization: Bearer <token>" header
@@ -60,7 +76,7 @@ RATE_LIMIT_WINDOW_SECONDS = 60
 MAX_REQUEST_SIZE = 16 * 1024
 
 # Lock file shared with CLI (prevents CLI/WebUI collisions)
-CLI_LOCK_FILE = Path("/tmp/fork_swap.lock")
+CLI_LOCK_FILE = Path(os.environ.get("FORKSWAP_LOCK_FILE", "/tmp/fork_swap.lock"))
 
 # Log rotation settings
 MAX_LOG_SIZE_BYTES = 1024 * 1024  # 1 MB
@@ -159,16 +175,29 @@ def rotate_log_if_needed():
 # =============================================================================
 # Logging Setup
 # =============================================================================
-rotate_log_if_needed()
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s | %(levelname)s | %(message)s',
-    handlers=[
-        logging.FileHandler(LOG_FILE),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger("webui")
+def _setup_logging():
+    """Configure logging with test mode support."""
+    handlers = [logging.StreamHandler()]
+
+    if TEST_MODE:
+        # In test mode, ensure log directory exists or skip file logging
+        try:
+            LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+            handlers.append(logging.FileHandler(LOG_FILE))
+        except (OSError, PermissionError) as e:
+            print(f"DEBUG: Skipping file logging in test mode: {e}")
+    else:
+        rotate_log_if_needed()
+        handlers.append(logging.FileHandler(LOG_FILE))
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s | %(levelname)s | %(message)s',
+        handlers=handlers
+    )
+    return logging.getLogger("webui")
+
+logger = _setup_logging()
 
 # =============================================================================
 # Activity Log (in-memory buffer for UI visibility)
@@ -215,8 +244,10 @@ class ActivityLog:
             self._log_dir.mkdir(parents=True, exist_ok=True)
             with open(self._log_file, 'a') as f:
                 f.write(json.dumps(entry) + "\n")
-        except Exception:
-            pass  # Don't fail on write errors
+        except Exception as e:
+            # Debug: Activity log write failed (non-critical)
+            if TEST_MODE:
+                print(f"DEBUG: Activity log write failed: {e}")
 
     def _prune_old_entries(self) -> None:
         """Remove entries older than retention period from file (run periodically)."""
@@ -240,8 +271,10 @@ class ActivityLog:
             # Rewrite file with only valid entries
             with open(self._log_file, 'w') as f:
                 f.write("\n".join(valid_entries) + "\n" if valid_entries else "")
-        except Exception:
-            pass
+        except Exception as e:
+            # Debug: Activity log prune failed (non-critical)
+            if TEST_MODE:
+                print(f"DEBUG: Activity log prune failed: {e}")
 
     def add(self, level: str, message: str, category: str = "system") -> None:
         """Add an entry to the activity log."""
@@ -312,8 +345,10 @@ class ActivityLog:
         try:
             if self._log_file.exists():
                 self._log_file.unlink()
-        except Exception:
-            pass
+        except Exception as e:
+            # Debug: Log file deletion failed (non-critical)
+            if TEST_MODE:
+                print(f"DEBUG: Log file clear failed: {e}")
 
     def get_stats(self) -> dict:
         """Get log statistics."""
@@ -324,8 +359,10 @@ class ActivityLog:
             try:
                 with open(self._log_file, 'r') as f:
                     file_entries = sum(1 for _ in f)
-            except Exception:
-                pass
+            except Exception as e:
+                # Debug: Log file read failed (non-critical)
+                if TEST_MODE:
+                    print(f"DEBUG: Log stats read failed: {e}")
         return {
             "memory_entries": len(self._entries),
             "file_entries": file_entries,
@@ -366,8 +403,10 @@ class ActivityLogHandler(logging.Handler):
             # Only log important messages (not HTTP requests)
             if "HTTP/1.1" not in msg and len(msg) > 5:
                 activity_log.add(level, msg, category)
-        except Exception:
-            pass  # Don't let logging errors crash the app
+        except Exception as e:
+            # Can't use logger here (would recurse), use print in test mode
+            if TEST_MODE:
+                print(f"DEBUG: ActivityLogHandler emit failed: {e}")
 
 # Add activity log handler to logger
 _activity_handler = ActivityLogHandler()
@@ -574,16 +613,16 @@ def get_device_info() -> str:
                 return "comma 3"
             elif model:
                 return model
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Device model detection failed: {e}")
 
     # Fallback: check for AGNOS version file
     try:
         agnos_path = Path("/VERSION")
         if agnos_path.exists():
             return "comma device (AGNOS)"
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"AGNOS version check failed: {e}")
 
     return "comma device"
 
@@ -639,7 +678,17 @@ def run_fork_swap(command: str, *args) -> tuple[bool, str]:
             timeout=timeout
         )
         success = result.returncode == 0
-        output = result.stdout if success else result.stderr
+        # On success, return stdout. On failure, return both for debugging.
+        if success:
+            output = result.stdout
+        else:
+            # Combine stderr and stdout for better error context
+            parts = []
+            if result.stderr.strip():
+                parts.append(result.stderr.strip())
+            if result.stdout.strip():
+                parts.append(result.stdout.strip())
+            output = "\n".join(parts) if parts else f"Command failed with exit code {result.returncode}"
         return success, output.strip()
     except subprocess.TimeoutExpired:
         return False, f"Command timed out after {timeout}s"
@@ -762,11 +811,11 @@ def get_git_info(repo_path: Path, check_updates: bool = False) -> dict:
                     info["has_updates"] = behind_count > 0
                     info["updates_checked"] = True
                     info["commits_behind"] = behind_count
-            except Exception:
-                pass  # Update check failed, leave defaults
+            except Exception as e:
+                logger.debug(f"Update check failed for {repo_path}: {e}")
 
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Git info extraction failed for {repo_path}: {e}")
 
     return info
 
@@ -1099,8 +1148,8 @@ def get_agnos_cache_status(version: str) -> dict:
             status["complete"] = marker.get("complete", False)
             status["expected_size"] = marker.get("total_size", 0)
             status["downloaded_at"] = marker.get("downloaded_at")
-        except (json.JSONDecodeError, IOError):
-            pass  # Marker corrupt, will show as incomplete
+        except (json.JSONDecodeError, IOError) as e:
+            logger.debug(f"AGNOS cache marker corrupt or unreadable: {e}")
 
     for f in cache_dir.iterdir():
         if f.is_file() and not f.name.startswith("."):
@@ -1345,8 +1394,8 @@ def get_disk_free_gb() -> float:
             parts = lines[1].split()
             if len(parts) >= 4:
                 return float(parts[3].rstrip('G'))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Disk space check failed: {e}")
     return 0.0
 
 # =============================================================================
@@ -1469,8 +1518,8 @@ def find_duplicate_forks() -> list[dict]:
     if openpilot_path.is_symlink():
         try:
             current_target = openpilot_path.resolve()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed to resolve openpilot symlink: {e}")
 
     for fork_dir in forks_dir.iterdir():
         if not fork_dir.is_dir():
@@ -1553,8 +1602,8 @@ def cleanup_duplicate_forks(dry_run: bool = True) -> dict:
                 if size_result.returncode == 0:
                     size_mb = int(size_result.stdout.split()[0])
                     result["space_freed_mb"] += size_mb
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Failed to calculate size for {fork_path}: {e}")
             result["removed"].append(dup)
         else:
             try:
@@ -1765,8 +1814,8 @@ def ensure_fork_info_exists(fork_dir: Path) -> bool:
             )
             if result.returncode == 0:
                 url = result.stdout.strip()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed to get git remote URL for {openpilot_dir}: {e}")
 
         try:
             result = subprocess.run(
@@ -1776,8 +1825,8 @@ def ensure_fork_info_exists(fork_dir: Path) -> bool:
             )
             if result.returncode == 0:
                 branch = result.stdout.strip()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed to get git branch for {openpilot_dir}: {e}")
 
         # Create minimal fork_info.json
         import json

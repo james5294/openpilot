@@ -1,0 +1,209 @@
+name: WebUI Tests
+
+on:
+  push:
+    branches: [main, master, forkswap]
+    paths:
+      - 'webui/**'
+      - '.github/workflows/webui-tests.yml'
+  pull_request:
+    branches: [main, master, forkswap]
+    paths:
+      - 'webui/**'
+      - '.github/workflows/webui-tests.yml'
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: '3.11'
+  FORKSWAP_TEST_MODE: '1'
+
+jobs:
+  lint:
+    name: Lint and Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install linting tools
+        run: |
+          pip install ruff mypy
+
+      - name: Run ruff linter
+        run: |
+          ruff check webui/ --output-format=github
+        continue-on-error: true
+
+      - name: Run ruff formatter check
+        run: |
+          ruff format --check webui/
+        continue-on-error: true
+
+      - name: Run mypy type check
+        run: |
+          mypy webui/server.py --ignore-missing-imports --no-error-summary || true
+        continue-on-error: true
+
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install pytest pytest-asyncio pytest-cov aiohttp
+
+      - name: Run unit tests
+        run: |
+          cd webui/tests
+          python -m pytest unit/ -v --tb=short --junitxml=unit-results.xml
+        env:
+          PYTHONPATH: ${{ github.workspace }}/webui
+
+      - name: Upload unit test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unit-test-results
+          path: webui/tests/unit-results.xml
+
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install pytest pytest-asyncio pytest-cov aiohttp
+
+      - name: Run integration tests
+        run: |
+          cd webui/tests
+          python -m pytest integration/ -v --tb=short --junitxml=integration-results.xml
+        env:
+          PYTHONPATH: ${{ github.workspace }}/webui
+
+      - name: Upload integration test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integration-test-results
+          path: webui/tests/integration-results.xml
+
+  security-tests:
+    name: Security Tests
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install pytest pytest-asyncio aiohttp bandit
+
+      - name: Run security tests
+        run: |
+          cd webui/tests
+          python -m pytest security/ -v --tb=short --junitxml=security-results.xml
+        env:
+          PYTHONPATH: ${{ github.workspace }}/webui
+
+      - name: Run bandit security scanner
+        run: |
+          bandit -r webui/server.py -f json -o bandit-report.json || true
+
+      - name: Upload security test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-test-results
+          path: |
+            webui/tests/security-results.xml
+            bandit-report.json
+
+  coverage:
+    name: Test Coverage
+    runs-on: ubuntu-latest
+    needs: [unit-tests, integration-tests, security-tests]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install pytest pytest-asyncio pytest-cov aiohttp
+
+      - name: Run all tests with coverage
+        run: |
+          cd webui/tests
+          python -m pytest . \
+            --cov=../server \
+            --cov-report=xml:coverage.xml \
+            --cov-report=html:coverage_html \
+            --cov-report=term-missing \
+            --cov-fail-under=30
+        env:
+          PYTHONPATH: ${{ github.workspace }}/webui
+        continue-on-error: true
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            webui/tests/coverage.xml
+            webui/tests/coverage_html/
+
+  all-tests-passed:
+    name: All Tests Passed
+    runs-on: ubuntu-latest
+    needs: [lint, unit-tests, integration-tests, security-tests, coverage]
+    if: always()
+    steps:
+      - name: Check all jobs passed
+        run: |
+          if [[ "${{ needs.unit-tests.result }}" != "success" ]]; then
+            echo "Unit tests failed"
+            exit 1
+          fi
+          if [[ "${{ needs.integration-tests.result }}" != "success" ]]; then
+            echo "Integration tests failed"
+            exit 1
+          fi
+          if [[ "${{ needs.security-tests.result }}" != "success" ]]; then
+            echo "Security tests failed"
+            exit 1
+          fi
+          echo "All critical tests passed!"
