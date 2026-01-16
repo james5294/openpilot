@@ -196,6 +196,7 @@ readonly CURRENT_FORK_FILE="/data/forkswap/current_fork.txt"
 readonly PARAMS_PATH="/data/params"
 readonly LOG_FILE="/data/forkswap/fork_swap.log"
 readonly CONFIG_FILE="/data/forkswap/config.json"
+readonly PROGRESS_DIR="/data/forkswap/progress"
 
 # Operational constants
 readonly LOCK_FILE="/tmp/fork_swap.lock"
@@ -213,6 +214,11 @@ readonly GIT_TIMEOUT=300  # 5 minutes for clone operations
 HAS_FLOCK=false
 TIMEOUT_AVAILABLE=false
 HAS_TIMEOUT=false
+
+# Progress tracking (clone only)
+PROGRESS_FILE=""
+PROGRESS_OPERATION=""
+PROGRESS_TARGET=""
 
 # Phase 1 (v4.1.0) operational flags
 DRY_RUN=false           # --dry-run: preview actions without changes
@@ -403,6 +409,130 @@ log_error() { _log "ERROR" $LOG_LEVEL_ERROR "$1"; }
 log_fatal() {
     _log "FATAL" $LOG_LEVEL_FATAL "$1"
     cleanup_and_exit 1
+}
+
+#-------------------------------------------------------------------------------
+# PROGRESS TRACKING (CLONE)
+# Writes progress updates to /data/forkswap/progress/clone_<fork>.json
+#-------------------------------------------------------------------------------
+
+json_escape() {
+    local input="$1"
+    input=${input//\\/\\\\}
+    input=${input//\"/\\\"}
+    input=${input//$'\n'/ }
+    input=${input//$'\r'/ }
+    echo "$input"
+}
+
+get_stage_label() {
+    local stage="$1"
+    case "$stage" in
+        prep) echo "Preparing workspace" ;;
+        counting) echo "Counting objects" ;;
+        compressing) echo "Compressing objects" ;;
+        receiving) echo "Receiving objects" ;;
+        resolving) echo "Resolving deltas" ;;
+        checking) echo "Checking out files" ;;
+        finalize) echo "Finalizing setup" ;;
+        complete) echo "Clone complete" ;;
+        error) echo "Clone failed" ;;
+        *) echo "Working" ;;
+    esac
+}
+
+get_stage_bounds() {
+    local stage="$1"
+    local base=0
+    local span=100
+    case "$stage" in
+        prep) base=0; span=2 ;;
+        counting) base=2; span=6 ;;
+        compressing) base=8; span=12 ;;
+        receiving) base=20; span=60 ;;
+        resolving) base=80; span=15 ;;
+        checking) base=95; span=5 ;;
+        finalize) base=98; span=2 ;;
+        complete) base=100; span=0 ;;
+        error) base=0; span=0 ;;
+    esac
+    echo "$base $span"
+}
+
+progress_write() {
+    local status="$1"
+    local stage="$2"
+    local stage_percent="${3:-0}"
+    local message="${4:-}"
+
+    [[ -z "$PROGRESS_FILE" ]] && return 0
+
+    mkdir -p "$PROGRESS_DIR" 2>/dev/null || true
+    local ts
+    ts=$(date -Iseconds 2>/dev/null || date "+%Y-%m-%dT%H:%M:%S")
+
+    local bounds
+    bounds=$(get_stage_bounds "$stage")
+    local base span
+    base=$(echo "$bounds" | awk '{print $1}')
+    span=$(echo "$bounds" | awk '{print $2}')
+
+    local overall_percent=0
+    if [[ "$stage" == "complete" ]]; then
+        overall_percent=100
+    elif [[ "$stage" == "error" ]]; then
+        overall_percent=0
+    else
+        if [[ -n "$span" && "$span" -gt 0 ]]; then
+            overall_percent=$(( base + (stage_percent * span / 100) ))
+        else
+            overall_percent=$base
+        fi
+    fi
+
+    if [[ "$overall_percent" -gt 100 ]]; then overall_percent=100; fi
+    if [[ "$overall_percent" -lt 0 ]]; then overall_percent=0; fi
+
+    local label
+    label=$(get_stage_label "$stage")
+    local escaped_message
+    escaped_message=$(json_escape "$message")
+
+    local active="true"
+    if [[ "$status" != "in_progress" ]]; then
+        active="false"
+    fi
+
+    local tmp_file="${PROGRESS_FILE}.tmp"
+    cat > "$tmp_file" << EOF
+{"active":$active,"operation":"${PROGRESS_OPERATION}","fork":"${PROGRESS_TARGET}","stage":"${stage}","stage_label":"$(json_escape "$label")","stage_percent":${stage_percent},"percent":${overall_percent},"status":"${status}","message":"${escaped_message}","updated_at":"${ts}"}
+EOF
+    mv "$tmp_file" "$PROGRESS_FILE" 2>/dev/null || true
+}
+
+progress_start() {
+    local operation="$1"
+    local target="$2"
+    PROGRESS_OPERATION="$operation"
+    PROGRESS_TARGET="$target"
+    PROGRESS_FILE="${PROGRESS_DIR}/${operation}_${target}.json"
+    progress_write "in_progress" "prep" 0 "Preparing workspace"
+}
+
+progress_update() {
+    local stage="$1"
+    local stage_percent="$2"
+    local message="$3"
+    progress_write "in_progress" "$stage" "$stage_percent" "$message"
+}
+
+progress_finish() {
+    local success="$1"
+    if [[ "$success" == "true" ]]; then
+        progress_write "complete" "complete" 100 "Clone complete"
+    else
+        progress_write "error" "error" 0 "Clone failed"
+    fi
 }
 
 # Structured logging for operations
@@ -5458,6 +5588,34 @@ fix_fork_ownership() {
     fi
 }
 
+# Parse git clone progress lines and update progress file
+parse_git_progress_line() {
+    local line="$1"
+    local stage=""
+    local pct=""
+
+    if [[ "$line" =~ ^Counting\ objects:\ +([0-9]+)% ]]; then
+        stage="counting"
+        pct="${BASH_REMATCH[1]}"
+    elif [[ "$line" =~ ^Compressing\ objects:\ +([0-9]+)% ]]; then
+        stage="compressing"
+        pct="${BASH_REMATCH[1]}"
+    elif [[ "$line" =~ ^Receiving\ objects:\ +([0-9]+)% ]]; then
+        stage="receiving"
+        pct="${BASH_REMATCH[1]}"
+    elif [[ "$line" =~ ^Resolving\ deltas:\ +([0-9]+)% ]]; then
+        stage="resolving"
+        pct="${BASH_REMATCH[1]}"
+    elif [[ "$line" =~ ^Checking\ out\ files:\ +([0-9]+)% ]]; then
+        stage="checking"
+        pct="${BASH_REMATCH[1]}"
+    fi
+
+    if [[ -n "$stage" && -n "$pct" ]]; then
+        progress_update "$stage" "$pct" "$line"
+    fi
+}
+
 # Clone a repository with progress display
 clone_repository() {
     local url="$1"
@@ -5496,6 +5654,7 @@ clone_repository() {
     # Perform the clone (shallow for speed and space savings)
     log_info "Starting git clone (this may take several minutes)..."
     log_info "  Timeout: ${GIT_TIMEOUT}s"
+    progress_update "prep" 0 "Preparing repository"
 
     # Build clone command based on config
     local clone_args=("clone")
@@ -5511,7 +5670,16 @@ clone_repository() {
     # Start timer for elapsed time display
     start_timer
 
-    if run_git_with_timeout "${clone_args[@]}" 2>&1; then
+    local git_exit=0
+    run_git_with_timeout "${clone_args[@]}" 2>&1 | tr '\r' '\n' | while IFS= read -r line; do
+        if [[ -n "$line" ]]; then
+            parse_git_progress_line "$line"
+            echo "$line"
+        fi
+    done
+    git_exit=${PIPESTATUS[0]}
+
+    if [[ "$git_exit" -eq 0 ]]; then
         show_elapsed "Clone"
 
         # Apply git hardening (safe.directory, gc.auto=0)
@@ -6233,9 +6401,12 @@ clone_fork() {
         return 0
     fi
 
+    progress_start "clone" "$fork_name"
+
     # Create fork directory structure
     if ! create_fork_structure "$fork_name"; then
         log_error "Failed to create fork structure"
+        progress_finish "false"
         return 1
     fi
 
@@ -6250,6 +6421,7 @@ clone_fork() {
     # Perform the clone
     if ! clone_repository "$git_url" "$clone_target" "$branch"; then
         log_error "Failed to clone repository"
+        progress_finish "false"
         # Clean up the fork directory
         rm -rf "$(get_fork_path "$fork_name")" 2>/dev/null
         return 1
@@ -6278,6 +6450,8 @@ clone_fork() {
 
     # Run post-clone hook
     run_post_hook "clone" "$fork_name" "$git_url" "$branch"
+
+    progress_finish "true"
 
     # Offer to switch to the new fork
     echo ""

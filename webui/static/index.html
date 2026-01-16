@@ -66,6 +66,20 @@
             <div class="spinner" id="modalSpinner" aria-hidden="true"></div>
             <div class="modal-icon" id="modalIcon" aria-hidden="true"></div>
             <p id="modalText">Processing...</p>
+            <div class="modal-progress" id="modalProgress" aria-live="polite">
+                <div class="modal-progress-bar">
+                    <div class="modal-progress-fill" id="modalProgressFill"></div>
+                </div>
+                <div class="modal-progress-meta">
+                    <span id="modalProgressStage">Preparing workspace</span>
+                    <span id="modalProgressEta"></span>
+                </div>
+                <div class="modal-progress-steps" id="modalProgressSteps">
+                    <span class="modal-step" data-step="prep">Prepare</span>
+                    <span class="modal-step" data-step="download">Download</span>
+                    <span class="modal-step" data-step="finalize">Finalize</span>
+                </div>
+            </div>
             <div class="modal-actions" id="modalActions"></div>
         </div>
     </div>

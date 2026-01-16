@@ -22,6 +22,11 @@ const modalTextEl = document.getElementById('modalText');
 const modalSpinner = document.getElementById('modalSpinner');
 const modalIcon = document.getElementById('modalIcon');
 const modalActions = document.getElementById('modalActions');
+const modalProgressEl = document.getElementById('modalProgress');
+const modalProgressFill = document.getElementById('modalProgressFill');
+const modalProgressStage = document.getElementById('modalProgressStage');
+const modalProgressEta = document.getElementById('modalProgressEta');
+const modalProgressSteps = document.getElementById('modalProgressSteps');
 const errorEl = document.getElementById('error');
 const versionInfoEl = document.getElementById('versionInfo');
 const templateListEl = document.getElementById('templateList');
@@ -221,7 +226,7 @@ async function updateFork(name) {
     }
 
     showModal('Updating ' + name + '...');
-    startElapsedTimer('Updating ' + name, 300);  // 5 minute timeout
+    startElapsedTimer('Updating ' + name, 300, 'update');  // 5 minute timeout
 
     try {
         const res = await fetch('/api/update', {
@@ -251,9 +256,18 @@ async function updateFork(name) {
 let elapsedTimer = null;
 let elapsedSeconds = 0;
 let healthPoller = null;
+let currentOperationType = null;
+let operationRemainingSeconds = null;
+let operationTimeoutSeconds = null;
+let operationProgressPercent = null;
+let operationProgressStage = null;
+let operationProgressStageLabel = null;
 
-function startElapsedTimer(baseText, timeoutSeconds) {
+function startElapsedTimer(baseText, timeoutSeconds, operationType) {
     elapsedSeconds = 0;
+    currentOperationType = operationType || null;
+    operationRemainingSeconds = null;
+    operationTimeoutSeconds = timeoutSeconds || null;
     stopElapsedTimer();
 
     // Update display immediately, then every second
@@ -277,6 +291,101 @@ function updateTimerDisplay(baseText, timeoutSeconds) {
     }
     display += ')';
     modalTextEl.textContent = display;
+    updateProgressDisplay(timeoutSeconds);
+}
+
+function setProgressVisible(visible) {
+    if (!modalProgressEl) return;
+    if (visible) {
+        modalProgressEl.classList.add('active');
+    } else {
+        modalProgressEl.classList.remove('active');
+    }
+}
+
+function formatDuration(seconds) {
+    var mins = Math.floor(seconds / 60);
+    var secs = seconds % 60;
+    return mins > 0 ? mins + 'm ' + secs + 's' : secs + 's';
+}
+
+function getCloneStage(progressRatio) {
+    if (progressRatio < 0.1) return { key: 'prep', label: 'Preparing workspace' };
+    if (progressRatio < 0.85) return { key: 'download', label: 'Downloading repository' };
+    return { key: 'finalize', label: 'Finalizing setup' };
+}
+
+function mapStageToStep(stageKey) {
+    if (!stageKey) return 'download';
+    if (stageKey === 'prep' || stageKey === 'counting') return 'prep';
+    if (stageKey === 'compressing' || stageKey === 'receiving') return 'download';
+    if (stageKey === 'resolving' || stageKey === 'checking' || stageKey === 'finalize' || stageKey === 'complete') {
+        return 'finalize';
+    }
+    return 'download';
+}
+
+function updateProgressSteps(stageKey) {
+    if (!modalProgressSteps) return;
+    var steps = modalProgressSteps.querySelectorAll('.modal-step');
+    var order = ['prep', 'download', 'finalize'];
+    for (var i = 0; i < steps.length; i++) {
+        var step = steps[i];
+        var key = step.getAttribute('data-step');
+        var idx = order.indexOf(key);
+        var current = order.indexOf(stageKey);
+        if (idx > -1 && idx < current) {
+            step.classList.add('done');
+            step.classList.remove('active');
+        } else if (key === stageKey) {
+            step.classList.add('active');
+            step.classList.remove('done');
+        } else {
+            step.classList.remove('active');
+            step.classList.remove('done');
+        }
+    }
+}
+
+function updateProgressDisplay(timeoutSeconds) {
+    if (!modalProgressEl || currentOperationType !== 'clone') {
+        setProgressVisible(false);
+        return;
+    }
+
+    setProgressVisible(true);
+
+    var totalSeconds = timeoutSeconds || operationTimeoutSeconds || 0;
+    var remaining = operationRemainingSeconds;
+    if (remaining === null && totalSeconds) {
+        remaining = Math.max(0, totalSeconds - elapsedSeconds);
+    }
+
+    var ratio = totalSeconds ? Math.min(1, elapsedSeconds / totalSeconds) : 0.05;
+    var computedPercent = Math.max(2, Math.round(ratio * 100));
+    var percent = operationProgressPercent !== null ? operationProgressPercent : computedPercent;
+    percent = Math.max(0, Math.min(100, percent));
+
+    if (modalProgressFill) {
+        modalProgressFill.style.width = percent + '%';
+    }
+
+    var stage = getCloneStage(ratio);
+    var stageKey = operationProgressStage || stage.key;
+    var stageLabel = operationProgressStageLabel || stage.label;
+    if (modalProgressStage) {
+        modalProgressStage.textContent = stageLabel + ' (' + percent + '%)';
+    }
+
+    if (modalProgressEta) {
+        var meta = 'Elapsed ' + formatDuration(elapsedSeconds);
+        if (remaining !== null) {
+            meta += ' - ~' + formatDuration(remaining) + ' remaining';
+        }
+        modalProgressEta.textContent = meta;
+    }
+
+    updateProgressSteps(mapStageToStep(stageKey));
 }
 
 async function pollOperationStatus() {
@@ -286,6 +395,19 @@ async function pollOperationStatus() {
         if (data.operation && data.operation.active && data.operation.remaining_seconds !== null) {
             // Update display with server-side info if available
             var remaining = Math.round(data.operation.remaining_seconds);
+            operationRemainingSeconds = remaining;
+            if (data.operation.timeout_seconds) {
+                operationTimeoutSeconds = Math.round(data.operation.timeout_seconds);
+            }
+            if (data.operation.progress) {
+                var progress = data.operation.progress;
+                if (progress && typeof progress.percent !== 'undefined') {
+                    var parsedPercent = parseInt(progress.percent, 10);
+                    operationProgressPercent = Number.isNaN(parsedPercent) ? null : parsedPercent;
+                }
+                operationProgressStage = progress && progress.stage ? progress.stage : null;
+                operationProgressStageLabel = progress && progress.stage_label ? progress.stage_label : null;
+            }
             if (remaining <= 10) {
                 modalTextEl.textContent = modalTextEl.textContent.replace(
                     /timeout: \d+s/,
@@ -306,6 +428,15 @@ function stopElapsedTimer() {
     if (healthPoller) {
         clearInterval(healthPoller);
         healthPoller = null;
+    }
+    currentOperationType = null;
+    operationRemainingSeconds = null;
+    operationTimeoutSeconds = null;
+    operationProgressPercent = null;
+    operationProgressStage = null;
+    operationProgressStageLabel = null;
+    if (modalProgressEl) {
+        modalProgressEl.classList.remove('active');
     }
 }
 
@@ -349,7 +480,7 @@ async function switchFork() {
     }
 
     showModal('Switching to ' + selectedFork + '...');
-    startElapsedTimer('Switching to ' + selectedFork, 60);  // 60s timeout for switch
+    startElapsedTimer('Switching to ' + selectedFork, 60, 'switch');  // 60s timeout for switch
 
     try {
         const res = await fetch('/api/switch', {
@@ -533,7 +664,7 @@ async function cloneTemplate(templateKey, displayName) {
     }
 
     showModal('Cloning ' + displayName + ' (' + branch + ')...');
-    startElapsedTimer('Cloning ' + displayName, 600);  // 10 minute timeout
+    startElapsedTimer('Cloning ' + displayName, 600, 'clone');  // 10 minute timeout
 
     try {
         const res = await fetch('/api/clone', {
@@ -570,6 +701,12 @@ function showModal(text) {
     while (modalActions.firstChild) {
         modalActions.removeChild(modalActions.firstChild);
     }
+    if (modalProgressEl) {
+        modalProgressEl.classList.remove('active');
+    }
+    if (modalProgressFill) {
+        modalProgressFill.style.width = '0%';
+    }
     modalTextEl.textContent = text;
     modalEl.classList.add('show');
 }
@@ -583,6 +720,12 @@ function hideModal() {
         modalIcon.className = 'modal-icon';
         while (modalActions.firstChild) {
             modalActions.removeChild(modalActions.firstChild);
+        }
+        if (modalProgressEl) {
+            modalProgressEl.classList.remove('active');
+        }
+        if (modalProgressFill) {
+            modalProgressFill.style.width = '0%';
         }
     }, 300);
 }
@@ -638,7 +781,7 @@ function showCloneComplete(success, forkName, message) {
 // Switch to a specific fork (used by completion modal)
 async function switchToFork(forkName) {
     showModal('Switching to ' + forkName + '...');
-    startElapsedTimer('Switching to ' + forkName, 60);
+    startElapsedTimer('Switching to ' + forkName, 60, 'switch');
 
     try {
         const res = await fetch('/api/switch', {

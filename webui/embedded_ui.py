@@ -423,6 +423,55 @@ html, body {
 .operation-spinner { width: 48px; height: 48px; border: 3px solid var(--op-border); border-top-color: var(--op-accent); border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 24px; }
 .operation-title { font-size: 20px; font-weight: 600; margin-bottom: 8px; }
 .operation-message { color: var(--op-text-secondary); font-size: 14px; }
+.operation-progress {
+    margin-top: 18px;
+    width: 360px;
+    max-width: 80vw;
+    display: none;
+}
+.operation-progress.active { display: block; }
+.operation-progress-bar {
+    height: 8px;
+    background: var(--op-bg-hover);
+    border-radius: 999px;
+    overflow: hidden;
+}
+.operation-progress-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--op-accent);
+    transition: width 0.3s ease;
+}
+.operation-progress-meta {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    color: var(--op-text-muted);
+    margin-top: 8px;
+}
+.operation-steps {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: 8px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--op-text-muted);
+}
+.operation-step {
+    padding: 3px 8px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.06);
+}
+.operation-step.active {
+    background: var(--op-accent-light);
+    color: var(--op-accent);
+}
+.operation-step.done {
+    background: rgba(23, 134, 67, 0.25);
+    color: #d8ffe6;
+}
 @media (max-width: 768px) {
     .sidebar { transform: translateX(-100%); }
     .sidebar.open { transform: translateX(0); }
@@ -768,6 +817,20 @@ def get_embedded_html(version: str = "0.0.0"):
             <div class="operation-spinner"></div>
             <div class="operation-title">Processing...</div>
             <div class="operation-message">Please wait</div>
+            <div class="operation-progress" id="operation-progress" aria-live="polite">
+                <div class="operation-progress-bar">
+                    <div class="operation-progress-fill" id="operation-progress-fill"></div>
+                </div>
+                <div class="operation-progress-meta">
+                    <span id="operation-progress-stage">Preparing workspace</span>
+                    <span id="operation-progress-eta"></span>
+                </div>
+                <div class="operation-steps" id="operation-steps">
+                    <span class="operation-step" data-step="prep">Prepare</span>
+                    <span class="operation-step" data-step="download">Download</span>
+                    <span class="operation-step" data-step="finalize">Finalize</span>
+                </div>
+            </div>
         </div>
     </div>
     <script>
@@ -840,15 +903,180 @@ EMBEDDED_JS = '''
         close: function() { this.overlay.classList.remove("active"); document.body.style.overflow = ""; }
     };
     window.modal = modal;
+    var operationProgress = null;
     var operation = {
         overlay: null,
-        init: function() { this.overlay = document.getElementById("operation-overlay"); },
-        show: function(title, message) { state.operationActive = true; this.overlay.querySelector(".operation-title").textContent = title; this.overlay.querySelector(".operation-message").textContent = message; this.overlay.classList.add("active"); },
-        updateMessage: function(message) { this.overlay.querySelector(".operation-message").textContent = message; },
-        updateTitle: function(title) { this.overlay.querySelector(".operation-title").textContent = title; },
-        hide: function() { state.operationActive = false; this.overlay.classList.remove("active"); }
+        titleEl: null,
+        messageEl: null,
+        init: function() {
+            this.overlay = document.getElementById("operation-overlay");
+            this.titleEl = this.overlay.querySelector(".operation-title");
+            this.messageEl = this.overlay.querySelector(".operation-message");
+        },
+        show: function(title, message) {
+            state.operationActive = true;
+            if (operationProgress) operationProgress.reset();
+            this.titleEl.textContent = title;
+            this.messageEl.textContent = message;
+            this.overlay.classList.add("active");
+        },
+        updateMessage: function(message) { this.messageEl.textContent = message; },
+        updateTitle: function(title) { this.titleEl.textContent = title; },
+        hide: function() {
+            state.operationActive = false;
+            if (operationProgress) operationProgress.stop();
+            this.overlay.classList.remove("active");
+        }
     };
     window.operation = operation;
+    function formatDuration(seconds) {
+        var mins = Math.floor(seconds / 60);
+        var secs = seconds % 60;
+        return mins > 0 ? mins + "m " + secs + "s" : secs + "s";
+    }
+    function getCloneStage(progressRatio) {
+        if (progressRatio < 0.1) return { key: "prep", label: "Preparing workspace" };
+        if (progressRatio < 0.85) return { key: "download", label: "Downloading repository" };
+        return { key: "finalize", label: "Finalizing setup" };
+    }
+    operationProgress = {
+        progressEl: null,
+        fillEl: null,
+        stageEl: null,
+        etaEl: null,
+        steps: null,
+        timer: null,
+        poller: null,
+        startTime: 0,
+        timeoutSeconds: 0,
+        remainingSeconds: null,
+        latestPercent: null,
+        latestStage: null,
+        latestStageLabel: null,
+        type: null,
+        init: function() {
+            this.progressEl = document.getElementById("operation-progress");
+            this.fillEl = document.getElementById("operation-progress-fill");
+            this.stageEl = document.getElementById("operation-progress-stage");
+            this.etaEl = document.getElementById("operation-progress-eta");
+            this.steps = document.querySelectorAll(".operation-step");
+        },
+        reset: function() {
+            this.stop();
+            if (this.progressEl) this.progressEl.classList.remove("active");
+            if (this.fillEl) this.fillEl.style.width = "0%";
+            if (this.stageEl) this.stageEl.textContent = "";
+            if (this.etaEl) this.etaEl.textContent = "";
+            this.latestPercent = null;
+            this.latestStage = null;
+            this.latestStageLabel = null;
+            if (this.steps) {
+                for (var i = 0; i < this.steps.length; i++) {
+                    this.steps[i].classList.remove("active");
+                    this.steps[i].classList.remove("done");
+                }
+            }
+        },
+        start: function(type, timeoutSeconds) {
+            this.type = type;
+            this.startTime = Date.now();
+            this.timeoutSeconds = timeoutSeconds || 0;
+            this.remainingSeconds = null;
+            if (this.progressEl) this.progressEl.classList.add("active");
+            this.update();
+            var self = this;
+            this.timer = setInterval(function() { self.update(); }, 1000);
+            this.poller = setInterval(function() { self.pollHealth(); }, 2000);
+        },
+        stop: function() {
+            if (this.timer) { clearInterval(this.timer); this.timer = null; }
+            if (this.poller) { clearInterval(this.poller); this.poller = null; }
+            this.type = null;
+        },
+        pollHealth: function() {
+            var self = this;
+            api.getHealth().then(function(data) {
+                if (!data || !data.operation || !data.operation.active) return;
+                if (data.operation.timeout_seconds) {
+                    self.timeoutSeconds = Math.round(data.operation.timeout_seconds);
+                }
+                if (data.operation.remaining_seconds !== null && data.operation.remaining_seconds !== undefined) {
+                    self.remainingSeconds = Math.round(data.operation.remaining_seconds);
+                }
+                if (data.operation.progress) {
+                    var progress = data.operation.progress;
+                    if (progress && typeof progress.percent !== "undefined") {
+                        var parsedPercent = parseInt(progress.percent, 10);
+                        self.latestPercent = isNaN(parsedPercent) ? null : parsedPercent;
+                    }
+                    self.latestStage = progress && progress.stage ? progress.stage : null;
+                    self.latestStageLabel = progress && progress.stage_label ? progress.stage_label : null;
+                }
+            }).catch(function() {});
+        },
+        update: function() {
+            if (!this.progressEl || this.type !== "clone") return;
+            var elapsedSeconds = Math.floor((Date.now() - this.startTime) / 1000);
+            var totalSeconds = this.timeoutSeconds || 0;
+            var remaining = this.remainingSeconds;
+            if (remaining === null && totalSeconds) {
+                remaining = Math.max(0, totalSeconds - elapsedSeconds);
+            }
+            var ratio = totalSeconds ? Math.min(1, elapsedSeconds / totalSeconds) : 0.05;
+            var computedPercent = Math.max(2, Math.round(ratio * 100));
+            var percent = this.latestPercent !== null ? this.latestPercent : computedPercent;
+            percent = Math.max(0, Math.min(100, percent));
+            if (this.fillEl) this.fillEl.style.width = percent + "%";
+            var stage = getCloneStage(ratio);
+            var stageKey = this.latestStage || stage.key;
+            var stageLabel = this.latestStageLabel || stage.label;
+            if (this.stageEl) this.stageEl.textContent = stageLabel + " (" + percent + "%)";
+            if (this.etaEl) {
+                var meta = "Elapsed " + formatDuration(elapsedSeconds);
+                if (remaining !== null) {
+                    var etaText = formatEta(remaining);
+                    if (etaText) meta += " - " + etaText;
+                }
+                this.etaEl.textContent = meta;
+            }
+            if (this.steps) {
+                var order = ["prep", "download", "finalize"];
+                if (stageKey === "counting") stageKey = "prep";
+                if (stageKey === "compressing" || stageKey === "receiving") stageKey = "download";
+                if (stageKey === "resolving" || stageKey === "checking" || stageKey === "finalize" || stageKey === "complete") {
+                    stageKey = "finalize";
+                }
+                for (var i = 0; i < this.steps.length; i++) {
+                    var step = this.steps[i];
+                    var key = step.getAttribute("data-step");
+                    var idx = order.indexOf(key);
+                    var current = order.indexOf(stageKey);
+                    if (idx > -1 && idx < current) {
+                        step.classList.add("done");
+                        step.classList.remove("active");
+                    } else if (key === stageKey) {
+                        step.classList.add("active");
+                        step.classList.remove("done");
+                    } else {
+                        step.classList.remove("active");
+                        step.classList.remove("done");
+                    }
+                }
+            }
+        },
+        complete: function(success) {
+            if (!this.progressEl || this.type !== "clone") return;
+            if (this.fillEl) this.fillEl.style.width = "100%";
+            if (this.stageEl) this.stageEl.textContent = success ? "Clone complete" : "Clone failed";
+            if (this.steps) {
+                for (var i = 0; i < this.steps.length; i++) {
+                    this.steps[i].classList.remove("active");
+                    if (success) this.steps[i].classList.add("done");
+                }
+            }
+            this.stop();
+        }
+    };
     function waitForDeviceReboot(expectedFork, isAgnosUpdate) {
         var startTime = Date.now();
         var maxWaitMs = isAgnosUpdate ? 25 * 60 * 1000 : 5 * 60 * 1000;
@@ -1140,10 +1368,29 @@ EMBEDDED_JS = '''
         cloneFork: function(data) {
             modal.close();
             operation.show("Cloning Fork", "Cloning " + (data.name || data.template) + ". This may take several minutes...");
+            operationProgress.start("clone", 600);
             api.cloneFork(data).then(function(result) {
-                operation.hide();
-                if (result.success) { toast.success(result.message); fetchStatus(); } else { toast.error(result.message); }
-            }).catch(function(err) { operation.hide(); toast.error("Failed to clone fork"); });
+                if (result.success) {
+                    operationProgress.complete(true);
+                    operation.updateTitle("Clone Complete");
+                    operation.updateMessage(result.message || "Clone finished successfully.");
+                    toast.success(result.message);
+                    fetchStatus();
+                    setTimeout(function() { operation.hide(); }, 2500);
+                } else {
+                    operationProgress.complete(false);
+                    operation.updateTitle("Clone Failed");
+                    operation.updateMessage(result.message || "Clone failed.");
+                    toast.error(result.message);
+                    setTimeout(function() { operation.hide(); }, 3500);
+                }
+            }).catch(function(err) {
+                operationProgress.complete(false);
+                operation.updateTitle("Clone Failed");
+                operation.updateMessage("Clone failed. Please check your connection.");
+                toast.error("Failed to clone fork");
+                setTimeout(function() { operation.hide(); }, 3500);
+            });
         },
         cloneTemplate: function(templateKey) { modal.close(); this.cloneFork({ template: templateKey }); },
         reboot: function() {
@@ -1370,6 +1617,7 @@ EMBEDDED_JS = '''
         toast.init();
         modal.init();
         operation.init();
+        operationProgress.init();
         startPolling();
         document.addEventListener("click", function(e) {
             var sidebar = document.querySelector(".sidebar");

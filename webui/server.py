@@ -63,6 +63,7 @@ STATIC_DIR = Path(os.environ.get("FORKSWAP_STATIC_DIR", str(FORKSWAP_DIR / "webu
 LOG_FILE = Path(os.environ.get("FORKSWAP_LOG_FILE", str(FORKSWAP_DIR / "webui.log")))
 CONFIG_FILE = Path(os.environ.get("FORKSWAP_CONFIG_FILE", str(FORKSWAP_DIR / "config.json")))
 AGNOS_CACHE_DIR = Path(os.environ.get("FORKSWAP_AGNOS_CACHE_DIR", str(FORKSWAP_DIR / "agnos_cache")))
+PROGRESS_DIR = Path(os.environ.get("FORKSWAP_PROGRESS_DIR", str(FORKSWAP_DIR / "progress")))
 
 # Optional token authentication (set in config.json or env var)
 # If set, all API requests must include "Authorization: Bearer <token>" header
@@ -452,19 +453,37 @@ else:
     operation_lock = threading.Lock()
 
 # Track current operation for status reporting
-current_operation: dict = {"active": False, "type": None, "started": None}
+current_operation: dict = {"active": False, "type": None, "started": None, "target": None}
 
-def set_operation(op_type: str):
+def set_operation(op_type: str, target: str | None = None):
     """Mark an operation as in progress."""
     current_operation["active"] = True
     current_operation["type"] = op_type
     current_operation["started"] = time.time()
+    current_operation["target"] = target
 
 def clear_operation():
     """Mark operation as complete."""
     current_operation["active"] = False
     current_operation["type"] = None
     current_operation["started"] = None
+    current_operation["target"] = None
+
+
+def _read_progress_file(path: Path) -> Optional[dict]:
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return None
+
+
+def get_clone_progress(fork_name: str | None) -> Optional[dict]:
+    if not fork_name:
+        return None
+    progress_path = PROGRESS_DIR / f"clone_{fork_name}.json"
+    return _read_progress_file(progress_path)
 
 # Rate limiting: track requests per IP
 rate_limit_data: dict = defaultdict(list)
@@ -2303,6 +2322,10 @@ if USE_AIOHTTP:
             op_timeout = COMMAND_TIMEOUTS.get(current_operation["type"], 60)
             op_remaining = max(0, op_timeout - op_elapsed)
 
+        progress = None
+        if current_operation["type"] == "clone":
+            progress = get_clone_progress(current_operation["target"])
+
         data = {
             "status": health_status,
             "version": VERSION,
@@ -2311,9 +2334,11 @@ if USE_AIOHTTP:
             "operation": {
                 "active": current_operation["active"],
                 "type": current_operation["type"],
+                "target": current_operation["target"],
                 "elapsed_seconds": op_elapsed,
                 "timeout_seconds": op_timeout,
                 "remaining_seconds": op_remaining,
+                "progress": progress,
             },
             "rate_limit": get_rate_limit_status(ip),
         }
@@ -2390,7 +2415,7 @@ if USE_AIOHTTP:
                 )
 
             async with operation_lock:
-                set_operation("switch")
+                set_operation("switch", fork_name)
                 try:
                     # AGNOS Pre-Flash: Check and flash AGNOS before fork switch
                     agnos_success, agnos_msg, target_slot = prepare_agnos_for_switch(fork_name)
@@ -2402,7 +2427,7 @@ if USE_AIOHTTP:
                         )
 
                     logger.info(f"Switching to fork: {fork_name}")
-                    success, output = run_fork_swap("switch", fork_name)
+                    success, output = await asyncio.to_thread(run_fork_swap, "switch", fork_name)
 
                     if success:
                         # If AGNOS was flashed, swap boot slot
@@ -2492,10 +2517,10 @@ if USE_AIOHTTP:
                 )
 
             async with operation_lock:
-                set_operation("update")
+                set_operation("update", fork_name)
                 try:
                     logger.info(f"Updating fork: {fork_name}")
-                    success, output = run_fork_swap("update", fork_name)
+                    success, output = await asyncio.to_thread(run_fork_swap, "update", fork_name)
 
                     if success:
                         logger.info(f"Update successful, scheduling reboot")
@@ -2598,13 +2623,13 @@ if USE_AIOHTTP:
                 )
 
             async with operation_lock:
-                set_operation("clone")
+                set_operation("clone", fork_name)
                 try:
                     logger.info(f"Cloning fork: {fork_name} from {url} branch {branch}")
 
                     # Call fork_swap.sh clone command
                     # Format: fork_swap.sh clone <name> <url> [branch]
-                    success, output = run_fork_swap("clone", fork_name, url, branch)
+                    success, output = await asyncio.to_thread(run_fork_swap, "clone", fork_name, url, branch)
 
                     if success:
                         logger.info(f"Clone successful: {fork_name}")
@@ -3074,6 +3099,10 @@ if not USE_AIOHTTP:
                     op_timeout = COMMAND_TIMEOUTS.get(current_operation["type"], 60)
                     op_remaining = max(0, op_timeout - op_elapsed)
 
+                progress = None
+                if current_operation["type"] == "clone":
+                    progress = get_clone_progress(current_operation["target"])
+
                 data = {
                     "status": health_status,
                     "version": VERSION,
@@ -3082,9 +3111,11 @@ if not USE_AIOHTTP:
                     "operation": {
                         "active": current_operation["active"],
                         "type": current_operation["type"],
+                        "target": current_operation["target"],
                         "elapsed_seconds": op_elapsed,
                         "timeout_seconds": op_timeout,
                         "remaining_seconds": op_remaining,
+                        "progress": progress,
                     },
                     "rate_limit": get_rate_limit_status(ip),
                 }
@@ -3193,7 +3224,7 @@ if not USE_AIOHTTP:
                 self.send_json({"success": False, "message": "Operation in progress"}, 409)
                 return
             with operation_lock:
-                set_operation("switch")
+                set_operation("switch", fork_name)
                 try:
                     # AGNOS Pre-Flash: Check and flash AGNOS before fork switch
                     agnos_success, agnos_msg, target_slot = prepare_agnos_for_switch(fork_name)
@@ -3245,7 +3276,7 @@ if not USE_AIOHTTP:
                 self.send_json({"success": False, "message": "Operation in progress"}, 409)
                 return
             with operation_lock:
-                set_operation("update")
+                set_operation("update", fork_name)
                 try:
                     logger.info(f"Updating fork: {fork_name}")
                     success, output = run_fork_swap("update", fork_name)
@@ -3306,7 +3337,7 @@ if not USE_AIOHTTP:
                 return
 
             with operation_lock:
-                set_operation("clone")
+                set_operation("clone", fork_name)
                 try:
                     logger.info(f"Cloning fork: {fork_name} from {url} branch {branch}")
                     success, output = run_fork_swap("clone", fork_name, url, branch)
