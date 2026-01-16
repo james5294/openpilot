@@ -22,6 +22,7 @@ import time
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Optional, Tuple
 
 # Try aiohttp first, fall back to http.server
 try:
@@ -886,6 +887,163 @@ def is_agnos_compatible(fork_version: str) -> bool:
 
     return device_version == fork_version
 
+
+# =============================================================================
+# AGNOS Pre-Flash for Fork Switching
+# =============================================================================
+
+# Import local flasher module (may not be available in all environments)
+_flash_agnos_module = None
+try:
+    from flash_agnos_local import (
+        flash_agnos_from_cache,
+        verify_agnos_from_cache,
+        swap_boot_slot,
+        FlashProgress,
+        FlashError
+    )
+    _flash_agnos_module = True
+    logger.info("Local AGNOS flasher module loaded")
+except ImportError:
+    logger.warning("Local AGNOS flasher not available - AGNOS pre-flash disabled")
+    _flash_agnos_module = False
+
+
+def get_fork_dir_by_name(fork_name: str) -> Optional[Path]:
+    """Get the fork directory path by name or directory name."""
+    forks_dir = Path("/data/forks")
+
+    # Direct match by directory name
+    direct_path = forks_dir / fork_name
+    if direct_path.exists():
+        return direct_path
+
+    # Search through fork list for display name match
+    for fork in get_fork_list():
+        if fork["name"] == fork_name or fork.get("directory") == fork_name:
+            dir_name = fork.get("directory", fork["name"])
+            fork_path = forks_dir / dir_name
+            if fork_path.exists():
+                return fork_path
+
+    return None
+
+
+def prepare_agnos_for_switch(fork_name: str) -> Tuple[bool, str, Optional[int]]:
+    """
+    Prepare AGNOS for a fork switch.
+
+    Checks if the target fork requires a different AGNOS version.
+    If so, flashes from cache to the alternate slot.
+
+    Args:
+        fork_name: Name of the target fork
+
+    Returns:
+        Tuple of (success, message, target_slot or None)
+        - success: True if ready to switch, False if blocked
+        - message: Description of what happened
+        - target_slot: Slot number if AGNOS was flashed, None otherwise
+    """
+    if not _flash_agnos_module:
+        # Module not available, skip AGNOS handling (legacy behavior)
+        logger.info("AGNOS flash module not available, skipping pre-flash")
+        return (True, "AGNOS pre-flash not available", None)
+
+    # Get device AGNOS version
+    device_agnos = get_device_agnos_version()
+    if device_agnos == "unknown":
+        logger.warning("Could not determine device AGNOS version")
+        return (True, "Could not determine device AGNOS version, proceeding", None)
+
+    # Get target fork's AGNOS version
+    fork_dir = get_fork_dir_by_name(fork_name)
+    if not fork_dir:
+        return (False, f"Fork directory not found: {fork_name}", None)
+
+    target_agnos = get_fork_agnos_version(fork_dir)
+    if target_agnos == "unknown":
+        logger.warning(f"Could not determine AGNOS version for {fork_name}")
+        return (True, "Could not determine target AGNOS version, proceeding", None)
+
+    # Check if versions match
+    if device_agnos == target_agnos:
+        logger.info(f"AGNOS versions match ({device_agnos}), no flash needed")
+        return (True, f"AGNOS {device_agnos} compatible", None)
+
+    # Different versions - need to flash
+    logger.info(f"AGNOS mismatch: device={device_agnos}, target={target_agnos}")
+
+    # Check if target AGNOS is cached
+    cache_status = get_agnos_cache_status(target_agnos)
+    if not cache_status.get("complete"):
+        msg = f"AGNOS {target_agnos} not cached. Download it first before switching."
+        logger.error(msg)
+        return (False, msg, None)
+
+    # Verify cache is valid
+    verify_result = verify_agnos_from_cache(target_agnos)
+    if not verify_result.get("valid"):
+        msg = f"AGNOS {target_agnos} cache invalid: {verify_result.get('error', 'unknown error')}"
+        logger.error(msg)
+        return (False, msg, None)
+
+    # Flash AGNOS from cache
+    logger.info(f"Flashing AGNOS {target_agnos} from cache...")
+    activity_log.add("info", "agnos", f"Starting AGNOS {target_agnos} flash for {fork_name}")
+
+    def log_progress(p: FlashProgress):
+        if p.status == "flashing":
+            logger.info(f"Flashing {p.partition_name}: {p.percent}%")
+        elif p.status == "verifying":
+            logger.info(f"Verifying {p.partition_name}")
+        elif p.status == "error":
+            logger.error(f"Flash error: {p.error}")
+
+    flash_result = flash_agnos_from_cache(target_agnos, log_progress)
+
+    if not flash_result.get("success"):
+        msg = f"AGNOS flash failed: {flash_result.get('error', 'unknown error')}"
+        logger.error(msg)
+        activity_log.add("error", "agnos", msg)
+        return (False, msg, None)
+
+    target_slot = flash_result.get("target_slot")
+    msg = f"AGNOS {target_agnos} flashed to slot {target_slot}"
+    logger.info(msg)
+    activity_log.add("info", "agnos", msg)
+
+    return (True, msg, target_slot)
+
+
+def finalize_agnos_switch(target_slot: Optional[int]) -> bool:
+    """
+    Finalize AGNOS switch by swapping boot slot if needed.
+
+    Args:
+        target_slot: Slot number to activate, or None if no swap needed
+
+    Returns:
+        True if successful or no swap needed
+    """
+    if target_slot is None:
+        return True
+
+    if not _flash_agnos_module:
+        logger.warning("Cannot swap boot slot - flash module not available")
+        return False
+
+    logger.info(f"Swapping boot slot to {target_slot}")
+    success = swap_boot_slot(target_slot)
+
+    if success:
+        activity_log.add("info", "agnos", f"Boot slot swapped to {target_slot}")
+    else:
+        activity_log.add("error", "agnos", f"Failed to swap boot slot to {target_slot}")
+
+    return success
+
+
 def get_agnos_manifest(fork_dir: Path) -> dict | None:
     """
     Read the AGNOS manifest from a fork's system/hardware/tici/agnos.json.
@@ -1037,17 +1195,19 @@ def download_agnos_images(fork_dir: Path, version: str) -> dict:
         _agnos_download_progress[version]["status"] = "complete"
 
         # Write completion marker with manifest info for persistence
+        # IMPORTANT: Include full partition manifest for local flasher
         marker_file = cache_dir / ".manifest.json"
         marker_data = {
             "version": version,
             "complete": True,
             "files": downloaded_files,
             "total_size": bytes_done,
-            "downloaded_at": datetime.now().isoformat()
+            "downloaded_at": datetime.now().isoformat(),
+            "partitions": manifest  # Full partition manifest for flash_agnos_local.py
         }
         with open(marker_file, "w") as f:
-            json.dump(marker_data, f)
-        logger.info(f"AGNOS {version} download complete - wrote marker file")
+            json.dump(marker_data, f, indent=2)
+        logger.info(f"AGNOS {version} download complete - wrote marker file with partition manifest")
 
         return {
             "success": True,
@@ -2183,16 +2343,41 @@ if USE_AIOHTTP:
             async with operation_lock:
                 set_operation("switch")
                 try:
+                    # AGNOS Pre-Flash: Check and flash AGNOS before fork switch
+                    agnos_success, agnos_msg, target_slot = prepare_agnos_for_switch(fork_name)
+                    if not agnos_success:
+                        logger.error(f"AGNOS preparation failed: {agnos_msg}")
+                        return json_response(
+                            {"success": False, "message": agnos_msg, "agnos_required": True},
+                            status=400
+                        )
+
                     logger.info(f"Switching to fork: {fork_name}")
                     success, output = run_fork_swap("switch", fork_name)
 
                     if success:
+                        # If AGNOS was flashed, swap boot slot
+                        if target_slot is not None:
+                            if not finalize_agnos_switch(target_slot):
+                                logger.error("Boot slot swap failed")
+                                return json_response(
+                                    {"success": False, "message": "AGNOS flashed but boot slot swap failed"},
+                                    status=500
+                                )
+
                         logger.info(f"Switch successful, scheduling reboot")
                         asyncio.create_task(delayed_reboot(3))
+
+                        msg = f"Switched to {fork_name}."
+                        if target_slot is not None:
+                            msg += f" AGNOS updated to new version."
+                        msg += " Rebooting in 3 seconds..."
+
                         return json_response({
                             "success": True,
-                            "message": f"Switched to {fork_name}. Rebooting in 3 seconds...",
-                            "rebooting": True
+                            "message": msg,
+                            "rebooting": True,
+                            "agnos_updated": target_slot is not None
                         })
                     else:
                         logger.error(f"Switch failed")
@@ -2961,11 +3146,35 @@ if not USE_AIOHTTP:
             with operation_lock:
                 set_operation("switch")
                 try:
+                    # AGNOS Pre-Flash: Check and flash AGNOS before fork switch
+                    agnos_success, agnos_msg, target_slot = prepare_agnos_for_switch(fork_name)
+                    if not agnos_success:
+                        logger.error(f"AGNOS preparation failed: {agnos_msg}")
+                        self.send_json({"success": False, "message": agnos_msg, "agnos_required": True}, 400)
+                        return
+
                     logger.info(f"Switching to fork: {fork_name}")
                     success, output = run_fork_swap("switch", fork_name)
                     if success:
+                        # If AGNOS was flashed, swap boot slot
+                        if target_slot is not None:
+                            if not finalize_agnos_switch(target_slot):
+                                logger.error("Boot slot swap failed")
+                                self.send_json({"success": False, "message": "AGNOS flashed but boot slot swap failed"}, 500)
+                                return
+
+                        msg = f"Switched to {fork_name}."
+                        if target_slot is not None:
+                            msg += " AGNOS updated."
+                        msg += " Rebooting..."
+
                         threading.Thread(target=delayed_reboot_sync, args=(3,), daemon=True).start()
-                        self.send_json({"success": True, "message": f"Switched to {fork_name}. Rebooting...", "rebooting": True})
+                        self.send_json({
+                            "success": True,
+                            "message": msg,
+                            "rebooting": True,
+                            "agnos_updated": target_slot is not None
+                        })
                     else:
                         logger.error("Switch failed")
                         self.send_json({"success": False, "message": "Switch failed. Check logs for details."}, 500)
