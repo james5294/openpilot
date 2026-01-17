@@ -64,6 +64,7 @@ LOG_FILE = Path(os.environ.get("FORKSWAP_LOG_FILE", str(FORKSWAP_DIR / "webui.lo
 CONFIG_FILE = Path(os.environ.get("FORKSWAP_CONFIG_FILE", str(FORKSWAP_DIR / "config.json")))
 AGNOS_CACHE_DIR = Path(os.environ.get("FORKSWAP_AGNOS_CACHE_DIR", str(FORKSWAP_DIR / "agnos_cache")))
 PROGRESS_DIR = Path(os.environ.get("FORKSWAP_PROGRESS_DIR", str(FORKSWAP_DIR / "progress")))
+FORKSWAP_LOG_PATH = Path(os.environ.get("FORKSWAP_FORK_SWAP_LOG", str(FORKSWAP_DIR / "fork_swap.log")))
 
 # Optional token authentication (set in config.json or env var)
 # If set, all API requests must include "Authorization: Bearer <token>" header
@@ -514,6 +515,76 @@ def get_clone_progress(fork_name: str | None) -> Optional[dict]:
         return None
     progress_path = PROGRESS_DIR / f"clone_{fork_name}.json"
     return _read_progress_file(progress_path)
+
+
+def read_log_tail(path: Path, max_lines: int = 30, max_bytes: int = 32768) -> list[str]:
+    if not path.exists():
+        return []
+    try:
+        with path.open("rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            read_size = min(size, max_bytes)
+            if read_size <= 0:
+                return []
+            f.seek(-read_size, os.SEEK_END)
+            data = f.read(read_size)
+        text = data.decode("utf-8", errors="replace")
+        lines = text.splitlines()
+        if len(lines) > max_lines:
+            lines = lines[-max_lines:]
+        return lines
+    except Exception as e:
+        logger.debug(f"Failed to read log tail from {path}: {e}")
+        return []
+
+
+def extract_forkswap_message(lines: list[str]) -> str:
+    for line in reversed(lines):
+        if "[ERROR]" in line:
+            return line
+    for line in reversed(lines):
+        if "[WARN]" in line:
+            return line
+    return ""
+
+
+def parse_forkswap_log_message(line: str) -> str:
+    parts = line.split(" | ")
+    if len(parts) >= 3:
+        return parts[-1].strip()
+    return line.strip()
+
+
+def classify_clone_error(output: str, log_lines: list[str]) -> dict:
+    combined = "\n".join([output] + log_lines)
+    patterns = [
+        (r"No network connectivity to GitHub", "network", "Check device internet and DNS."),
+        (r"Invalid Git URL", "invalid_url", "Use a GitHub https URL."),
+        (r"Invalid branch name", "invalid_branch", "Verify the branch name exists."),
+        (r"Fork already exists", "fork_exists", "Delete the existing fork or choose a new name."),
+        (r"Target directory already exists", "target_exists", "Remove the existing target directory."),
+        (r"Clone blocked due to critical disk space|Critical disk space", "disk_space", "Free space on /data."),
+        (r"Cannot create forks directory|Cannot write to /data|mounted read-only", "filesystem", "Ensure /data is writable."),
+        (r"Could not acquire lock|Lock held by active process", "lock", "Another operation is running; try again later."),
+        (r"Command timed out", "timeout", "Retry the clone; network may be slow."),
+        (r"Git clone failed", "git_clone", "Check GitHub availability or credentials."),
+        (r"Clone verification failed", "verify", "Delete the fork directory and retry."),
+    ]
+    error_code = "unknown"
+    hint = ""
+    for pattern, code, tip in patterns:
+        if re.search(pattern, combined, re.IGNORECASE):
+            error_code = code
+            hint = tip
+            break
+
+    line = extract_forkswap_message(log_lines)
+    message = parse_forkswap_log_message(line) if line else output.strip()
+    if not message:
+        message = "Unknown error"
+
+    return {"error_code": error_code, "hint": hint, "message": message}
 
 # Rate limiting: track requests per IP
 rate_limit_data: dict = defaultdict(list)
@@ -1987,12 +2058,18 @@ def ensure_fork_swap_script() -> bool:
     return False
 
 
+_last_lock_cleanup_warning: float = 0.0
+
+
 def clean_stale_cli_lock() -> bool:
     """Remove stale CLI lock file if the process is dead."""
     if not CLI_LOCK_FILE.exists():
         return False
 
     try:
+        if not os.access(CLI_LOCK_FILE, os.W_OK):
+            # Avoid repeated warnings if we can't remove the lock
+            return False
         content = CLI_LOCK_FILE.read_text().strip()
         pid_str = content.split()[0] if content else ""
 
@@ -2016,7 +2093,11 @@ def clean_stale_cli_lock() -> bool:
             logger.info("Cleaned stale CLI lock (>10min old)")
             return True
     except Exception as e:
-        logger.warning(f"Error cleaning CLI lock: {e}")
+        global _last_lock_cleanup_warning
+        now = time.time()
+        if now - _last_lock_cleanup_warning > 600:
+            logger.warning(f"Error cleaning CLI lock: {e}")
+            _last_lock_cleanup_warning = now
     return False
 
 
@@ -2784,9 +2865,22 @@ if USE_AIOHTTP:
                             "fork": fork_name
                         })
                     else:
-                        logger.error(f"Clone failed: {output[:200]}")
+                        log_lines = read_log_tail(FORKSWAP_LOG_PATH, max_lines=30)
+                        error_info = classify_clone_error(output, log_lines)
+                        message = error_info["message"]
+                        hint = error_info["hint"]
+                        if hint and hint.lower() not in message.lower():
+                            message = f"{message}. {hint}"
+                        activity_log.add("error", "clone", f"Clone failed: {message}")
+                        logger.error(f"Clone failed: {message}")
                         return json_response(
-                            {"success": False, "message": f"Clone failed: {output[:200]}"},
+                            {
+                                "success": False,
+                                "message": f"Clone failed: {message}",
+                                "error_code": error_info["error_code"],
+                                "hint": hint,
+                                "log_tail": log_lines
+                            },
                             status=500
                         )
                 finally:
@@ -3540,8 +3634,21 @@ if not USE_AIOHTTP:
                     if success:
                         self.send_json({"success": True, "message": f"Cloned {fork_name} successfully", "fork": fork_name})
                     else:
-                        logger.error(f"Clone failed: {output[:200]}")
-                        self.send_json({"success": False, "message": f"Clone failed: {output[:200]}"}, 500)
+                        log_lines = read_log_tail(FORKSWAP_LOG_PATH, max_lines=30)
+                        error_info = classify_clone_error(output, log_lines)
+                        message = error_info["message"]
+                        hint = error_info["hint"]
+                        if hint and hint.lower() not in message.lower():
+                            message = f"{message}. {hint}"
+                        activity_log.add("error", "clone", f"Clone failed: {message}")
+                        logger.error(f"Clone failed: {message}")
+                        self.send_json({
+                            "success": False,
+                            "message": f"Clone failed: {message}",
+                            "error_code": error_info["error_code"],
+                            "hint": hint,
+                            "log_tail": log_lines
+                        }, 500)
                 finally:
                     clear_operation()
 

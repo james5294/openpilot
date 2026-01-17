@@ -3174,12 +3174,37 @@ mark_boot_success() {
         return 0
     fi
 
+    # Self-heal: if fork name looks invalid, try syncing from symlink
+    if ! validate_fork_name "$fork_name"; then
+        log_warn "Invalid current fork name '$fork_name' - attempting state sync"
+        if sync_state_from_symlink; then
+            fork_name=$(get_current_fork)
+        else
+            log_debug "State sync failed; skipping boot tracking"
+            return 0
+        fi
+    fi
+
+    if ! validate_fork_name "$fork_name"; then
+        log_debug "Current fork name invalid after sync; skipping boot tracking"
+        return 0
+    fi
+
     local info_file
     info_file=$(get_fork_info_path "$fork_name")
 
     if [[ ! -f "$info_file" ]]; then
-        log_debug "Fork info not found for boot tracking: $fork_name"
-        return 0
+        local git_url branch
+        git_url=$(git -C "$OPENPILOT_DIR" config --get remote.origin.url 2>/dev/null || true)
+        branch=$(git -C "$OPENPILOT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+        [[ -z "$git_url" ]] && git_url="unknown"
+        [[ -z "$branch" ]] && branch="$DEFAULT_BRANCH"
+        if create_fork_info "$fork_name" "$git_url" "$branch"; then
+            log_info "Created missing fork info for '$fork_name'"
+        else
+            log_debug "Failed to create fork info for boot tracking"
+            return 0
+        fi
     fi
 
     local timestamp
@@ -8609,6 +8634,7 @@ parse_args() {
     CMD_CONFIG=false
     CMD_DIAGNOSTIC=false
     CMD_HEALTH=false
+    CMD_REFRESH_ASSETS=false
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -8637,6 +8663,11 @@ parse_args() {
             --repair)
                 RUN_INTERACTIVE=false
                 CMD_REPAIR=true
+                shift
+                ;;
+            --refresh-assets)
+                RUN_INTERACTIVE=false
+                CMD_REFRESH_ASSETS=true
                 shift
                 ;;
             --debug)
@@ -8890,8 +8921,18 @@ parse_args() {
     done
 }
 
+refresh_assets() {
+    log_info "Refresh assets requested (no-op in this build)"
+    return 0
+}
+
 # Run non-interactive command
 run_command() {
+    if [[ "$CMD_REFRESH_ASSETS" == "true" ]]; then
+        refresh_assets
+        return $?
+    fi
+
     # Handle commands that were parsed
     if [[ -n "${CMD_SWITCH:-}" ]]; then
         switch_fork "$CMD_SWITCH"
