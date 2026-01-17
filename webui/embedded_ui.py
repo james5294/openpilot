@@ -508,6 +508,119 @@ html, body {
     cursor: pointer;
 }
 .logs-filters select:focus { outline: none; border-color: var(--op-accent); }
+.health-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+}
+.health-card {
+    background: var(--op-bg-card);
+    border: 1px solid var(--op-border);
+    border-radius: var(--op-radius-lg);
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.health-card .label {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 11px;
+    color: var(--op-text-muted);
+}
+.health-card .value { font-size: 18px; font-weight: 600; }
+.health-card .meta { font-size: 12px; color: var(--op-text-muted); }
+.status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 600;
+}
+.status-badge.ok { color: var(--op-success); }
+.status-badge.warn { color: var(--op-warning); }
+.status-badge.err { color: var(--op-danger); }
+.health-issues,
+.health-errors {
+    background: var(--op-bg-card);
+    border: 1px solid var(--op-border);
+    border-radius: var(--op-radius-lg);
+    padding: 12px;
+    margin-bottom: 16px;
+}
+.issue-item {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 0;
+    border-top: 1px solid var(--op-border);
+}
+.issue-item:first-child { border-top: 0; }
+.issue-title { font-weight: 600; }
+.issue-meta { font-size: 12px; color: var(--op-text-muted); margin-top: 4px; }
+.error-details {
+    margin-top: 8px;
+    display: grid;
+    gap: 6px;
+}
+.error-details .label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--op-text-muted);
+}
+.error-details .value {
+    font-size: 12px;
+    color: var(--op-text-secondary);
+}
+.operation-panel {
+    background: var(--op-bg-card);
+    border: 1px solid var(--op-border);
+    border-radius: var(--op-radius-lg);
+    padding: 14px;
+    margin-bottom: 16px;
+}
+.operation-panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+}
+.operation-panel-title { font-weight: 600; }
+.operation-panel-meta {
+    display: grid;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--op-text-muted);
+}
+.operation-log-line {
+    margin-top: 10px;
+    padding: 10px;
+    border-radius: var(--op-radius-md);
+    background: var(--op-bg-elevated);
+    font-family: "SFMono-Regular", "Menlo", "Monaco", monospace;
+    font-size: 11px;
+    color: var(--op-text-primary);
+    white-space: pre-wrap;
+}
+.issue-actions { display: flex; align-items: center; gap: 8px; }
+.issue-pill {
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    background: rgba(255, 255, 255, 0.06);
+}
+.issue-pill.error { color: var(--op-danger); }
+.issue-pill.warning { color: var(--op-warning); }
+.issue-pill.info { color: var(--op-success); }
+.logs-section-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--op-text);
+    margin: 12px 0;
+}
 .logs-container {
     background: var(--op-bg-card);
     border: 1px solid var(--op-border);
@@ -551,10 +664,33 @@ html, body {
     text-align: center;
 }
 .log-message { flex: 1; font-size: 13px; color: var(--op-text-secondary); word-break: break-word; }
+.log-actions { display: flex; align-items: center; }
+.log-tail {
+    background: var(--op-bg-elevated);
+    border: 1px solid var(--op-border);
+    border-radius: var(--op-radius-md);
+    padding: 12px;
+    max-height: 320px;
+    overflow-y: auto;
+    font-family: "SFMono-Regular", "Menlo", "Monaco", monospace;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--op-text-primary);
+    white-space: pre-wrap;
+}
+.log-details-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 12px;
+    font-size: 12px;
+    color: var(--op-text-muted);
+}
 .logs-empty { text-align: center; padding: 48px 24px; color: var(--op-text-muted); }
 @media (max-width: 768px) {
     .logs-filters { flex-direction: column; align-items: stretch; }
     .logs-filters select, .logs-filters button { width: 100%; }
+    .health-grid { grid-template-columns: 1fr; }
     .log-entry { flex-wrap: wrap; }
     .log-time, .log-category { order: 2; margin-top: 8px; }
     .log-message { width: 100%; order: 3; margin-top: 8px; }
@@ -628,12 +764,12 @@ def get_embedded_html(version: str = "0.0.0"):
                         </svg>
                         Dashboard
                     </div>
-                    <div class="nav-item" onclick="app.showView('logs')" data-view="logs" title="View system activity and operation history">
+                    <div class="nav-item" onclick="app.showView('logs')" data-view="logs" title="View system health and activity history">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
                             <path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/>
                         </svg>
-                        Activity Log
+                        Health & Activity
                     </div>
                     <div class="nav-item" onclick="app.showView('agnos')" data-view="agnos" title="Manage cached AGNOS OS versions">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -710,8 +846,31 @@ def get_embedded_html(version: str = "0.0.0"):
                         <div class="template-grid" id="template-list"></div>
                     </div>
                 </div>
-                <!-- Activity Log View -->
+                <!-- Health & Activity View -->
                 <div id="view-logs" class="view">
+                    <div class="section-header"><h2 class="section-title">Health Overview</h2></div>
+                    <div class="health-grid" id="health-grid">
+                        <div class="health-card"><div class="label">Status</div><div class="value">Loading...</div></div>
+                    </div>
+                    <div class="operation-panel" id="active-operation">
+                        <div class="operation-panel-header">
+                            <div class="operation-panel-title">Active Operation</div>
+                            <span class="status-badge warn">Loading</span>
+                        </div>
+                        <div class="operation-panel-meta">Checking current operations...</div>
+                    </div>
+                    <div class="health-issues" id="health-issues">
+                        <div class="logs-section-title">Issues & Actions</div>
+                        <div class="logs-empty">Loading health checks...</div>
+                    </div>
+                    <div class="health-errors" id="health-errors">
+                        <div class="logs-section-title">Errors & Warnings</div>
+                        <div class="logs-empty">Loading errors...</div>
+                    </div>
+                    <div class="health-errors" id="operations-list">
+                        <div class="logs-section-title">Recent Operations</div>
+                        <div class="logs-empty">Loading operations...</div>
+                    </div>
                     <div class="logs-header">
                         <div class="logs-filters">
                             <select id="log-category" onchange="app.filterLogs()" title="Filter logs by operation category">
@@ -744,6 +903,7 @@ def get_embedded_html(version: str = "0.0.0"):
                             </button>
                         </div>
                     </div>
+                    <div class="logs-section-title">Activity Timeline</div>
                     <div class="logs-container" id="logs-container">
                         <div class="empty-state"><div class="spinner"></div><p>Loading activity log...</p></div>
                     </div>
@@ -844,12 +1004,16 @@ def get_embedded_html(version: str = "0.0.0"):
 EMBEDDED_JS = '''
 (function() {
     "use strict";
-    var state = { currentFork: null, forks: [], templates: {}, diskFreeGb: 0, device: "comma device", operationActive: false, pollInterval: null, activeForkDetails: {}, deviceAgnosVersion: "unknown", agnosDownloads: {} };
+    var state = { currentFork: null, forks: [], templates: {}, diskFreeGb: 0, device: "comma device", operationActive: false, pollInterval: null, healthInterval: null, operationsInterval: null, activeForkDetails: {}, deviceAgnosVersion: "unknown", agnosDownloads: {}, logs: [], health: null, operations: [], preflightContinue: null, lastCloneAttempt: null };
     var api = {
         get: function(endpoint) { return fetch("/api" + endpoint).then(function(res) { if (!res.ok) throw new Error("API error: " + res.status); return res.json(); }); },
         post: function(endpoint, data) { return fetch("/api" + endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data || {}) }).then(function(res) { return res.json(); }); },
         getStatus: function(queryStr) { return this.get("/status" + (queryStr || "")); },
-        getHealth: function() { return this.get("/health"); },
+        getHealth: function() {
+            return fetch("/api/health").then(function(res) {
+                return res.json();
+            });
+        },
         getTemplates: function() { return this.get("/templates"); },
         getLogs: function(params) {
             var query = [];
@@ -858,6 +1022,21 @@ EMBEDDED_JS = '''
             if (params.category) query.push("category=" + params.category);
             if (params.days) query.push("days=" + params.days);
             return this.get("/logs" + (query.length ? "?" + query.join("&") : ""));
+        },
+        getOperations: function(limit) {
+            var query = "limit=" + (limit || 25);
+            return this.get("/operations?" + query);
+        },
+        getOperationRecord: function(id) {
+            return this.get("/operations?id=" + encodeURIComponent(id));
+        },
+        preflight: function(opType, data) {
+            var payload = Object.assign({ type: opType }, data || {});
+            return this.post("/preflight", payload);
+        },
+        getLogTail: function(source, lines) {
+            var query = "source=" + encodeURIComponent(source || "forkswap") + "&lines=" + (lines || 60);
+            return this.get("/log-tail?" + query);
         },
         switchFork: function(fork) { return this.post("/switch", { fork: fork }); },
         updateFork: function(fork) { return this.post("/update", { fork: fork }); },
@@ -1276,6 +1455,361 @@ EMBEDDED_JS = '''
             renderTemplates();
         }).catch(function(err) { console.error("Failed to fetch templates:", err); });
     }
+    function formatLogTimestamp(value) {
+        var time = new Date(value);
+        if (isNaN(time.getTime())) return "";
+        var today = new Date().toDateString();
+        var isToday = time.toDateString() === today;
+        var timeStr = time.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+        if (isToday) return timeStr;
+        return time.toLocaleDateString("en-US", { month: "short", day: "numeric" }) + " " + timeStr;
+    }
+    function normalizeLogMessage(message) {
+        if (!message) return "";
+        return message.toLowerCase()
+            .replace(/0x[0-9a-f]+/g, "0x#")
+            .replace(/\b\d+\b/g, "#")
+            .replace(/\s+/g, " ")
+            .trim();
+    }
+    function getSeverityClass(severity) {
+        if (severity === "error") return "err";
+        if (severity === "warning") return "warn";
+        return "ok";
+    }
+    function renderPreflightItems(items, title) {
+        if (!items || !items.length) return "";
+        var html = "<div class=\\"logs-section-title\\">" + escapeHtml(title) + "</div>";
+        for (var i = 0; i < items.length; i++) {
+            var item = items[i] || {};
+            var severity = (item.severity || "warning").toLowerCase();
+            var label = severity.toUpperCase();
+            html += "<div class=\\"issue-item\\"><div><div class=\\"issue-title\\">" + escapeHtml(item.message || "Check required") + "</div>";
+            if (item.hint) {
+                html += "<div class=\\"issue-meta\\">" + escapeHtml(item.hint) + "</div>";
+            }
+            html += "</div><div class=\\"issue-actions\\"><span class=\\"issue-pill " + escapeHtml(severity) + "\\">" + escapeHtml(label) + "</span></div></div>";
+        }
+        return html;
+    }
+    function renderPreflightHtml(result) {
+        var errors = result.errors || [];
+        var warnings = result.warnings || [];
+        var resolved = result.resolved || [];
+        var html = "";
+        html += renderPreflightItems(errors, "Blocking issues");
+        html += renderPreflightItems(warnings, "Warnings");
+        html += renderPreflightItems(resolved, "Auto-fixed");
+        if (!html) {
+            html = "<div class=\\"logs-empty\\">No issues detected.</div>";
+        }
+        return html;
+    }
+    function runPreflight(opType, data, proceedFn, title) {
+        api.preflight(opType, data).then(function(result) {
+            if (!result || typeof result.can_proceed === "undefined") {
+                proceedFn();
+                return;
+            }
+            var hasIssues = (result.errors && result.errors.length) || (result.warnings && result.warnings.length) || (result.resolved && result.resolved.length);
+            if (!hasIssues) {
+                proceedFn();
+                return;
+            }
+            state.preflightContinue = proceedFn;
+            var buttons = [{ label: "Cancel", onclick: "modal.close()" }];
+            if (result.can_proceed) {
+                buttons.push({ label: "Proceed", cls: "btn-primary", onclick: "app.continuePreflight()" });
+            }
+            modal.open(title || "Preflight Checks", renderPreflightHtml(result), buttons);
+        }).catch(function() {
+            proceedFn();
+        });
+    }
+    function getErrorGuidance(message) {
+        var msg = (message || "").toLowerCase();
+        if (msg.indexOf("lock held") >= 0 || msg.indexOf("stale lock") >= 0) {
+            return { why: "A previous fork operation left a lock file behind.", fix: "Retry. If it persists, clear /tmp/fork_swap.lock." };
+        }
+        if (msg.indexOf("operation in progress") >= 0 || msg.indexOf("another operation") >= 0) {
+            return { why: "Another operation is still running.", fix: "Wait for it to finish, then retry." };
+        }
+        if (msg.indexOf("invalid git url") >= 0 || msg.indexOf("invalid github url") >= 0) {
+            return { why: "The repository URL format is invalid.", fix: "Use https://github.com/owner/repo.git." };
+        }
+        if (msg.indexOf("could not resolve") >= 0 || msg.indexOf("cannot reach") >= 0 || msg.indexOf("network") >= 0) {
+            return { why: "The device cannot reach GitHub.", fix: "Check network connectivity and DNS." };
+        }
+        if (msg.indexOf("no space left") >= 0 || msg.indexOf("disk space") >= 0) {
+            return { why: "Storage is too low to complete the operation.", fix: "Delete unused forks or free space." };
+        }
+        if (msg.indexOf("already exists") >= 0) {
+            return { why: "A fork with this name already exists.", fix: "Choose a new name or delete the existing fork." };
+        }
+        if (msg.indexOf("permission denied") >= 0) {
+            return { why: "File permissions prevented the operation.", fix: "Run self-heal or fix ownership." };
+        }
+        if (msg.indexOf("timed out") >= 0) {
+            return { why: "The operation exceeded the time limit.", fix: "Retry or check network speed." };
+        }
+        if (msg.indexOf("agnos") >= 0 && msg.indexOf("cache") >= 0) {
+            return { why: "The AGNOS cache is incomplete or invalid.", fix: "Open AGNOS Manager and re-download." };
+        }
+        return { why: "The operation reported an error.", fix: "Open Details to review logs." };
+    }
+    function renderLogTailHtml(lines) {
+        if (!lines || !lines.length) {
+            return "<div class=\\"logs-empty\\">No log output available.</div>";
+        }
+        return "<div class=\\"log-tail\\">" + escapeHtml(lines.join("\\n")) + "</div>";
+    }
+    function renderCloneFailure(result) {
+        var hint = result && result.hint ? result.hint : "";
+        var message = result && result.message ? result.message : "Clone failed.";
+        var html = "<div class=\\"log-details-meta\\"><strong>" + escapeHtml(message) + "</strong></div>";
+        if (hint) {
+            html += "<div class=\\"log-details-meta\\">" + escapeHtml(hint) + "</div>";
+        }
+        if (result && result.log_tail) {
+            html += renderLogTailHtml(result.log_tail);
+        }
+        var buttons = [{ label: "Close", onclick: "modal.close()" }];
+        if (result && result.retry) {
+            var retryData = result.retry;
+            if (result.operation_id) retryData.retry_of = result.operation_id;
+            state.lastCloneAttempt = retryData;
+            buttons.push({ label: "Retry Clone", cls: "btn-primary", onclick: "app.retryLastClone()" });
+        }
+        modal.open("Clone Failed", html, buttons);
+    }
+    function renderHealth(health) {
+        var grid = document.getElementById("health-grid");
+        if (!grid) return;
+        if (!health) {
+            grid.innerHTML = "<div class=\\"health-card\\"><div class=\\"label\\">Status</div><div class=\\"value\\">Unavailable</div></div>";
+            return;
+        }
+        var issues = health.issues || [];
+        var status = health.status || "unknown";
+        var statusLabel = status === "healthy" ? "Healthy" : (status === "degraded" ? "Needs attention" : "Unknown");
+        var statusClass = status === "healthy" ? "ok" : (status === "degraded" ? "warn" : "err");
+        var diskFree = health.system && health.system.disk_free_gb ? health.system.disk_free_gb : 0;
+        var diskValue = diskFree > 0 ? diskFree.toFixed(1) + " GB free" : "Unknown";
+        var diskClass = diskFree > 0 ? (diskFree < 2 ? "err" : (diskFree < 5 ? "warn" : "ok")) : "warn";
+        var network = health.system ? health.system.network || {} : {};
+        var networkValue = network.ok ? "Online" : "Offline";
+        var networkMeta = network.latency_ms ? network.latency_ms + " ms to github.com" : "No latency data";
+        var networkClass = network.ok ? "ok" : "err";
+        var locks = health.system ? health.system.locks || {} : {};
+        var lockValue = "No lock";
+        var lockMeta = "CLI ready";
+        var lockClass = "ok";
+        if (locks.present) {
+            if (locks.active) {
+                lockValue = "Active lock";
+                lockMeta = locks.pid ? "PID " + locks.pid : "Operation running";
+                lockClass = "warn";
+            } else if (locks.stale) {
+                lockValue = "Stale lock";
+                lockMeta = locks.age_seconds ? Math.round(locks.age_seconds) + "s old" : "Will clear automatically";
+                lockClass = "warn";
+            } else {
+                lockValue = "Lock present";
+                lockMeta = locks.age_seconds ? Math.round(locks.age_seconds) + "s old" : "Waiting for release";
+                lockClass = "warn";
+            }
+            if (locks.unremovable) {
+                lockMeta += " | unremovable";
+            }
+        }
+        var op = health.operation || {};
+        var opValue = op.active ? (op.type ? op.type.toUpperCase() : "Active") : "Idle";
+        var opMeta = "No active operations";
+        var opClass = op.active ? "warn" : "ok";
+        if (op.active) {
+            var parts = [];
+            if (op.target) parts.push("Target: " + op.target);
+            if (op.progress && op.progress.stage_label) parts.push(op.progress.stage_label);
+            if (op.progress && typeof op.progress.percent === "number") parts.push(op.progress.percent + "%");
+            if (op.elapsed_seconds) parts.push("Elapsed " + formatDuration(Math.round(op.elapsed_seconds)));
+            opMeta = parts.join(" | ");
+        }
+        var agnos = health.system ? health.system.agnos || {} : {};
+        var invalidCount = agnos.invalid_count || 0;
+        var agnosValue = invalidCount > 0 ? invalidCount + " invalid" : "OK";
+        var agnosMeta = invalidCount > 0 ? "Repair in AGNOS Manager" : "All caches verified";
+        var agnosClass = invalidCount > 0 ? "warn" : "ok";
+        var logs = health.system ? health.system.logs || {} : {};
+        var webuiKb = typeof logs.webui_kb === "number" ? logs.webui_kb + " KB" : "--";
+        var forkswapKbValue = typeof logs.forkswap_kb === "number" ? logs.forkswap_kb + " KB" : "--";
+        var opsKb = typeof logs.operations_kb === "number" ? logs.operations_kb + " KB" : null;
+        var logMeta = "Forkswap " + forkswapKbValue;
+        if (opsKb) logMeta += " | Ops " + opsKb;
+        var service = health.system ? health.system.webui_service || {} : {};
+        var serviceValue = service.installed ? (service.enabled ? "Enabled" : "Installed") : "Not installed";
+        var serviceMeta = service.error ? service.error : "WebUI service status";
+        var serviceClass = service.installed ? (service.enabled ? "ok" : "warn") : "warn";
+        var versionValue = health.system && health.system.forkswap_version ? health.system.forkswap_version : "--";
+        var cards = [
+            { label: "Status", value: statusLabel, meta: issues.length + " issue(s)", badge: true, cls: statusClass },
+            { label: "Disk", value: diskValue, meta: "Storage on device", badge: false, cls: diskClass },
+            { label: "Network", value: networkValue, meta: networkMeta, badge: true, cls: networkClass },
+            { label: "CLI Lock", value: lockValue, meta: lockMeta, badge: true, cls: lockClass },
+            { label: "Operation", value: opValue, meta: opMeta, badge: true, cls: opClass },
+            { label: "AGNOS Cache", value: agnosValue, meta: agnosMeta, badge: true, cls: agnosClass },
+            { label: "Logs", value: webuiKb, meta: logMeta, badge: false, cls: "ok" },
+            { label: "Service", value: serviceValue, meta: serviceMeta, badge: true, cls: serviceClass },
+            { label: "Version", value: versionValue, meta: "Fork Swap build", badge: false, cls: "ok" }
+        ];
+        var html = "";
+        for (var i = 0; i < cards.length; i++) {
+            var card = cards[i];
+            var valueHtml = card.badge ? "<span class=\\"status-badge " + card.cls + "\\">" + escapeHtml(card.value) + "</span>" : escapeHtml(card.value);
+            html += "<div class=\\"health-card\\"><div class=\\"label\\">" + escapeHtml(card.label) + "</div><div class=\\"value\\">" + valueHtml + "</div>";
+            if (card.meta) html += "<div class=\\"meta\\">" + escapeHtml(card.meta) + "</div>";
+            html += "</div>";
+        }
+        grid.innerHTML = html;
+    }
+    function renderOperationPanel(health) {
+        var container = document.getElementById("active-operation");
+        if (!container) return;
+        var op = health && health.operation ? health.operation : null;
+        if (!op || !op.active) {
+            container.innerHTML = "<div class=\\"operation-panel-header\\"><div class=\\"operation-panel-title\\">Active Operation</div><span class=\\"status-badge ok\\">Idle</span></div><div class=\\"operation-panel-meta\\">No active operations.</div>";
+            return;
+        }
+        var stage = (op.progress && op.progress.stage_label) ? op.progress.stage_label : "In progress";
+        var percent = (op.progress && typeof op.progress.percent === "number") ? op.progress.percent + "%" : "--";
+        var elapsed = op.elapsed_seconds ? formatDuration(Math.round(op.elapsed_seconds)) : "--";
+        var remaining = op.remaining_seconds ? formatDuration(Math.round(op.remaining_seconds)) : "--";
+        var target = op.target ? op.target : "unknown";
+        var title = (op.type || "operation").toUpperCase() + " • " + target;
+        var meta = "<div>Stage: " + escapeHtml(stage) + " (" + escapeHtml(percent) + ")</div>";
+        meta += "<div>Elapsed: " + escapeHtml(elapsed) + " | Remaining: " + escapeHtml(remaining) + "</div>";
+        if (op.id) meta += "<div>Operation ID: " + escapeHtml(op.id) + "</div>";
+        var logLine = op.latest_log ? op.latest_log : "Waiting for log output...";
+        container.innerHTML = "<div class=\\"operation-panel-header\\"><div class=\\"operation-panel-title\\">" + escapeHtml(title) + "</div><span class=\\"status-badge warn\\">Active</span></div><div class=\\"operation-panel-meta\\">" + meta + "</div><div class=\\"operation-log-line\\">" + escapeHtml(logLine) + "</div>";
+    }
+    function renderHealthIssues(issues) {
+        var container = document.getElementById("health-issues");
+        if (!container) return;
+        var html = "<div class=\\"logs-section-title\\">Issues & Actions</div>";
+        if (!issues || !issues.length) {
+            container.innerHTML = html + "<div class=\\"logs-empty\\">No active issues detected</div>";
+            return;
+        }
+        for (var i = 0; i < issues.length; i++) {
+            var issue = issues[i] || {};
+            var severity = issue.severity || "info";
+            var actionHtml = "";
+            if (issue.action === "agnos") {
+                actionHtml = "<button class=\\"btn btn-sm btn-primary\\" onclick=\\"app.showView('agnos')\\">Open AGNOS</button>";
+            } else if (issue.action === "cleanup") {
+                actionHtml = "<button class=\\"btn btn-sm btn-secondary\\" onclick=\\"app.showView('dashboard')\\">Review Forks</button>";
+            } else if (issue.action === "network" || issue.action === "clear_lock" || issue.action === "repair") {
+                actionHtml = "<button class=\\"btn btn-sm btn-secondary\\" onclick=\\"app.refreshHealth()\\">Recheck</button>";
+            }
+            html += "<div class=\\"issue-item\\"><div><div class=\\"issue-title\\">" + escapeHtml(issue.message || "Issue detected") + "</div>";
+            if (issue.hint) {
+                html += "<div class=\\"issue-meta\\">" + escapeHtml(issue.hint) + "</div>";
+            }
+            html += "</div><div class=\\"issue-actions\\"><span class=\\"issue-pill " + severity + "\\">" + escapeHtml(severity.toUpperCase()) + "</span>" + actionHtml + "</div></div>";
+        }
+        container.innerHTML = html;
+    }
+    function renderErrorSummary(entries) {
+        var container = document.getElementById("health-errors");
+        if (!container) return;
+        var html = "<div class=\\"logs-section-title\\">Errors & Warnings</div>";
+        if (!entries || !entries.length) {
+            container.innerHTML = html + "<div class=\\"logs-empty\\">No recent errors or warnings</div>";
+            return;
+        }
+        var grouped = {};
+        for (var i = 0; i < entries.length; i++) {
+            var entry = entries[i];
+            var level = (entry.level || "").toLowerCase();
+            if (level !== "error" && level !== "warning") continue;
+            var errorCode = entry.meta && entry.meta.error_code ? entry.meta.error_code : "";
+            var fingerprint = level + "|" + (entry.category || "system") + "|" + (errorCode || "") + "|" + normalizeLogMessage(entry.message || "");
+            if (!grouped[fingerprint]) {
+                grouped[fingerprint] = {
+                    message: entry.message,
+                    category: entry.category || "system",
+                    count: 0,
+                    last: entry.timestamp,
+                    sampleIndex: i,
+                    level: level,
+                    error_code: errorCode
+                };
+            }
+            grouped[fingerprint].count += 1;
+            if (level === "error") grouped[fingerprint].level = "error";
+            if (entry.timestamp > grouped[fingerprint].last) {
+                grouped[fingerprint].last = entry.timestamp;
+                grouped[fingerprint].sampleIndex = i;
+            }
+        }
+        var summary = Object.values(grouped);
+        if (!summary.length) {
+            container.innerHTML = html + "<div class=\\"logs-empty\\">No recent errors or warnings</div>";
+            return;
+        }
+        summary.sort(function(a, b) {
+            if (a.level !== b.level) return a.level === "error" ? -1 : 1;
+            return b.count - a.count;
+        });
+        for (var j = 0; j < summary.length && j < 6; j++) {
+            var item = summary[j];
+            var lastSeen = formatLogTimestamp(item.last) || "recently";
+            var guidance = getErrorGuidance(item.message || "");
+            var severityClass = item.level === "error" ? "error" : "warning";
+            html += "<div class=\\"issue-item\\"><div><div class=\\"issue-title\\">" + escapeHtml(item.category || "system") + " issue</div><div class=\\"issue-meta\\">" + lastSeen + "</div>";
+            html += "<div class=\\"error-details\\"><div><div class=\\"label\\">What happened</div><div class=\\"value\\">" + escapeHtml(item.message || "Issue") + "</div></div>";
+            if (item.error_code) {
+                html += "<div><div class=\\"label\\">Error code</div><div class=\\"value\\">" + escapeHtml(item.error_code) + "</div></div>";
+            }
+            html += "<div><div class=\\"label\\">Why</div><div class=\\"value\\">" + escapeHtml(guidance.why) + "</div></div>";
+            html += "<div><div class=\\"label\\">Fix</div><div class=\\"value\\">" + escapeHtml(guidance.fix) + "</div></div></div></div>";
+            html += "<div class=\\"issue-actions\\"><span class=\\"issue-pill " + severityClass + "\\">" + item.count + "x</span><button class=\\"btn btn-sm btn-secondary\\" onclick=\\"app.showLogDetails(" + item.sampleIndex + ")\\">Details</button></div></div>";
+        }
+        container.innerHTML = html;
+    }
+    function getLogSourceForEntry(entry) {
+        var category = (entry.category || "").toLowerCase();
+        if (category === "clone" || category === "switch" || category === "update") return "forkswap";
+        return "webui";
+    }
+    function renderLogDetails(entry, logLines, source) {
+        var timeStr = formatLogTimestamp(entry.timestamp) || "Unknown time";
+        var meta = "Category: " + escapeHtml(entry.category || "system") + " | Level: " + escapeHtml(entry.level || "info") + " | " + escapeHtml(timeStr) + " | " + escapeHtml(source);
+        var body = "<div class=\\"log-details-meta\\">" + meta + "</div><div class=\\"log-details-meta\\"><strong>" + escapeHtml(entry.message || "") + "</strong></div>";
+        if (entry.meta && entry.meta.error_code) {
+            body += "<div class=\\"log-details-meta\\">Error code: " + escapeHtml(entry.meta.error_code) + "</div>";
+        }
+        if (entry.meta && entry.meta.hint) {
+            body += "<div class=\\"log-details-meta\\">Hint: " + escapeHtml(entry.meta.hint) + "</div>";
+        }
+        body += "<div class=\\"log-tail\\">" + escapeHtml((logLines || []).join("\\n")) + "</div>";
+        return body;
+    }
+    function fetchHealth() {
+        api.getHealth().then(function(data) {
+            state.health = data;
+            renderHealth(data);
+            renderOperationPanel(data);
+            renderHealthIssues(data.issues || []);
+        }).catch(function(err) {
+            console.error("Failed to fetch health:", err);
+            renderHealth(null);
+            renderOperationPanel(null);
+            var container = document.getElementById("health-issues");
+            if (container) {
+                container.innerHTML = "<div class=\\"logs-section-title\\">Issues & Actions</div><div class=\\"logs-empty\\">Failed to load health checks</div>";
+            }
+        });
+    }
     function fetchLogs() {
         var categoryEl = document.getElementById("log-category");
         var levelEl = document.getElementById("log-level");
@@ -1288,25 +1822,91 @@ EMBEDDED_JS = '''
         api.getLogs(params).then(function(data) {
             var entries = data.entries || [];
             var stats = data.stats || {};
+            state.logs = entries;
+            renderErrorSummary(entries);
             if (entries.length === 0) {
                 container.innerHTML = "<div class=\\"logs-empty\\"><p>No activity logs found</p><p style=\\"color: var(--op-text-muted); font-size: 12px; margin-top: 8px;\\">File: " + stats.file_entries + " entries (" + stats.file_size_kb + " KB)</p></div>";
                 return;
             }
             var html = "";
-            var today = new Date().toDateString();
             for (var i = 0; i < entries.length; i++) {
                 var entry = entries[i];
-                var time = new Date(entry.timestamp);
-                var isToday = time.toDateString() === today;
-                var timeStr = isToday ? time.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }) : time.toLocaleDateString("en-US", { month: "short", day: "numeric" }) + " " + time.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
-                html += "<div class=\\"log-entry\\"><span class=\\"log-level " + (entry.level || "info") + "\\">" + escapeHtml(entry.level || "info") + "</span><span class=\\"log-time\\">" + timeStr + "</span><span class=\\"log-category\\">" + escapeHtml(entry.category || "system") + "</span><span class=\\"log-message\\">" + escapeHtml(entry.message) + "</span></div>";
+                var timeStr = formatLogTimestamp(entry.timestamp);
+                var details = (entry.level || "").toLowerCase() === "error" ? "<span class=\\"log-actions\\"><button class=\\"btn btn-sm btn-secondary\\" onclick=\\"app.showLogDetails(" + i + ")\\">Details</button></span>" : "";
+                html += "<div class=\\"log-entry\\"><span class=\\"log-level " + (entry.level || "info") + "\\">" + escapeHtml(entry.level || "info") + "</span><span class=\\"log-time\\">" + escapeHtml(timeStr) + "</span><span class=\\"log-category\\">" + escapeHtml(entry.category || "system") + "</span><span class=\\"log-message\\">" + escapeHtml(entry.message) + "</span>" + details + "</div>";
             }
             html += "<div class=\\"logs-stats\\" style=\\"text-align: center; padding: 12px; color: var(--op-text-muted); font-size: 11px; border-top: 1px solid var(--op-border);\\">Showing " + entries.length + " of " + stats.file_entries + " total entries (" + stats.file_size_kb + " KB)</div>";
             container.innerHTML = html;
         }).catch(function(err) {
             console.error("Failed to fetch logs:", err);
             container.innerHTML = "<div class=\\"logs-empty\\"><p>Failed to load activity logs</p></div>";
+            renderErrorSummary([]);
         });
+    }
+    function renderOperations(records) {
+        var container = document.getElementById("operations-list");
+        if (!container) return;
+        var html = "<div class=\\"logs-section-title\\">Recent Operations</div>";
+        if (!records || !records.length) {
+            container.innerHTML = html + "<div class=\\"logs-empty\\">No recent operations</div>";
+            return;
+        }
+        for (var i = 0; i < records.length; i++) {
+            var record = records[i];
+            var status = record.status || (record.success ? "success" : "failed");
+            var statusLabel = status === "running" ? "RUNNING" : (record.success ? "SUCCESS" : "FAILED");
+            var statusClass = status === "running" ? "warning" : (record.success ? "info" : "error");
+            var title = (record.operation || "operation").toUpperCase() + (record.target ? " • " + record.target : "");
+            var meta = "Started " + (formatLogTimestamp(record.started_at) || "unknown");
+            if (record.retry_of) meta += " | Retry of " + record.retry_of;
+            html += "<div class=\\"issue-item\\"><div><div class=\\"issue-title\\">" + escapeHtml(title) + "</div><div class=\\"issue-meta\\">" + escapeHtml(meta) + "</div></div><div class=\\"issue-actions\\"><span class=\\"issue-pill " + statusClass + "\\">" + statusLabel + "</span><button class=\\"btn btn-sm btn-secondary\\" onclick=\\"app.showOperationDetails('" + record.id + "')\\">Details</button></div></div>";
+        }
+        container.innerHTML = html;
+    }
+    function fetchOperations() {
+        api.getOperations(25).then(function(data) {
+            state.operations = data.records || [];
+            renderOperations(state.operations);
+        }).catch(function(err) {
+            var container = document.getElementById("operations-list");
+            if (container) {
+                container.innerHTML = "<div class=\\"logs-section-title\\">Recent Operations</div><div class=\\"logs-empty\\">Failed to load operations</div>";
+            }
+        });
+    }
+    function renderOperationDetails(record) {
+        if (!record) return "<div class=\\"logs-empty\\">Operation not found.</div>";
+        var title = (record.operation || "operation").toUpperCase() + (record.target ? " • " + record.target : "");
+        var status = record.status || (record.success ? "success" : "failed");
+        var html = "<div class=\\"log-details-meta\\"><strong>" + escapeHtml(title) + "</strong></div>";
+        html += "<div class=\\"log-details-meta\\">Status: " + escapeHtml(status) + "</div>";
+        if (record.started_at) html += "<div class=\\"log-details-meta\\">Started: " + escapeHtml(formatLogTimestamp(record.started_at)) + "</div>";
+        if (record.ended_at) html += "<div class=\\"log-details-meta\\">Ended: " + escapeHtml(formatLogTimestamp(record.ended_at)) + "</div>";
+        if (record.error_code) html += "<div class=\\"log-details-meta\\">Error code: " + escapeHtml(record.error_code) + "</div>";
+        if (record.last_stage) html += "<div class=\\"log-details-meta\\">Last stage: " + escapeHtml(record.last_stage) + "</div>";
+        if (record.failed_stage) html += "<div class=\\"log-details-meta\\">Failed stage: " + escapeHtml(record.failed_stage) + "</div>";
+        if (record.retry_of) html += "<div class=\\"log-details-meta\\">Retry of: " + escapeHtml(record.retry_of) + "</div>";
+        if (record.retried_by && record.retried_by.length) {
+            html += "<div class=\\"log-details-meta\\">Retried by: " + escapeHtml(record.retried_by.join(", ")) + "</div>";
+        }
+        if (record.inputs) {
+            html += "<div class=\\"logs-section-title\\">Inputs</div>";
+            html += "<div class=\\"log-tail\\">" + escapeHtml(JSON.stringify(record.inputs, null, 2)) + "</div>";
+        }
+        if (record.preflight) {
+            html += renderPreflightItems(record.preflight.errors || [], "Blocking issues");
+            html += renderPreflightItems(record.preflight.warnings || [], "Warnings");
+            html += renderPreflightItems(record.preflight.resolved || [], "Auto-fixed");
+        }
+        if (record.hint) {
+            html += "<div class=\\"log-details-meta\\">Hint: " + escapeHtml(record.hint) + "</div>";
+        }
+        if (record.log_tail && record.log_tail.length) {
+            html += renderLogTailHtml(record.log_tail);
+        } else if (record.output_tail && record.output_tail.length) {
+            html += renderLogTailHtml(record.output_tail);
+        }
+        return html;
     }
     function fetchAgnosCache() {
         var cacheList = document.getElementById("agnos-cache-list");
@@ -1382,64 +1982,78 @@ EMBEDDED_JS = '''
         if (seconds < 3600) return "~" + Math.round(seconds / 60) + "m remaining";
         return "~" + Math.round(seconds / 3600) + "h remaining";
     }
-    function startPolling() { fetchStatus(); fetchTemplates(); state.pollInterval = setInterval(fetchStatus, 5000); }
+    function startPolling() {
+        fetchStatus();
+        fetchTemplates();
+        fetchHealth();
+        fetchOperations();
+        state.pollInterval = setInterval(fetchStatus, 5000);
+        state.healthInterval = setInterval(fetchHealth, 10000);
+        state.operationsInterval = setInterval(fetchOperations, 15000);
+    }
     window.app = {
         switchFork: function(forkName, isAgnosUpdate) {
             modal.close();
-            var title = isAgnosUpdate ? "Switching Fork + AGNOS Update" : "Switching Fork";
-            var msg = isAgnosUpdate ? "Starting AGNOS update for " + forkName + "..." : "Switching to " + forkName + ". Device will reboot...";
-            operation.show(title, msg);
-            operationProgress.start("switch", isAgnosUpdate ? 1800 : 300);
-            api.switchFork(forkName).then(function(result) {
-                if (result.success) {
-                    waitForDeviceReboot(forkName, isAgnosUpdate);
-                } else {
+            var proceed = function() {
+                var title = isAgnosUpdate ? "Switching Fork + AGNOS Update" : "Switching Fork";
+                var msg = isAgnosUpdate ? "Starting AGNOS update for " + forkName + "..." : "Switching to " + forkName + ". Device will reboot...";
+                operation.show(title, msg);
+                operationProgress.start("switch", isAgnosUpdate ? 1800 : 300);
+                api.switchFork(forkName).then(function(result) {
+                    if (result.success) {
+                        waitForDeviceReboot(forkName, isAgnosUpdate);
+                    } else {
+                        operationProgress.complete(false);
+                        operation.hide();
+                        toast.error(result.message);
+                    }
+                }).catch(function(err) {
                     operationProgress.complete(false);
                     operation.hide();
-                    toast.error(result.message);
-                }
-            }).catch(function(err) {
-                operationProgress.complete(false);
-                operation.hide();
-                toast.error("Failed to switch fork");
-            });
+                    toast.error("Failed to switch fork");
+                });
+            };
+            runPreflight("switch", { fork: forkName }, proceed, "Switch Preflight");
         },
         updateCurrentFork: function() {
             var activeFork = null;
             for (var i = 0; i < state.forks.length; i++) { if (state.forks[i].active) { activeFork = state.forks[i]; break; } }
             if (!activeFork) { toast.error("No active fork to update"); return; }
-            operation.show("Updating Fork", "Pulling latest changes for " + activeFork.name + "...");
-            api.updateFork(activeFork.directory || activeFork.name).then(function(result) {
-                operation.hide();
-                if (result.success) { toast.success(result.message); fetchStatus(); } else { toast.error(result.message); }
-            }).catch(function(err) { operation.hide(); toast.error("Failed to update fork"); });
+            var forkName = activeFork.directory || activeFork.name;
+            var proceed = function() {
+                operation.show("Updating Fork", "Pulling latest changes for " + activeFork.name + "...");
+                api.updateFork(forkName).then(function(result) {
+                    operation.hide();
+                    if (result.success) { toast.success(result.message); fetchStatus(); } else { toast.error(result.message); }
+                }).catch(function(err) { operation.hide(); toast.error("Failed to update fork"); });
+            };
+            runPreflight("update", { fork: forkName }, proceed, "Update Preflight");
         },
         cloneFork: function(data) {
             modal.close();
-            operation.show("Cloning Fork", "Cloning " + (data.name || data.template) + ". This may take several minutes...");
-            operationProgress.start("clone", 600);
-            api.cloneFork(data).then(function(result) {
-                if (result.success) {
-                    operationProgress.complete(true);
-                    operation.updateTitle("Clone Complete");
-                    operation.updateMessage(result.message || "Clone finished successfully.");
-                    toast.success(result.message);
-                    fetchStatus();
-                    setTimeout(function() { operation.hide(); }, 2500);
-                } else {
+            var proceed = function() {
+                operation.show("Cloning Fork", "Cloning " + (data.name || data.template) + ". This may take several minutes...");
+                operationProgress.start("clone", 600);
+                api.cloneFork(data).then(function(result) {
+                    if (result.success) {
+                        operationProgress.complete(true);
+                        operation.updateTitle("Clone Complete");
+                        operation.updateMessage(result.message || "Clone finished successfully.");
+                        toast.success(result.message);
+                        fetchStatus();
+                        setTimeout(function() { operation.hide(); }, 2500);
+                    } else {
+                        operationProgress.complete(false);
+                        operation.hide();
+                        renderCloneFailure(result || {});
+                    }
+                }).catch(function(err) {
                     operationProgress.complete(false);
-                    operation.updateTitle("Clone Failed");
-                    operation.updateMessage(result.message || "Clone failed.");
-                    toast.error(result.message);
-                    setTimeout(function() { operation.hide(); }, 3500);
-                }
-            }).catch(function(err) {
-                operationProgress.complete(false);
-                operation.updateTitle("Clone Failed");
-                operation.updateMessage("Clone failed. Please check your connection.");
-                toast.error("Failed to clone fork");
-                setTimeout(function() { operation.hide(); }, 3500);
-            });
+                    operation.hide();
+                    renderCloneFailure({ message: "Clone failed. Please check your connection." });
+                });
+            };
+            runPreflight("clone", data, proceed, "Clone Preflight");
         },
         cloneTemplate: function(templateKey) { modal.close(); this.cloneFork({ template: templateKey }); },
         reboot: function() {
@@ -1560,16 +2174,83 @@ EMBEDDED_JS = '''
             if (targetView) targetView.classList.add("active");
             var targetNav = document.querySelector(".nav-item[data-view=\\"" + viewName + "\\"]");
             if (targetNav) targetNav.classList.add("active");
-            var titles = { dashboard: "Dashboard", logs: "Activity Log", agnos: "AGNOS Manager" };
+            var titles = { dashboard: "Dashboard", logs: "Health & Activity", agnos: "AGNOS Manager" };
             document.querySelector(".page-title").textContent = titles[viewName] || viewName;
-            if (viewName === "logs") fetchLogs();
+            if (viewName === "logs") { fetchLogs(); fetchHealth(); fetchOperations(); }
             if (viewName === "agnos") fetchAgnosCache();
             var sidebar = document.querySelector(".sidebar");
             if (sidebar.classList.contains("open")) sidebar.classList.remove("open");
         },
         filterLogs: function() { fetchLogs(); },
         refreshLogs: function() { fetchLogs(); toast.success("Logs refreshed"); },
+        refreshHealth: function() { fetchHealth(); toast.info("Health refreshed"); },
         refreshAgnosCache: function() { fetchAgnosCache(); toast.success("AGNOS cache refreshed"); },
+        continuePreflight: function() {
+            var proceed = state.preflightContinue;
+            state.preflightContinue = null;
+            modal.close();
+            if (typeof proceed === "function") {
+                proceed();
+            }
+        },
+        retryLastClone: function() {
+            var retry = state.lastCloneAttempt;
+            state.lastCloneAttempt = null;
+            modal.close();
+            if (!retry) {
+                toast.error("No clone to retry");
+                return;
+            }
+            this.cloneFork(retry);
+        },
+        showOperationDetails: function(opId) {
+            if (!opId) {
+                toast.error("Operation not found");
+                return;
+            }
+            modal.open("Operation Details", "<div class=\\"logs-empty\\">Loading operation details...</div>", [{ label: "Close", onclick: "modal.close()" }]);
+            api.getOperationRecord(opId).then(function(data) {
+                var record = data.record;
+                var buttons = [{ label: "Close", onclick: "modal.close()" }];
+                if (record && record.operation === "clone" && record.inputs) {
+                    buttons.push({ label: "Retry Clone", cls: "btn-primary", onclick: "app.retryCloneFromOperation('" + escapeHtml(opId) + "')" });
+                }
+                modal.open("Operation Details", renderOperationDetails(record), buttons);
+            }).catch(function() {
+                modal.open("Operation Details", "<div class=\\"logs-empty\\">Failed to load operation details.</div>", [{ label: "Close", onclick: "modal.close()" }]);
+            });
+        },
+        retryCloneFromOperation: function(opId) {
+            api.getOperationRecord(opId).then(function(data) {
+                var record = data.record;
+                if (!record || !record.inputs) {
+                    toast.error("Operation data unavailable");
+                    return;
+                }
+                var retryData = Object.assign({}, record.inputs);
+                retryData.retry_of = record.id;
+                modal.close();
+                app.cloneFork(retryData);
+            }).catch(function() {
+                toast.error("Failed to retry clone");
+            });
+        },
+        showLogDetails: function(index) {
+            var entry = state.logs[index];
+            if (!entry) {
+                toast.error("Log entry not found");
+                return;
+            }
+            var source = getLogSourceForEntry(entry);
+            modal.open("Log Details", "<div class=\\"logs-empty\\">Loading log details...</div>", [{ label: "Close", onclick: "modal.close()" }]);
+            api.getLogTail(source, 80).then(function(data) {
+                var body = renderLogDetails(entry, data.lines || [], source);
+                modal.open("Log Details", body, [{ label: "Close", onclick: "modal.close()" }]);
+            }).catch(function() {
+                var body = renderLogDetails(entry, ["Failed to load log tail."], source);
+                modal.open("Log Details", body, [{ label: "Close", onclick: "modal.close()" }]);
+            });
+        },
         deleteAgnosCache: function(version) {
             if (!confirm("Delete cached AGNOS " + version + "? You will need to re-download it.")) return;
             api.post("/delete-agnos-cache", { version: version }).then(function(result) {

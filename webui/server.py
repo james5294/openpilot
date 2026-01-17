@@ -27,6 +27,7 @@ import logging
 import os
 import re
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -65,6 +66,7 @@ CONFIG_FILE = Path(os.environ.get("FORKSWAP_CONFIG_FILE", str(FORKSWAP_DIR / "co
 AGNOS_CACHE_DIR = Path(os.environ.get("FORKSWAP_AGNOS_CACHE_DIR", str(FORKSWAP_DIR / "agnos_cache")))
 PROGRESS_DIR = Path(os.environ.get("FORKSWAP_PROGRESS_DIR", str(FORKSWAP_DIR / "progress")))
 FORKSWAP_LOG_PATH = Path(os.environ.get("FORKSWAP_FORK_SWAP_LOG", str(FORKSWAP_DIR / "fork_swap.log")))
+OPERATIONS_DIR = Path(os.environ.get("FORKSWAP_OPERATIONS_DIR", str(FORKSWAP_DIR / "operations")))
 
 # Optional token authentication (set in config.json or env var)
 # If set, all API requests must include "Authorization: Bearer <token>" header
@@ -208,14 +210,17 @@ logger = _setup_logging()
 class ActivityLog:
     """Persistent activity log with file storage for multi-day retention."""
 
-    def __init__(self, max_memory_entries: int = 500, retention_days: int = 3):
+    def __init__(self, max_memory_entries: int = 500, retention_days: int = 3, max_file_entries: int = 2000):
         self.max_memory_entries = max_memory_entries
         self.retention_days = retention_days
+        self.max_file_entries = max_file_entries
         self._entries: list[dict] = []
         self._lock = threading.Lock()
         self._log_dir = FORKSWAP_DIR / "logs"
         self._log_file = self._log_dir / "activity.jsonl"
+        self._last_prune_ts = 0.0
         self._load_from_file()
+        self._prune_old_entries()
 
     def _load_from_file(self) -> None:
         """Load recent entries from persistent log file on startup."""
@@ -271,15 +276,18 @@ class ActivityLog:
                             valid_entries.append(line)
                     except (json.JSONDecodeError, ValueError):
                         continue
+            if len(valid_entries) > self.max_file_entries:
+                valid_entries = valid_entries[-self.max_file_entries:]
             # Rewrite file with only valid entries
             with open(self._log_file, 'w') as f:
                 f.write("\n".join(valid_entries) + "\n" if valid_entries else "")
+            self._last_prune_ts = time.time()
         except Exception as e:
             # Debug: Activity log prune failed (non-critical)
             if TEST_MODE:
                 print(f"DEBUG: Activity log prune failed: {e}")
 
-    def add(self, level: str, message: str, category: str = "system") -> None:
+    def add(self, level: str, message: str, category: str = "system", meta: dict | None = None) -> None:
         """Add an entry to the activity log."""
         entry = {
             "timestamp": datetime.now().isoformat(),
@@ -287,6 +295,8 @@ class ActivityLog:
             "message": message,
             "category": category
         }
+        if meta:
+            entry["meta"] = meta
         with self._lock:
             self._entries.append(entry)
             # Trim memory buffer
@@ -294,6 +304,8 @@ class ActivityLog:
                 self._entries = self._entries[-self.max_memory_entries:]
         # Write to persistent file
         self._write_to_file(entry)
+        if time.time() - self._last_prune_ts > 3600:
+            self._prune_old_entries()
 
     def get_entries(self, limit: int = 50, level: str = None, category: str = None,
                     days_back: int = None) -> list[dict]:
@@ -455,10 +467,20 @@ else:
     operation_lock = threading.Lock()
 
 # Track current operation for status reporting
-current_operation: dict = {"active": False, "type": None, "started": None, "target": None, "progress": None}
+current_operation: dict = {
+    "active": False,
+    "type": None,
+    "started": None,
+    "target": None,
+    "progress": None,
+    "id": None,
+    "inputs": None
+}
 operation_state_lock = threading.Lock()
 
-def set_operation(op_type: str, target: str | None = None):
+def set_operation(op_type: str, target: str | None = None,
+                  operation_id: str | None = None,
+                  inputs: dict | None = None) -> None:
     """Mark an operation as in progress."""
     with operation_state_lock:
         current_operation["active"] = True
@@ -466,6 +488,8 @@ def set_operation(op_type: str, target: str | None = None):
         current_operation["started"] = time.time()
         current_operation["target"] = target
         current_operation["progress"] = None
+        current_operation["id"] = operation_id
+        current_operation["inputs"] = inputs or None
 
 def clear_operation():
     """Mark operation as complete."""
@@ -475,6 +499,8 @@ def clear_operation():
         current_operation["started"] = None
         current_operation["target"] = None
         current_operation["progress"] = None
+        current_operation["id"] = None
+        current_operation["inputs"] = None
 
 
 def set_operation_progress(
@@ -494,6 +520,20 @@ def set_operation_progress(
             "stage_label": label,
             "updated_at": datetime.now().isoformat(),
         }
+        op_id = current_operation.get("id")
+        if op_id:
+            try:
+                record = get_operation_record(op_id) or {}
+                stages = record.get("stages_completed") or []
+                if stage and stage != "error" and stage not in stages:
+                    stages.append(stage)
+                update_operation_record(op_id, {
+                    "last_stage": stage,
+                    "stage_label": label,
+                    "stages_completed": stages
+                })
+            except Exception:
+                pass
 
 
 def get_operation_progress() -> Optional[dict]:
@@ -517,6 +557,184 @@ def get_clone_progress(fork_name: str | None) -> Optional[dict]:
     return _read_progress_file(progress_path)
 
 
+def _sanitize_operation_label(value: str | None) -> str:
+    if not value:
+        return "unknown"
+    cleaned = re.sub(r"[^a-zA-Z0-9_-]+", "-", value)
+    return cleaned.strip("-")[:40] or "unknown"
+
+
+def _operation_record_path(op_id: str) -> Path:
+    return OPERATIONS_DIR / f"{op_id}.json"
+
+
+def _tail_text(text: str, max_lines: int = 40) -> list[str]:
+    if not text:
+        return []
+    lines = [line for line in text.splitlines() if line.strip()]
+    if len(lines) > max_lines:
+        lines = lines[-max_lines:]
+    return lines
+
+
+def start_operation_record(op_type: str, target: str | None, inputs: dict | None,
+                           retry_of: str | None = None) -> str:
+    OPERATIONS_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    op_id = f"{op_type}_{_sanitize_operation_label(target)}_{timestamp}"
+    record = {
+        "id": op_id,
+        "operation": op_type,
+        "target": target,
+        "status": "running",
+        "started_at": datetime.now().isoformat(),
+        "inputs": inputs or {},
+        "stages_completed": [],
+        "retry_of": retry_of,
+        "retried_by": []
+    }
+    _operation_record_path(op_id).write_text(json.dumps(record, indent=2))
+    if retry_of:
+        try:
+            prev = json.loads(_operation_record_path(retry_of).read_text())
+            retried_by = prev.get("retried_by") or []
+            if op_id not in retried_by:
+                retried_by.append(op_id)
+            prev["retried_by"] = retried_by
+            _operation_record_path(retry_of).write_text(json.dumps(prev, indent=2))
+        except Exception:
+            pass
+    return op_id
+
+
+def update_operation_record(op_id: str, updates: dict) -> None:
+    path = _operation_record_path(op_id)
+    record = {}
+    if path.exists():
+        try:
+            record = json.loads(path.read_text())
+        except Exception:
+            record = {}
+    record.update(updates)
+    OPERATIONS_DIR.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record, indent=2))
+
+
+def finalize_operation_record(op_id: str, success: bool, **details) -> None:
+    updates = {
+        "status": "success" if success else "failed",
+        "ended_at": datetime.now().isoformat(),
+        "success": success
+    }
+    if not success and "failed_stage" not in details:
+        try:
+            progress = current_operation.get("progress") or {}
+            stage = progress.get("stage")
+            if stage:
+                updates["failed_stage"] = stage
+        except Exception:
+            pass
+    if details:
+        updates.update(details)
+    update_operation_record(op_id, updates)
+
+
+def list_operation_records(limit: int = 25) -> list[dict]:
+    if not OPERATIONS_DIR.exists():
+        return []
+    records = []
+    for path in OPERATIONS_DIR.glob("*.json"):
+        try:
+            record = json.loads(path.read_text())
+            records.append(record)
+        except Exception:
+            continue
+    def sort_key(item: dict) -> float:
+        ts = item.get("started_at")
+        if ts:
+            try:
+                return datetime.fromisoformat(ts).timestamp()
+            except Exception:
+                pass
+        return 0.0
+    records.sort(key=sort_key, reverse=True)
+    trimmed = []
+    for record in records[:max(1, limit)]:
+        trimmed.append({
+            "id": record.get("id"),
+            "operation": record.get("operation"),
+            "target": record.get("target"),
+            "status": record.get("status"),
+            "started_at": record.get("started_at"),
+            "ended_at": record.get("ended_at"),
+            "success": record.get("success"),
+            "retry_of": record.get("retry_of"),
+            "retried_by": record.get("retried_by", []),
+            "error_code": record.get("error_code"),
+        })
+    return trimmed
+
+
+def get_operation_record(op_id: str) -> Optional[dict]:
+    path = _operation_record_path(op_id)
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return None
+
+
+def prune_operation_records(max_days: int = 7, max_count: int = 200) -> dict:
+    result = {"removed": 0}
+    if not OPERATIONS_DIR.exists():
+        return result
+    cutoff = datetime.now() - timedelta(days=max_days)
+    records = []
+    for path in OPERATIONS_DIR.glob("*.json"):
+        try:
+            stat = path.stat()
+            records.append((path, stat.st_mtime))
+        except Exception:
+            continue
+    # Remove by age
+    for path, mtime in records:
+        try:
+            if datetime.fromtimestamp(mtime) < cutoff:
+                path.unlink()
+                result["removed"] += 1
+        except Exception:
+            continue
+    # Enforce max count
+    remaining = []
+    for path in OPERATIONS_DIR.glob("*.json"):
+        try:
+            remaining.append((path, path.stat().st_mtime))
+        except Exception:
+            continue
+    if len(remaining) > max_count:
+        remaining.sort(key=lambda item: item[1])
+        for path, _ in remaining[:len(remaining) - max_count]:
+            try:
+                path.unlink()
+                result["removed"] += 1
+            except Exception:
+                continue
+    return result
+
+
+def get_operations_disk_usage_kb() -> int:
+    if not OPERATIONS_DIR.exists():
+        return 0
+    total = 0
+    for path in OPERATIONS_DIR.glob("*.json"):
+        try:
+            total += path.stat().st_size
+        except Exception:
+            continue
+    return int(total / 1024)
+
+
 def read_log_tail(path: Path, max_lines: int = 30, max_bytes: int = 32768) -> list[str]:
     if not path.exists():
         return []
@@ -537,6 +755,45 @@ def read_log_tail(path: Path, max_lines: int = 30, max_bytes: int = 32768) -> li
     except Exception as e:
         logger.debug(f"Failed to read log tail from {path}: {e}")
         return []
+
+
+def read_latest_log_line(path: Path, max_bytes: int = 4096) -> str:
+    if not path.exists():
+        return ""
+    try:
+        with path.open("rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            if size <= 0:
+                return ""
+            read_size = min(size, max_bytes)
+            f.seek(-read_size, os.SEEK_END)
+            data = f.read(read_size)
+        text = data.decode("utf-8", errors="replace")
+        lines = [line for line in text.splitlines() if line.strip()]
+        return lines[-1] if lines else ""
+    except Exception as e:
+        logger.debug(f"Failed to read latest log line from {path}: {e}")
+        return ""
+
+
+def get_webui_service_status() -> dict:
+    service_path = Path("/etc/systemd/system/forkswap-webui.service")
+    status = {"installed": service_path.exists(), "enabled": None, "error": None}
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-enabled", "forkswap-webui.service"],
+            capture_output=True,
+            text=True,
+            timeout=3
+        )
+        if result.returncode == 0:
+            status["enabled"] = result.stdout.strip() == "enabled"
+        else:
+            status["enabled"] = False
+    except Exception as e:
+        status["error"] = str(e)
+    return status
 
 
 def extract_forkswap_message(lines: list[str]) -> str:
@@ -586,11 +843,46 @@ def classify_clone_error(output: str, log_lines: list[str]) -> dict:
 
     return {"error_code": error_code, "hint": hint, "message": message}
 
+
+def classify_operation_error(op_type: str, output: str, log_lines: list[str]) -> dict:
+    combined = "\n".join([output] + log_lines).lower()
+    default_message = f"{op_type.capitalize()} failed"
+    patterns = [
+        (r"command timed out", "timeout", "Retry; the operation timed out."),
+        (r"lock held|could not acquire lock|cli operation in progress", "lock", "Another operation is running; try again later."),
+        (r"no space left on device|disk space|not enough space", "disk", "Free storage on /data."),
+        (r"permission denied", "permission", "Fix file ownership or permissions."),
+        (r"invalid fork", "invalid_fork", "Verify the fork name."),
+        (r"could not resolve host|name or service not known", "network", "Check device connectivity and DNS."),
+        (r"fatal: not a git repository", "git_repo", "Repository looks invalid; reclone."),
+    ]
+    for pattern, code, hint in patterns:
+        if re.search(pattern, combined, re.IGNORECASE):
+            return {
+                "error_code": code,
+                "message": default_message,
+                "hint": hint
+            }
+
+    line = extract_forkswap_message(log_lines)
+    message = parse_forkswap_log_message(line) if line else output.strip()
+    if not message:
+        message = default_message
+
+    return {
+        "error_code": f"{op_type}_failed",
+        "message": message,
+        "hint": "Check logs for details."
+    }
+
 # Rate limiting: track requests per IP
 rate_limit_data: dict = defaultdict(list)
 
 # Periodic cleanup: track when we last cleaned rate limit data
 _last_rate_limit_cleanup: float = 0.0
+
+# Network health cache (avoid frequent checks)
+_network_status_cache: dict = {"checked_at": 0.0, "ok": None, "latency_ms": None}
 
 # =============================================================================
 # Rate Limiting
@@ -1587,6 +1879,293 @@ def get_disk_free_gb() -> float:
         logger.debug(f"Disk space check failed: {e}")
     return 0.0
 
+
+def get_log_size_kb(path: Path) -> int:
+    try:
+        if not path.exists():
+            return 0
+        return int(path.stat().st_size / 1024)
+    except Exception:
+        return 0
+
+
+def check_network_status(target: str = "github.com", timeout: float = 2.0) -> dict:
+    now = time.time()
+    cached_at = _network_status_cache.get("checked_at", 0.0)
+    if now - cached_at < 30 and _network_status_cache.get("ok") is not None:
+        return {
+            "ok": _network_status_cache.get("ok"),
+            "latency_ms": _network_status_cache.get("latency_ms"),
+            "checked_at": _network_status_cache.get("checked_at"),
+        }
+
+    start = time.time()
+    ok = False
+    latency_ms = None
+    try:
+        with socket.create_connection((target, 443), timeout=timeout):
+            ok = True
+            latency_ms = int((time.time() - start) * 1000)
+    except Exception:
+        ok = False
+
+    _network_status_cache.update({
+        "checked_at": time.time(),
+        "ok": ok,
+        "latency_ms": latency_ms,
+    })
+
+    return {
+        "ok": ok,
+        "latency_ms": latency_ms,
+        "checked_at": _network_status_cache["checked_at"],
+    }
+
+
+def get_cli_lock_status() -> dict:
+    status = {
+        "present": False,
+        "stale": False,
+        "active": False,
+        "pid": None,
+        "age_seconds": None,
+        "removable": False,
+        "unremovable": False,
+    }
+
+    if not CLI_LOCK_FILE.exists():
+        return status
+
+    status["present"] = True
+    status["removable"] = os.access(CLI_LOCK_FILE, os.W_OK)
+    status["unremovable"] = not status["removable"]
+
+    try:
+        age = datetime.now().timestamp() - CLI_LOCK_FILE.stat().st_mtime
+        status["age_seconds"] = int(age)
+    except Exception:
+        pass
+
+    try:
+        content = CLI_LOCK_FILE.read_text().strip()
+        pid_str = content.split()[0] if content else ""
+        if pid_str.isdigit():
+            pid = int(pid_str)
+            status["pid"] = pid
+            try:
+                os.kill(pid, 0)
+                status["active"] = True
+            except ProcessLookupError:
+                status["stale"] = True
+            except PermissionError:
+                status["active"] = True
+    except Exception:
+        pass
+
+    if status["age_seconds"] and status["age_seconds"] > 600 and not status["active"]:
+        status["stale"] = True
+
+    return status
+
+
+def get_agnos_health() -> dict:
+    invalid = []
+    for fork in get_fork_list():
+        missing = fork.get("agnos_missing") or []
+        if missing:
+            invalid.append({
+                "fork": fork.get("name"),
+                "version": fork.get("agnos_version"),
+                "missing": missing
+            })
+    return {
+        "invalid_count": len(invalid),
+        "invalid": invalid
+    }
+
+
+def build_health_issues() -> list[dict]:
+    issues: list[dict] = []
+
+    disk_free = get_disk_free_gb()
+    if disk_free > 0 and disk_free < 2:
+        issues.append({
+            "severity": "error",
+            "code": "disk_critical",
+            "message": f"Low disk space ({disk_free:.1f} GB free)",
+            "hint": "Delete unused forks or free space on /data.",
+            "action": "cleanup"
+        })
+    elif disk_free > 0 and disk_free < 5:
+        issues.append({
+            "severity": "warning",
+            "code": "disk_low",
+            "message": f"Disk space is low ({disk_free:.1f} GB free)",
+            "hint": "Clones may fail if space gets lower.",
+            "action": "cleanup"
+        })
+
+    lock_status = get_cli_lock_status()
+    if lock_status["present"] and lock_status["stale"]:
+        issues.append({
+            "severity": "warning",
+            "code": "stale_lock",
+            "message": "Stale CLI lock detected",
+            "hint": "Will be cleared automatically when possible.",
+            "action": "clear_lock"
+        })
+        if lock_status.get("unremovable"):
+            issues.append({
+                "severity": "warning",
+                "code": "lock_unremovable",
+                "message": "CLI lock cannot be removed",
+                "hint": "Lock file permissions prevent cleanup.",
+                "action": "repair"
+            })
+    elif lock_status["present"] and lock_status["active"]:
+        issues.append({
+            "severity": "warning",
+            "code": "cli_lock_active",
+            "message": "CLI operation in progress",
+            "hint": "Wait for the CLI process to finish.",
+            "action": "wait"
+        })
+
+    network = check_network_status()
+    if not network.get("ok"):
+        issues.append({
+            "severity": "error",
+            "code": "network_unreachable",
+            "message": "Cannot reach github.com",
+            "hint": "Check device connectivity and DNS.",
+            "action": "network"
+        })
+
+    agnos_health = get_agnos_health()
+    if agnos_health["invalid_count"] > 0:
+        issues.append({
+            "severity": "warning",
+            "code": "agnos_cache_invalid",
+            "message": f"{agnos_health['invalid_count']} AGNOS cache(s) incomplete",
+            "hint": "Open AGNOS Manager to repair the cache.",
+            "action": "agnos"
+        })
+
+    return issues
+
+
+def _preflight_item(severity: str, code: str, message: str, hint: str | None = None) -> dict:
+    item = {
+        "severity": severity,
+        "code": code,
+        "message": message,
+    }
+    if hint:
+        item["hint"] = hint
+    return item
+
+
+def run_preflight_checks(op_type: str, fork_name: str | None = None,
+                         url: str | None = None, branch: str | None = None) -> dict:
+    errors: list[dict] = []
+    warnings: list[dict] = []
+    resolved: list[dict] = []
+
+    disk_free = get_disk_free_gb()
+    if disk_free > 0 and disk_free < 2:
+        errors.append(_preflight_item(
+            "error",
+            "disk_critical",
+            f"Low disk space ({disk_free:.1f} GB free)",
+            "Free at least 2 GB before continuing."
+        ))
+    elif disk_free > 0 and disk_free < 5:
+        warnings.append(_preflight_item(
+            "warning",
+            "disk_low",
+            f"Disk space is low ({disk_free:.1f} GB free)",
+            "Clones may fail if storage gets tighter."
+        ))
+
+    lock_status = get_cli_lock_status()
+    if lock_status["present"] and lock_status["stale"] and not lock_status["active"]:
+        if clean_stale_cli_lock():
+            resolved.append(_preflight_item(
+                "info",
+                "stale_lock_cleared",
+                "Cleared stale CLI lock",
+                "Lock belonged to a dead process."
+            ))
+        else:
+            warnings.append(_preflight_item(
+                "warning",
+                "stale_lock",
+                "Stale CLI lock detected",
+                "Clear /tmp/fork_swap.lock if it blocks operations."
+            ))
+    elif lock_status["present"] and lock_status["active"]:
+        errors.append(_preflight_item(
+            "error",
+            "cli_lock_active",
+            "CLI operation in progress",
+            "Wait for the CLI operation to finish."
+        ))
+
+    if operation_lock.locked():
+        errors.append(_preflight_item(
+            "error",
+            "operation_busy",
+            "Another operation is already running",
+            "Wait for the current operation to finish."
+        ))
+
+    if op_type == "clone":
+        network = check_network_status()
+        if not network.get("ok"):
+            errors.append(_preflight_item(
+                "error",
+                "network_unreachable",
+                "Cannot reach github.com",
+                "Check device connectivity and DNS."
+            ))
+        elif network.get("latency_ms") and network["latency_ms"] > 600:
+            warnings.append(_preflight_item(
+                "warning",
+                "network_slow",
+                f"High GitHub latency ({network['latency_ms']} ms)",
+                "Clone may take longer than usual."
+            ))
+
+        if url and not validate_git_url(url):
+            errors.append(_preflight_item(
+                "error",
+                "invalid_url",
+                "Invalid GitHub URL format",
+                "Use an https://github.com/owner/repo.git URL."
+            ))
+        if fork_name and not validate_fork_name(fork_name):
+            errors.append(_preflight_item(
+                "error",
+                "invalid_fork_name",
+                "Invalid fork name",
+                "Use alphanumeric, hyphen, or underscore only."
+            ))
+        if branch and not validate_branch_name(branch):
+            errors.append(_preflight_item(
+                "error",
+                "invalid_branch",
+                "Invalid branch name",
+                "Check the branch name and try again."
+            ))
+
+    can_proceed = len(errors) == 0
+    return {
+        "can_proceed": can_proceed,
+        "errors": errors,
+        "warnings": warnings,
+        "resolved": resolved
+    }
+
 # =============================================================================
 # Self-Healing Functions
 # =============================================================================
@@ -2245,6 +2824,7 @@ def run_startup_selfhealing() -> dict:
         "webui_synced": False,
         "service_installed": False,
         "migration": None,
+        "operations_pruned": 0,
         "errors": []
     }
 
@@ -2253,6 +2833,13 @@ def run_startup_selfhealing() -> dict:
     # 1. Clean stale CLI lock first (prevents blocked operations)
     if clean_stale_cli_lock():
         results["lock_cleaned"] = True
+
+    # 1b. Prune old operation records
+    try:
+        prune_result = prune_operation_records()
+        results["operations_pruned"] = prune_result.get("removed", 0)
+    except Exception as e:
+        results["errors"].append(f"Operations prune failed: {e}")
 
     # 2. Ensure fork_swap.sh is properly installed (not a symlink)
     if ensure_fork_swap_script():
@@ -2483,7 +3070,16 @@ if USE_AIOHTTP:
 
     async def handle_health(request: web.Request) -> web.Response:
         """Health check endpoint for monitoring and load balancers."""
-        issues = verify_environment()
+        env_issues = verify_environment()
+        issues = build_health_issues()
+        for issue in env_issues:
+            issues.append({
+                "severity": "error",
+                "code": "env_check",
+                "message": issue,
+                "hint": "Check fork_swap.sh and static assets.",
+                "action": "repair"
+            })
         health_status = "healthy" if not issues else "degraded"
 
         # Get client IP for rate limit status
@@ -2505,6 +3101,29 @@ if USE_AIOHTTP:
         progress = get_operation_progress()
         if progress is None and current_operation["type"] == "clone":
             progress = get_clone_progress(current_operation["target"])
+        latest_log_line = ""
+        latest_log_source = None
+        if current_operation["active"] and current_operation["type"]:
+            if current_operation["type"] in ("clone", "switch", "update"):
+                latest_log_source = "forkswap"
+                latest_log_line = read_latest_log_line(FORKSWAP_LOG_PATH)
+            else:
+                latest_log_source = "webui"
+                latest_log_line = read_latest_log_line(LOG_FILE)
+
+        system = {
+            "disk_free_gb": get_disk_free_gb(),
+            "network": check_network_status(),
+            "locks": get_cli_lock_status(),
+            "logs": {
+                "webui_kb": get_log_size_kb(LOG_FILE),
+                "forkswap_kb": get_log_size_kb(FORKSWAP_LOG_PATH),
+                "operations_kb": get_operations_disk_usage_kb(),
+            },
+            "agnos": get_agnos_health(),
+            "webui_service": get_webui_service_status(),
+            "forkswap_version": VERSION,
+        }
 
         data = {
             "status": health_status,
@@ -2513,18 +3132,62 @@ if USE_AIOHTTP:
             "auth_required": bool(AUTH_TOKEN),
             "operation": {
                 "active": current_operation["active"],
+                "id": current_operation.get("id"),
                 "type": current_operation["type"],
                 "target": current_operation["target"],
                 "elapsed_seconds": op_elapsed,
                 "timeout_seconds": op_timeout,
                 "remaining_seconds": op_remaining,
                 "progress": progress,
+                "latest_log": latest_log_line,
+                "latest_log_source": latest_log_source,
             },
             "rate_limit": get_rate_limit_status(ip),
+            "system": system,
+            "issues": issues,
         }
-        if issues:
-            data["issues"] = issues
         return json_response(data, status=200 if health_status == "healthy" else 503)
+
+    async def handle_preflight(request: web.Request) -> web.Response:
+        """Run preflight checks for an operation."""
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            return json_response({"success": False, "message": "Invalid JSON"}, status=400)
+
+        op_type = body.get("type", "")
+        if op_type not in ("clone", "switch", "update"):
+            return json_response(
+                {"success": False, "message": "Invalid operation type"},
+                status=400
+            )
+        fork_name = body.get("fork") or body.get("name")
+        url = body.get("url")
+        branch = body.get("branch")
+        preflight = run_preflight_checks(op_type, fork_name=fork_name, url=url, branch=branch)
+        preflight["success"] = True
+        return json_response(preflight, status=200 if preflight["can_proceed"] else 409)
+
+    async def handle_operations(request: web.Request) -> web.Response:
+        """List recent operation records or return a specific record."""
+        op_id = request.query.get("id")
+        if op_id:
+            record = get_operation_record(op_id)
+            if not record:
+                return json_response({"success": False, "message": "Operation not found"}, status=404)
+            return json_response({"success": True, "record": record})
+        try:
+            limit = int(request.query.get("limit", 25))
+        except ValueError:
+            limit = 25
+        limit = max(1, min(limit, 100))
+        records = list_operation_records(limit=limit)
+        return json_response({"success": True, "records": records, "count": len(records)})
+
+    async def handle_operations_cleanup(request: web.Request) -> web.Response:
+        """Cleanup old operation records."""
+        result = prune_operation_records()
+        return json_response({"success": True, "removed": result.get("removed", 0)})
 
     async def handle_logs(request: web.Request) -> web.Response:
         """Get recent activity logs for UI display."""
@@ -2542,6 +3205,29 @@ if USE_AIOHTTP:
             "total": len(entries),
             "categories": ["system", "startup", "migration", "switch", "clone", "update", "delete", "error"],
             "stats": stats
+        })
+
+    async def handle_log_tail(request: web.Request) -> web.Response:
+        """Return tail of a log file for diagnostics."""
+        source = request.query.get("source", "forkswap")
+        try:
+            lines = int(request.query.get("lines", 50))
+        except ValueError:
+            lines = 50
+        lines = max(1, min(lines, 200))
+
+        if source == "forkswap":
+            path = FORKSWAP_LOG_PATH
+        elif source == "webui":
+            path = LOG_FILE
+        else:
+            return json_response({"error": "Invalid log source"}, status=400)
+
+        tail = read_log_tail(path, max_lines=lines)
+        return json_response({
+            "source": source,
+            "lines": tail,
+            "count": len(tail)
         })
 
     async def handle_switch(request: web.Request) -> web.Response:
@@ -2594,8 +3280,22 @@ if USE_AIOHTTP:
                     status=409
                 )
 
+            preflight = run_preflight_checks("switch", fork_name=fork_name)
+            if not preflight["can_proceed"]:
+                return json_response(
+                    {
+                        "success": False,
+                        "message": "Preflight checks failed",
+                        "preflight": preflight
+                    },
+                    status=409
+                )
+
             async with operation_lock:
-                set_operation("switch", fork_name)
+                op_inputs = {"fork": fork_name}
+                op_id = start_operation_record("switch", fork_name, op_inputs)
+                update_operation_record(op_id, {"preflight": preflight})
+                set_operation("switch", fork_name, operation_id=op_id, inputs=op_inputs)
                 try:
                     set_operation_progress("prep", 2, "Starting switch")
 
@@ -2621,8 +3321,21 @@ if USE_AIOHTTP:
                     if not agnos_success:
                         logger.error(f"AGNOS preparation failed: {agnos_msg}")
                         set_operation_progress("error", None, agnos_msg)
+                        log_lines = read_log_tail(FORKSWAP_LOG_PATH, max_lines=30)
+                        error_code = "agnos_prepare_failed"
+                        hint = "Repair or re-download the AGNOS cache, then retry."
+                        finalize_operation_record(op_id, False, message=agnos_msg, error_code=error_code, hint=hint, log_tail=log_lines)
+                        activity_log.add("error", "switch", f"Switch failed: {agnos_msg}", meta={"error_code": error_code, "hint": hint})
                         return json_response(
-                            {"success": False, "message": agnos_msg, "agnos_required": True},
+                            {
+                                "success": False,
+                                "message": agnos_msg,
+                                "agnos_required": True,
+                                "error_code": error_code,
+                                "hint": hint,
+                                "log_tail": log_lines,
+                                "operation_id": op_id
+                            },
                             status=400
                         )
 
@@ -2633,8 +3346,20 @@ if USE_AIOHTTP:
                         if not finalize_agnos_switch(target_slot):
                             logger.error("Boot slot swap failed - aborting switch (no changes made)")
                             set_operation_progress("error", None, "Boot slot swap failed")
+                            log_lines = read_log_tail(FORKSWAP_LOG_PATH, max_lines=30)
+                            error_code = "boot_slot_swap_failed"
+                            hint = "Retry the switch or reflash AGNOS."
+                            finalize_operation_record(op_id, False, message="Boot slot swap failed", error_code=error_code, hint=hint, log_tail=log_lines)
+                            activity_log.add("error", "switch", "Switch failed: Boot slot swap failed", meta={"error_code": error_code, "hint": hint})
                             return json_response(
-                                {"success": False, "message": "AGNOS flashed but boot slot swap failed. Switch aborted - device is still on original fork."},
+                                {
+                                    "success": False,
+                                    "message": "AGNOS flashed but boot slot swap failed. Switch aborted - device is still on original fork.",
+                                    "error_code": error_code,
+                                    "hint": hint,
+                                    "log_tail": log_lines,
+                                    "operation_id": op_id
+                                },
                                 status=500
                             )
                         logger.info(f"Boot slot swapped to {target_slot} successfully")
@@ -2655,34 +3380,65 @@ if USE_AIOHTTP:
                             msg += f" AGNOS updated to new version."
                         msg += " Rebooting in 3 seconds..."
 
+                        finalize_operation_record(op_id, True, message="Switch succeeded")
                         return json_response({
                             "success": True,
                             "message": msg,
                             "rebooting": True,
-                            "agnos_updated": target_slot is not None
+                            "agnos_updated": target_slot is not None,
+                            "operation_id": op_id
                         })
                     else:
                         # Symlink switch failed - attempt rollback if AGNOS was swapped
                         logger.error(f"Symlink switch failed")
                         set_operation_progress("error", None, "Symlink switch failed")
+                        log_lines = read_log_tail(FORKSWAP_LOG_PATH, max_lines=30)
+                        error_info = classify_operation_error("switch", output, log_lines)
                         if target_slot is not None and old_slot:
                             logger.warning(f"Attempting to rollback boot slot from {target_slot} to {old_slot}")
                             # Convert old_slot suffix (_a/_b) to number (0/1)
                             rollback_slot = 0 if old_slot == "_a" else 1
                             if swap_boot_slot(rollback_slot):
                                 logger.info(f"Boot slot rolled back to {rollback_slot}")
+                                finalize_operation_record(op_id, False, message="Symlink switch failed; boot slot rolled back", error_code=error_info["error_code"], hint=error_info["hint"], log_tail=log_lines)
+                                activity_log.add("error", "switch", f"Switch failed: {error_info['message']}", meta={"error_code": error_info["error_code"], "hint": error_info["hint"]})
                                 return json_response(
-                                    {"success": False, "message": "Symlink switch failed. Boot slot rolled back. Device unchanged."},
+                                    {
+                                        "success": False,
+                                        "message": "Symlink switch failed. Boot slot rolled back. Device unchanged.",
+                                        "error_code": error_info["error_code"],
+                                        "hint": error_info["hint"],
+                                        "log_tail": log_lines,
+                                        "operation_id": op_id
+                                    },
                                     status=500
                                 )
                             else:
                                 logger.error(f"CRITICAL: Boot slot rollback failed! Device may be in inconsistent state.")
+                                finalize_operation_record(op_id, False, message="Symlink switch failed and boot slot rollback failed", error_code="rollback_failed", hint=error_info["hint"], log_tail=log_lines)
+                                activity_log.add("error", "switch", f"Switch failed: {error_info['message']}", meta={"error_code": "rollback_failed", "hint": error_info["hint"]})
                                 return json_response(
-                                    {"success": False, "message": "CRITICAL: Symlink switch failed AND boot slot rollback failed. Manual recovery may be needed."},
+                                    {
+                                        "success": False,
+                                        "message": "CRITICAL: Symlink switch failed AND boot slot rollback failed. Manual recovery may be needed.",
+                                        "error_code": "rollback_failed",
+                                        "hint": error_info["hint"],
+                                        "log_tail": log_lines,
+                                        "operation_id": op_id
+                                    },
                                     status=500
                                 )
+                        finalize_operation_record(op_id, False, message="Switch failed", error_code=error_info["error_code"], hint=error_info["hint"], log_tail=log_lines)
+                        activity_log.add("error", "switch", f"Switch failed: {error_info['message']}", meta={"error_code": error_info["error_code"], "hint": error_info["hint"]})
                         return json_response(
-                            {"success": False, "message": "Switch failed. Check logs for details."},
+                            {
+                                "success": False,
+                                "message": "Switch failed. Check logs for details.",
+                                "error_code": error_info["error_code"],
+                                "hint": error_info["hint"],
+                                "log_tail": log_lines,
+                                "operation_id": op_id
+                            },
                             status=500
                         )
                 finally:
@@ -2742,24 +3498,59 @@ if USE_AIOHTTP:
                     status=409
                 )
 
+            preflight = run_preflight_checks("update", fork_name=fork_name)
+            if not preflight["can_proceed"]:
+                return json_response(
+                    {
+                        "success": False,
+                        "message": "Preflight checks failed",
+                        "preflight": preflight
+                    },
+                    status=409
+                )
+
             async with operation_lock:
-                set_operation("update", fork_name)
+                op_inputs = {"fork": fork_name}
+                op_id = start_operation_record("update", fork_name, op_inputs)
+                update_operation_record(op_id, {"preflight": preflight})
+                set_operation("update", fork_name, operation_id=op_id, inputs=op_inputs)
                 try:
                     logger.info(f"Updating fork: {fork_name}")
                     success, output = await asyncio.to_thread(run_fork_swap, "update", fork_name)
 
                     if success:
                         logger.info(f"Update successful, scheduling reboot")
+                        finalize_operation_record(op_id, True, message="Update succeeded")
                         asyncio.create_task(delayed_reboot(5))
                         return json_response({
                             "success": True,
                             "message": f"Updated {fork_name} successfully. Rebooting in 5 seconds to apply changes...",
-                            "rebooting": True
+                            "rebooting": True,
+                            "operation_id": op_id
                         })
                     else:
                         logger.error(f"Update failed")
+                        log_lines = read_log_tail(FORKSWAP_LOG_PATH, max_lines=30)
+                        error_info = classify_operation_error("update", output, log_lines)
+                        finalize_operation_record(
+                            op_id,
+                            False,
+                            message=error_info["message"],
+                            error_code=error_info["error_code"],
+                            hint=error_info["hint"],
+                            output_tail=_tail_text(output),
+                            log_tail=log_lines
+                        )
+                        activity_log.add("error", "update", f"Update failed: {error_info['message']}", meta={"error_code": error_info["error_code"], "hint": error_info["hint"]})
                         return json_response(
-                            {"success": False, "message": "Update failed. Check logs for details."},
+                            {
+                                "success": False,
+                                "message": "Update failed. Check logs for details.",
+                                "error_code": error_info["error_code"],
+                                "hint": error_info["hint"],
+                                "log_tail": log_lines,
+                                "operation_id": op_id
+                            },
                             status=500
                         )
                 finally:
@@ -2792,6 +3583,7 @@ if USE_AIOHTTP:
             custom_url = body.get("url", "")
             custom_branch = body.get("branch", "")
             fork_name = body.get("name", "")
+            retry_of = body.get("retry_of")
 
             # Determine URL and branch from template or custom input
             if template_key:
@@ -2848,8 +3640,22 @@ if USE_AIOHTTP:
                     status=409
                 )
 
+            preflight = run_preflight_checks("clone", fork_name=fork_name, url=url, branch=branch)
+            if not preflight["can_proceed"]:
+                return json_response(
+                    {
+                        "success": False,
+                        "message": "Preflight checks failed",
+                        "preflight": preflight
+                    },
+                    status=409
+                )
+
             async with operation_lock:
-                set_operation("clone", fork_name)
+                op_inputs = {"template": template_key, "url": url, "branch": branch, "name": fork_name, "retry_of": retry_of}
+                op_id = start_operation_record("clone", fork_name, op_inputs, retry_of=retry_of)
+                update_operation_record(op_id, {"preflight": preflight})
+                set_operation("clone", fork_name, operation_id=op_id, inputs=op_inputs)
                 try:
                     logger.info(f"Cloning fork: {fork_name} from {url} branch {branch}")
 
@@ -2859,10 +3665,12 @@ if USE_AIOHTTP:
 
                     if success:
                         logger.info(f"Clone successful: {fork_name}")
+                        finalize_operation_record(op_id, True, message="Clone succeeded")
                         return json_response({
                             "success": True,
                             "message": f"Cloned {fork_name} successfully",
-                            "fork": fork_name
+                            "fork": fork_name,
+                            "operation_id": op_id
                         })
                     else:
                         log_lines = read_log_tail(FORKSWAP_LOG_PATH, max_lines=30)
@@ -2871,15 +3679,31 @@ if USE_AIOHTTP:
                         hint = error_info["hint"]
                         if hint and hint.lower() not in message.lower():
                             message = f"{message}. {hint}"
-                        activity_log.add("error", "clone", f"Clone failed: {message}")
+                        activity_log.add("error", "clone", f"Clone failed: {message}", meta={"error_code": error_info["error_code"], "hint": hint})
                         logger.error(f"Clone failed: {message}")
+                        finalize_operation_record(
+                            op_id,
+                            False,
+                            message=message,
+                            error_code=error_info["error_code"],
+                            hint=hint,
+                            output_tail=_tail_text(output),
+                            log_tail=log_lines
+                        )
                         return json_response(
                             {
                                 "success": False,
                                 "message": f"Clone failed: {message}",
                                 "error_code": error_info["error_code"],
                                 "hint": hint,
-                                "log_tail": log_lines
+                                "log_tail": log_lines,
+                                "operation_id": op_id,
+                                "retry": {
+                                    "template": template_key or None,
+                                    "url": url,
+                                    "branch": branch,
+                                    "name": fork_name
+                                }
                             },
                             status=500
                         )
@@ -3150,7 +3974,11 @@ if USE_AIOHTTP:
         app.router.add_get("/static/{filename}", handle_static)
         app.router.add_get("/api/status", handle_status)
         app.router.add_get("/api/health", handle_health)
+        app.router.add_post("/api/preflight", handle_preflight)
+        app.router.add_get("/api/operations", handle_operations)
+        app.router.add_post("/api/operations/cleanup", handle_operations_cleanup)
         app.router.add_get("/api/logs", handle_logs)
+        app.router.add_get("/api/log-tail", handle_log_tail)
         app.router.add_post("/api/switch", handle_switch)
         app.router.add_post("/api/reboot", handle_reboot)
         app.router.add_post("/api/update", handle_update)
@@ -3334,8 +4162,38 @@ if not USE_AIOHTTP:
                     "categories": ["system", "startup", "migration", "switch", "clone", "update", "delete", "error"],
                     "stats": stats
                 })
+            elif self.path.startswith("/api/log-tail"):
+                from urllib.parse import urlparse, parse_qs
+                parsed = urlparse(self.path)
+                params = parse_qs(parsed.query)
+                source = params.get("source", ["forkswap"])[0]
+                try:
+                    lines = int(params.get("lines", ["50"])[0])
+                except ValueError:
+                    lines = 50
+                lines = max(1, min(lines, 200))
+
+                if source == "forkswap":
+                    path = FORKSWAP_LOG_PATH
+                elif source == "webui":
+                    path = LOG_FILE
+                else:
+                    self.send_json({"error": "Invalid log source"}, 400)
+                    return
+
+                tail = read_log_tail(path, max_lines=lines)
+                self.send_json({"source": source, "lines": tail, "count": len(tail)})
             elif self.path == "/api/health":
-                issues = verify_environment()
+                env_issues = verify_environment()
+                issues = build_health_issues()
+                for issue in env_issues:
+                    issues.append({
+                        "severity": "error",
+                        "code": "env_check",
+                        "message": issue,
+                        "hint": "Check fork_swap.sh and static assets.",
+                        "action": "repair"
+                    })
                 health_status = "healthy" if not issues else "degraded"
                 ip = self.get_client_ip()
 
@@ -3351,6 +4209,15 @@ if not USE_AIOHTTP:
                 progress = get_operation_progress()
                 if progress is None and current_operation["type"] == "clone":
                     progress = get_clone_progress(current_operation["target"])
+                latest_log_line = ""
+                latest_log_source = None
+                if current_operation["active"] and current_operation["type"]:
+                    if current_operation["type"] in ("clone", "switch", "update"):
+                        latest_log_source = "forkswap"
+                        latest_log_line = read_latest_log_line(FORKSWAP_LOG_PATH)
+                    else:
+                        latest_log_source = "webui"
+                        latest_log_line = read_latest_log_line(LOG_FILE)
 
                 data = {
                     "status": health_status,
@@ -3359,18 +4226,55 @@ if not USE_AIOHTTP:
                     "auth_required": bool(AUTH_TOKEN),
                     "operation": {
                         "active": current_operation["active"],
+                        "id": current_operation.get("id"),
                         "type": current_operation["type"],
                         "target": current_operation["target"],
                         "elapsed_seconds": op_elapsed,
                         "timeout_seconds": op_timeout,
                         "remaining_seconds": op_remaining,
                         "progress": progress,
+                        "latest_log": latest_log_line,
+                        "latest_log_source": latest_log_source,
                     },
                     "rate_limit": get_rate_limit_status(ip),
+                    "system": {
+                        "disk_free_gb": get_disk_free_gb(),
+                        "network": check_network_status(),
+                        "locks": get_cli_lock_status(),
+                        "logs": {
+                            "webui_kb": get_log_size_kb(LOG_FILE),
+                            "forkswap_kb": get_log_size_kb(FORKSWAP_LOG_PATH),
+                            "operations_kb": get_operations_disk_usage_kb(),
+                        },
+                        "agnos": get_agnos_health(),
+                        "webui_service": get_webui_service_status(),
+                        "forkswap_version": VERSION,
+                    },
+                    "issues": issues,
                 }
-                if issues:
-                    data["issues"] = issues
                 self.send_json(data, status=200 if health_status == "healthy" else 503)
+            elif self.path.startswith("/api/operations"):
+                from urllib.parse import urlparse, parse_qs
+                parsed = urlparse(self.path)
+                if parsed.path.endswith("/cleanup"):
+                    self.send_json({"error": "Method not allowed"}, 405)
+                    return
+                params = parse_qs(parsed.query)
+                op_id = params.get("id", [None])[0]
+                if op_id:
+                    record = get_operation_record(op_id)
+                    if not record:
+                        self.send_json({"success": False, "message": "Operation not found"}, 404)
+                        return
+                    self.send_json({"success": True, "record": record})
+                    return
+                try:
+                    limit = int(params.get("limit", ["25"])[0])
+                except ValueError:
+                    limit = 25
+                limit = max(1, min(limit, 100))
+                records = list_operation_records(limit=limit)
+                self.send_json({"success": True, "records": records, "count": len(records)})
             elif self.path == "/api/cleanup":
                 # GET = dry run, shows what would be deleted
                 result = cleanup_duplicate_forks(dry_run=True)
@@ -3447,6 +4351,8 @@ if not USE_AIOHTTP:
                 self._handle_update(data)
             elif self.path == "/api/reboot":
                 self._handle_reboot()
+            elif self.path == "/api/preflight":
+                self._handle_preflight(data)
             elif self.path == "/api/clone":
                 self._handle_clone(data)
             elif self.path == "/api/cleanup":
@@ -3457,6 +4363,9 @@ if not USE_AIOHTTP:
                 self._handle_delete_agnos_cache(data)
             elif self.path == "/api/download-agnos-version":
                 self._handle_download_agnos_version(data)
+            elif self.path == "/api/operations/cleanup":
+                result = prune_operation_records()
+                self.send_json({"success": True, "removed": result.get("removed", 0)})
             else:
                 self.send_json({"error": "Not found"}, 404)
 
@@ -3478,8 +4387,15 @@ if not USE_AIOHTTP:
             if is_cli_locked() or operation_lock.locked():
                 self.send_json({"success": False, "message": "Operation in progress"}, 409)
                 return
+            preflight = run_preflight_checks("switch", fork_name=fork_name)
+            if not preflight["can_proceed"]:
+                self.send_json({"success": False, "message": "Preflight checks failed", "preflight": preflight}, 409)
+                return
             with operation_lock:
-                set_operation("switch", fork_name)
+                op_inputs = {"fork": fork_name}
+                op_id = start_operation_record("switch", fork_name, op_inputs)
+                update_operation_record(op_id, {"preflight": preflight})
+                set_operation("switch", fork_name, operation_id=op_id, inputs=op_inputs)
                 try:
                     set_operation_progress("prep", 2, "Starting switch")
 
@@ -3501,7 +4417,20 @@ if not USE_AIOHTTP:
                     if not agnos_success:
                         logger.error(f"AGNOS preparation failed: {agnos_msg}")
                         set_operation_progress("error", None, agnos_msg)
-                        self.send_json({"success": False, "message": agnos_msg, "agnos_required": True}, 400)
+                        log_lines = read_log_tail(FORKSWAP_LOG_PATH, max_lines=30)
+                        error_code = "agnos_prepare_failed"
+                        hint = "Repair or re-download the AGNOS cache, then retry."
+                        finalize_operation_record(op_id, False, message=agnos_msg, error_code=error_code, hint=hint, log_tail=log_lines)
+                        activity_log.add("error", "switch", f"Switch failed: {agnos_msg}", meta={"error_code": error_code, "hint": hint})
+                        self.send_json({
+                            "success": False,
+                            "message": agnos_msg,
+                            "agnos_required": True,
+                            "error_code": error_code,
+                            "hint": hint,
+                            "log_tail": log_lines,
+                            "operation_id": op_id
+                        }, 400)
                         return
 
                     # CRITICAL: Swap boot slot BEFORE symlink switch
@@ -3510,7 +4439,19 @@ if not USE_AIOHTTP:
                         if not finalize_agnos_switch(target_slot):
                             logger.error("Boot slot swap failed - aborting switch")
                             set_operation_progress("error", None, "Boot slot swap failed")
-                            self.send_json({"success": False, "message": "AGNOS flashed but boot slot swap failed. Switch aborted."}, 500)
+                            log_lines = read_log_tail(FORKSWAP_LOG_PATH, max_lines=30)
+                            error_code = "boot_slot_swap_failed"
+                            hint = "Retry the switch or reflash AGNOS."
+                            finalize_operation_record(op_id, False, message="Boot slot swap failed", error_code=error_code, hint=hint, log_tail=log_lines)
+                            activity_log.add("error", "switch", "Switch failed: Boot slot swap failed", meta={"error_code": error_code, "hint": hint})
+                            self.send_json({
+                                "success": False,
+                                "message": "AGNOS flashed but boot slot swap failed. Switch aborted.",
+                                "error_code": error_code,
+                                "hint": hint,
+                                "log_tail": log_lines,
+                                "operation_id": op_id
+                            }, 500)
                             return
                         logger.info(f"Boot slot swapped to {target_slot} successfully")
 
@@ -3526,28 +4467,59 @@ if not USE_AIOHTTP:
                         msg += " Rebooting..."
 
                         set_operation_progress("reboot", 100, "Rebooting")
+                        finalize_operation_record(op_id, True, message="Switch succeeded")
                         threading.Thread(target=delayed_reboot_sync, args=(3,), daemon=True).start()
                         self.send_json({
                             "success": True,
                             "message": msg,
                             "rebooting": True,
-                            "agnos_updated": target_slot is not None
+                            "agnos_updated": target_slot is not None,
+                            "operation_id": op_id
                         })
                     else:
                         # Symlink switch failed - attempt rollback if AGNOS was swapped
                         logger.error("Symlink switch failed")
                         set_operation_progress("error", None, "Symlink switch failed")
+                        log_lines = read_log_tail(FORKSWAP_LOG_PATH, max_lines=30)
+                        error_info = classify_operation_error("switch", output, log_lines)
                         if target_slot is not None and old_slot:
                             logger.warning(f"Attempting to rollback boot slot from {target_slot} to {old_slot}")
                             rollback_slot = 0 if old_slot == "_a" else 1
                             if swap_boot_slot(rollback_slot):
                                 logger.info(f"Boot slot rolled back to {rollback_slot}")
-                                self.send_json({"success": False, "message": "Symlink switch failed. Boot slot rolled back."}, 500)
+                                finalize_operation_record(op_id, False, message="Symlink switch failed; boot slot rolled back", error_code=error_info["error_code"], hint=error_info["hint"], log_tail=log_lines)
+                                activity_log.add("error", "switch", f"Switch failed: {error_info['message']}", meta={"error_code": error_info["error_code"], "hint": error_info["hint"]})
+                                self.send_json({
+                                    "success": False,
+                                    "message": "Symlink switch failed. Boot slot rolled back.",
+                                    "error_code": error_info["error_code"],
+                                    "hint": error_info["hint"],
+                                    "log_tail": log_lines,
+                                    "operation_id": op_id
+                                }, 500)
                             else:
                                 logger.error("CRITICAL: Boot slot rollback failed!")
-                                self.send_json({"success": False, "message": "CRITICAL: Symlink switch failed AND rollback failed."}, 500)
+                                finalize_operation_record(op_id, False, message="Symlink switch failed and rollback failed", error_code="rollback_failed", hint=error_info["hint"], log_tail=log_lines)
+                                activity_log.add("error", "switch", f"Switch failed: {error_info['message']}", meta={"error_code": "rollback_failed", "hint": error_info["hint"]})
+                                self.send_json({
+                                    "success": False,
+                                    "message": "CRITICAL: Symlink switch failed AND rollback failed.",
+                                    "error_code": "rollback_failed",
+                                    "hint": error_info["hint"],
+                                    "log_tail": log_lines,
+                                    "operation_id": op_id
+                                }, 500)
                         else:
-                            self.send_json({"success": False, "message": "Switch failed. Check logs for details."}, 500)
+                            finalize_operation_record(op_id, False, message="Switch failed", error_code=error_info["error_code"], hint=error_info["hint"], log_tail=log_lines)
+                            activity_log.add("error", "switch", f"Switch failed: {error_info['message']}", meta={"error_code": error_info["error_code"], "hint": error_info["hint"]})
+                            self.send_json({
+                                "success": False,
+                                "message": "Switch failed. Check logs for details.",
+                                "error_code": error_info["error_code"],
+                                "hint": error_info["hint"],
+                                "log_tail": log_lines,
+                                "operation_id": op_id
+                            }, 500)
                 finally:
                     clear_operation()
 
@@ -3565,18 +4537,45 @@ if not USE_AIOHTTP:
             if is_cli_locked() or operation_lock.locked():
                 self.send_json({"success": False, "message": "Operation in progress"}, 409)
                 return
+            preflight = run_preflight_checks("update", fork_name=fork_name)
+            if not preflight["can_proceed"]:
+                self.send_json({"success": False, "message": "Preflight checks failed", "preflight": preflight}, 409)
+                return
             with operation_lock:
-                set_operation("update", fork_name)
+                op_inputs = {"fork": fork_name}
+                op_id = start_operation_record("update", fork_name, op_inputs)
+                update_operation_record(op_id, {"preflight": preflight})
+                set_operation("update", fork_name, operation_id=op_id, inputs=op_inputs)
                 try:
                     logger.info(f"Updating fork: {fork_name}")
                     success, output = run_fork_swap("update", fork_name)
                     if success:
                         logger.info(f"Update successful, scheduling reboot")
+                        finalize_operation_record(op_id, True, message="Update succeeded")
                         threading.Thread(target=delayed_reboot_sync, args=(5,), daemon=True).start()
-                        self.send_json({"success": True, "message": f"Updated {fork_name}. Rebooting in 5 seconds...", "rebooting": True})
+                        self.send_json({"success": True, "message": f"Updated {fork_name}. Rebooting in 5 seconds...", "rebooting": True, "operation_id": op_id})
                     else:
                         logger.error("Update failed")
-                        self.send_json({"success": False, "message": "Update failed. Check logs for details."}, 500)
+                        log_lines = read_log_tail(FORKSWAP_LOG_PATH, max_lines=30)
+                        error_info = classify_operation_error("update", output, log_lines)
+                        finalize_operation_record(
+                            op_id,
+                            False,
+                            message=error_info["message"],
+                            error_code=error_info["error_code"],
+                            hint=error_info["hint"],
+                            output_tail=_tail_text(output),
+                            log_tail=log_lines
+                        )
+                        activity_log.add("error", "update", f"Update failed: {error_info['message']}", meta={"error_code": error_info["error_code"], "hint": error_info["hint"]})
+                        self.send_json({
+                            "success": False,
+                            "message": "Update failed. Check logs for details.",
+                            "error_code": error_info["error_code"],
+                            "hint": error_info["hint"],
+                            "log_tail": log_lines,
+                            "operation_id": op_id
+                        }, 500)
                 finally:
                     clear_operation()
 
@@ -3585,12 +4584,26 @@ if not USE_AIOHTTP:
             threading.Thread(target=delayed_reboot_sync, args=(3,), daemon=True).start()
             self.send_json({"success": True, "message": "Rebooting in 3 seconds..."})
 
+        def _handle_preflight(self, data: dict):
+            op_type = data.get("type", "")
+            if op_type not in ("clone", "switch", "update"):
+                self.send_json({"success": False, "message": "Invalid operation type"}, 400)
+                return
+            fork_name = data.get("fork") or data.get("name")
+            url = data.get("url")
+            branch = data.get("branch")
+            preflight = run_preflight_checks(op_type, fork_name=fork_name, url=url, branch=branch)
+            preflight["success"] = True
+            status = 200 if preflight["can_proceed"] else 409
+            self.send_json(preflight, status)
+
         def _handle_clone(self, data: dict):
             # Can specify template key OR custom url+branch
             template_key = data.get("template", "")
             custom_url = data.get("url", "")
             custom_branch = data.get("branch", "")
             fork_name = data.get("name", "")
+            retry_of = data.get("retry_of")
 
             # Determine URL and branch from template or custom input
             if template_key:
@@ -3626,13 +4639,22 @@ if not USE_AIOHTTP:
                 self.send_json({"success": False, "message": "Operation in progress"}, 409)
                 return
 
+            preflight = run_preflight_checks("clone", fork_name=fork_name, url=url, branch=branch)
+            if not preflight["can_proceed"]:
+                self.send_json({"success": False, "message": "Preflight checks failed", "preflight": preflight}, 409)
+                return
+
             with operation_lock:
-                set_operation("clone", fork_name)
+                op_inputs = {"template": template_key, "url": url, "branch": branch, "name": fork_name, "retry_of": retry_of}
+                op_id = start_operation_record("clone", fork_name, op_inputs, retry_of=retry_of)
+                update_operation_record(op_id, {"preflight": preflight})
+                set_operation("clone", fork_name, operation_id=op_id, inputs=op_inputs)
                 try:
                     logger.info(f"Cloning fork: {fork_name} from {url} branch {branch}")
                     success, output = run_fork_swap("clone", fork_name, url, branch)
                     if success:
-                        self.send_json({"success": True, "message": f"Cloned {fork_name} successfully", "fork": fork_name})
+                        finalize_operation_record(op_id, True, message="Clone succeeded")
+                        self.send_json({"success": True, "message": f"Cloned {fork_name} successfully", "fork": fork_name, "operation_id": op_id})
                     else:
                         log_lines = read_log_tail(FORKSWAP_LOG_PATH, max_lines=30)
                         error_info = classify_clone_error(output, log_lines)
@@ -3640,14 +4662,30 @@ if not USE_AIOHTTP:
                         hint = error_info["hint"]
                         if hint and hint.lower() not in message.lower():
                             message = f"{message}. {hint}"
-                        activity_log.add("error", "clone", f"Clone failed: {message}")
+                        activity_log.add("error", "clone", f"Clone failed: {message}", meta={"error_code": error_info["error_code"], "hint": hint})
                         logger.error(f"Clone failed: {message}")
+                        finalize_operation_record(
+                            op_id,
+                            False,
+                            message=message,
+                            error_code=error_info["error_code"],
+                            hint=hint,
+                            output_tail=_tail_text(output),
+                            log_tail=log_lines
+                        )
                         self.send_json({
                             "success": False,
                             "message": f"Clone failed: {message}",
                             "error_code": error_info["error_code"],
                             "hint": hint,
-                            "log_tail": log_lines
+                            "log_tail": log_lines,
+                            "operation_id": op_id,
+                            "retry": {
+                                "template": template_key or None,
+                                "url": url,
+                                "branch": branch,
+                                "name": fork_name
+                            }
                         }, 500)
                 finally:
                     clear_operation()
