@@ -1038,7 +1038,10 @@ EMBEDDED_JS = '''
             var query = "source=" + encodeURIComponent(source || "forkswap") + "&lines=" + (lines || 60);
             return this.get("/log-tail?" + query);
         },
-        switchFork: function(fork) { return this.post("/switch", { fork: fork }); },
+        switchFork: function(fork, options) {
+            var payload = Object.assign({ fork: fork }, options || {});
+            return this.post("/switch", payload);
+        },
         updateFork: function(fork) { return this.post("/update", { fork: fork }); },
         cloneFork: function(data) { return this.post("/clone", data); },
         reboot: function() { return this.post("/reboot"); },
@@ -1121,8 +1124,11 @@ EMBEDDED_JS = '''
         return { key: "finalize", label: "Finalizing setup" };
     }
     function getSwitchStage(progressRatio) {
+        var deviceMode = operationProgress && operationProgress.switchMode === "device";
         if (progressRatio < 0.2) return { key: "prep", label: "Preparing switch" };
-        if (progressRatio < 0.85) return { key: "flash", label: "Flashing OS" };
+        if (progressRatio < 0.85) {
+            return deviceMode ? { key: "switch", label: "Switching fork" } : { key: "flash", label: "Flashing OS" };
+        }
         return { key: "reboot", label: "Rebooting" };
     }
     operationProgress = {
@@ -1140,6 +1146,7 @@ EMBEDDED_JS = '''
         latestStage: null,
         latestStageLabel: null,
         type: null,
+        switchMode: null,
         init: function() {
             this.progressEl = document.getElementById("operation-progress");
             this.fillEl = document.getElementById("operation-progress-fill");
@@ -1149,7 +1156,10 @@ EMBEDDED_JS = '''
         },
         setStepLabels: function(type) {
             if (!this.steps || !this.steps.length) return;
-            var labels = type === "switch" ? ["Prepare", "Flash OS", "Reboot"] : ["Prepare", "Download", "Finalize"];
+            var labels = ["Prepare", "Download", "Finalize"];
+            if (type === "switch") {
+                labels = this.switchMode === "device" ? ["Prepare", "Switch", "Reboot"] : ["Prepare", "Flash OS", "Reboot"];
+            }
             for (var i = 0; i < this.steps.length && i < labels.length; i++) {
                 this.steps[i].textContent = labels[i];
             }
@@ -1163,6 +1173,7 @@ EMBEDDED_JS = '''
             this.latestPercent = null;
             this.latestStage = null;
             this.latestStageLabel = null;
+            this.switchMode = null;
             if (this.steps) {
                 for (var i = 0; i < this.steps.length; i++) {
                     this.steps[i].classList.remove("active");
@@ -1170,8 +1181,9 @@ EMBEDDED_JS = '''
                 }
             }
         },
-        start: function(type, timeoutSeconds) {
+        start: function(type, timeoutSeconds, options) {
             this.type = type;
+            this.switchMode = options && options.switchMode ? options.switchMode : null;
             this.startTime = Date.now();
             this.timeoutSeconds = timeoutSeconds || 0;
             this.remainingSeconds = null;
@@ -1242,8 +1254,10 @@ EMBEDDED_JS = '''
                         stageKey = "finalize";
                     }
                 } else if (this.type === "switch") {
+                    if (this.switchMode === "device" && stageKey === "switch") stageKey = "download";
                     if (stageKey === "flash" || stageKey === "verify") stageKey = "download";
-                    if (stageKey === "switch" || stageKey === "reboot" || stageKey === "complete") stageKey = "finalize";
+                    if (this.switchMode !== "device" && stageKey === "switch") stageKey = "finalize";
+                    if (stageKey === "reboot" || stageKey === "complete") stageKey = "finalize";
                 }
                 for (var i = 0; i < this.steps.length; i++) {
                     var step = this.steps[i];
@@ -1998,16 +2012,18 @@ EMBEDDED_JS = '''
         state.operationsInterval = setInterval(fetchOperations, 15000);
     }
     window.app = {
-        switchFork: function(forkName, isAgnosUpdate) {
+        switchFork: function(forkName, agnosMode) {
             modal.close();
             var proceed = function() {
-                var title = isAgnosUpdate ? "Switching Fork + AGNOS Update" : "Switching Fork";
-                var msg = isAgnosUpdate ? "Starting AGNOS update for " + forkName + "..." : "Switching to " + forkName + ". Device will reboot...";
+                var mode = agnosMode === "cache" ? "cache" : "device";
+                var title = mode === "cache" ? "Switching Fork + AGNOS Update" : "Switching Fork";
+                var msg = mode === "cache" ? "Starting AGNOS update for " + forkName + "..." : "Switching to " + forkName + ". Device will handle OS updates if needed.";
                 operation.show(title, msg);
-                operationProgress.start("switch", isAgnosUpdate ? 1800 : 300);
-                api.switchFork(forkName).then(function(result) {
+                operationProgress.start("switch", mode === "cache" ? 1800 : 300, { switchMode: mode });
+                api.switchFork(forkName, { agnos_mode: mode }).then(function(result) {
                     if (result.success) {
-                        waitForDeviceReboot(forkName, isAgnosUpdate);
+                        var slowReboot = mode === "cache" || result.agnos_device_update === true;
+                        waitForDeviceReboot(forkName, slowReboot);
                     } else {
                         operationProgress.complete(false);
                         operation.hide();
@@ -2140,16 +2156,16 @@ EMBEDDED_JS = '''
             if (!isCompatible && forkAgnos !== "unknown" && state.deviceAgnosVersion !== "unknown") {
                 if (agnosCached) {
                     // AGNOS is cached - can flash locally (fast)
-                    modal.open("🔄 AGNOS Update Required", "<div style=\\"background: rgba(34,197,94,0.1); border: 1px solid rgba(34,197,94,0.3); border-radius: 8px; padding: 16px; margin-bottom: 16px;\\"><p style=\\"margin: 0; color: #22c55e;\\"><strong>✓ AGNOS " + escapeHtml(forkAgnos) + " is cached and ready</strong></p><p style=\\"margin: 8px 0 0 0; color: var(--op-text-secondary);\\">Will flash from local cache (~2-5 min)</p></div><div style=\\"background: var(--op-bg-elevated); border-radius: 8px; padding: 12px; margin-bottom: 16px;\\"><p style=\\"margin: 0; font-size: 13px;\\">Current: <strong>AGNOS " + escapeHtml(state.deviceAgnosVersion) + "</strong> → New: <strong>AGNOS " + escapeHtml(forkAgnos) + "</strong></p></div><p style=\\"color: var(--op-text-muted);\\">The AGNOS update will be flashed to your device before switching to <strong>" + escapeHtml(forkName) + "</strong>.</p>", [{ label: "Cancel", onclick: "modal.close()" }, { label: "Flash AGNOS & Switch", cls: "btn-primary", onclick: "app.switchFork('" + escapeHtml(forkName) + "', true)" }]);
+                    modal.open("🔄 AGNOS Update Available", "<div style=\\"background: rgba(34,197,94,0.1); border: 1px solid rgba(34,197,94,0.3); border-radius: 8px; padding: 16px; margin-bottom: 16px;\\"><p style=\\"margin: 0; color: #22c55e;\\"><strong>✓ AGNOS " + escapeHtml(forkAgnos) + " is cached and ready</strong></p><p style=\\"margin: 8px 0 0 0; color: var(--op-text-secondary);\\">Flash from cache for a faster switch (2-5 min)</p></div><div style=\\"background: var(--op-bg-elevated); border-radius: 8px; padding: 12px; margin-bottom: 16px;\\"><p style=\\"margin: 0; font-size: 13px;\\">Current: <strong>AGNOS " + escapeHtml(state.deviceAgnosVersion) + "</strong> → New: <strong>AGNOS " + escapeHtml(forkAgnos) + "</strong></p></div><p style=\\"color: var(--op-text-muted);\\">Switch now to let the device handle the OS update on reboot, or flash from cache for speed.</p>", [{ label: "Cancel", onclick: "modal.close()" }, { label: "Flash from Cache", cls: "btn-secondary", onclick: "app.switchFork('" + escapeHtml(forkName) + "', 'cache')" }, { label: "Switch Now", cls: "btn-primary", onclick: "app.switchFork('" + escapeHtml(forkName) + "', 'device')" }]);
                 } else if (agnosInvalid) {
                     var missingText = agnosMissing.join(", ");
-                    modal.open("⚠️ AGNOS Cache Invalid", "<div style=\\"background: rgba(255,140,0,0.1); border: 1px solid rgba(255,140,0,0.3); border-radius: 8px; padding: 16px; margin-bottom: 16px;\\"><p style=\\"margin: 0; color: #ff8c00;\\"><strong>AGNOS " + escapeHtml(forkAgnos) + " cache is incomplete</strong></p><p style=\\"margin: 8px 0 0 0; color: var(--op-text-secondary);\\">Missing files: " + escapeHtml(missingText) + "</p></div><div style=\\"background: var(--op-bg-elevated); border-radius: 8px; padding: 12px; margin-bottom: 16px;\\"><p style=\\"margin: 0; font-size: 13px;\\">Current: <strong>AGNOS " + escapeHtml(state.deviceAgnosVersion) + "</strong> → Required: <strong>AGNOS " + escapeHtml(forkAgnos) + "</strong></p></div><p style=\\"color: var(--op-text-muted);\\">Re-download the AGNOS cache before switching.</p>", [{ label: "Cancel", onclick: "modal.close()" }, { label: "Repair Cache", cls: "btn-primary", onclick: "modal.close(); app.prepareAgnos('" + escapeHtml(forkName) + "', '" + escapeHtml(forkAgnos) + "'); app.showView('agnos');" }]);
+                    modal.open("⚠️ AGNOS Cache Invalid", "<div style=\\"background: rgba(255,140,0,0.1); border: 1px solid rgba(255,140,0,0.3); border-radius: 8px; padding: 16px; margin-bottom: 16px;\\"><p style=\\"margin: 0; color: #ff8c00;\\"><strong>AGNOS " + escapeHtml(forkAgnos) + " cache is incomplete</strong></p><p style=\\"margin: 8px 0 0 0; color: var(--op-text-secondary);\\">Missing files: " + escapeHtml(missingText) + "</p></div><div style=\\"background: var(--op-bg-elevated); border-radius: 8px; padding: 12px; margin-bottom: 16px;\\"><p style=\\"margin: 0; font-size: 13px;\\">Current: <strong>AGNOS " + escapeHtml(state.deviceAgnosVersion) + "</strong> → Required: <strong>AGNOS " + escapeHtml(forkAgnos) + "</strong></p></div><p style=\\"color: var(--op-text-muted);\\">You can switch now and let the device update, or repair the cache for a faster switch later.</p>", [{ label: "Cancel", onclick: "modal.close()" }, { label: "Repair Cache", cls: "btn-secondary", onclick: "modal.close(); app.prepareAgnos('" + escapeHtml(forkName) + "', '" + escapeHtml(forkAgnos) + "');" }, { label: "Switch Now", cls: "btn-primary", onclick: "app.switchFork('" + escapeHtml(forkName) + "', 'device')" }]);
                 } else {
                     // AGNOS not cached - need to download first
-                    modal.open("⚠️ AGNOS Download Required", "<div style=\\"background: rgba(255,140,0,0.1); border: 1px solid rgba(255,140,0,0.3); border-radius: 8px; padding: 16px; margin-bottom: 16px;\\"><p style=\\"margin: 0; color: #ff8c00;\\"><strong>AGNOS " + escapeHtml(forkAgnos) + " not cached</strong></p><p style=\\"margin: 8px 0 0 0; color: var(--op-text-secondary);\\">Download it first before switching</p></div><div style=\\"background: var(--op-bg-elevated); border-radius: 8px; padding: 12px; margin-bottom: 16px;\\"><p style=\\"margin: 0; font-size: 13px;\\">Current: <strong>AGNOS " + escapeHtml(state.deviceAgnosVersion) + "</strong> → Required: <strong>AGNOS " + escapeHtml(forkAgnos) + "</strong></p></div><p style=\\"color: var(--op-text-muted);\\">Go to <strong>AGNOS Manager</strong> to download AGNOS " + escapeHtml(forkAgnos) + " first, then return here to switch.</p>", [{ label: "Cancel", onclick: "modal.close()" }, { label: "Go to AGNOS Manager", cls: "btn-primary", onclick: "modal.close(); app.showView('agnos');" }]);
+                    modal.open("⚠️ AGNOS Not Cached", "<div style=\\"background: rgba(255,140,0,0.1); border: 1px solid rgba(255,140,0,0.3); border-radius: 8px; padding: 16px; margin-bottom: 16px;\\"><p style=\\"margin: 0; color: #ff8c00;\\"><strong>AGNOS " + escapeHtml(forkAgnos) + " is not cached</strong></p><p style=\\"margin: 8px 0 0 0; color: var(--op-text-secondary);\\">Prepare OS to speed up a future switch</p></div><div style=\\"background: var(--op-bg-elevated); border-radius: 8px; padding: 12px; margin-bottom: 16px;\\"><p style=\\"margin: 0; font-size: 13px;\\">Current: <strong>AGNOS " + escapeHtml(state.deviceAgnosVersion) + "</strong> → Required: <strong>AGNOS " + escapeHtml(forkAgnos) + "</strong></p></div><p style=\\"color: var(--op-text-muted);\\">You can switch now and let the device update on reboot, or prepare OS to pre-download the cache.</p>", [{ label: "Cancel", onclick: "modal.close()" }, { label: "Prepare OS", cls: "btn-secondary", onclick: "modal.close(); app.prepareAgnos('" + escapeHtml(forkName) + "', '" + escapeHtml(forkAgnos) + "');" }, { label: "Switch Now", cls: "btn-primary", onclick: "app.switchFork('" + escapeHtml(forkName) + "', 'device')" }]);
                 }
             } else {
-                modal.open("Switch Fork", "<p>Are you sure you want to switch to <strong>" + escapeHtml(forkName) + "</strong>?</p><p style=\\"color: var(--op-text-muted); margin-top: 12px;\\">The device will reboot after switching.</p>", [{ label: "Cancel", onclick: "modal.close()" }, { label: "Switch & Reboot", cls: "btn-primary", onclick: "app.switchFork('" + escapeHtml(forkName) + "', false)" }]);
+                modal.open("Switch Fork", "<p>Are you sure you want to switch to <strong>" + escapeHtml(forkName) + "</strong>?</p><p style=\\"color: var(--op-text-muted); margin-top: 12px;\\">The device will reboot after switching.</p>", [{ label: "Cancel", onclick: "modal.close()" }, { label: "Switch & Reboot", cls: "btn-primary", onclick: "app.switchFork('" + escapeHtml(forkName) + "', 'device')" }]);
             }
         },
         showRebootConfirm: function() {

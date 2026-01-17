@@ -3237,6 +3237,9 @@ if USE_AIOHTTP:
         try:
             body = await request.json()
             fork_name = body.get("fork", "")
+            agnos_mode = body.get("agnos_mode", "cache")
+            if agnos_mode not in ("cache", "device"):
+                agnos_mode = "cache"
 
             # Input validation
             if not fork_name:
@@ -3255,6 +3258,11 @@ if USE_AIOHTTP:
             # Validate fork exists - check both directory name and display name
             fork_list = get_fork_list()
             valid_names = [f.get("directory", f["name"]) for f in fork_list] + [f["name"] for f in fork_list]
+            fork_info = None
+            for fork in fork_list:
+                if fork.get("directory") == fork_name or fork.get("name") == fork_name:
+                    fork_info = fork
+                    break
             if fork_name not in valid_names:
                 return json_response(
                     {"success": False, "message": f"Fork '{fork_name}' not found"},
@@ -3292,14 +3300,19 @@ if USE_AIOHTTP:
                     },
                     status=409
                 )
+            agnos_device_update = False
+            if agnos_mode == "device" and fork_info:
+                fork_agnos = fork_info.get("agnos_version", "unknown")
+                agnos_device_update = not is_agnos_compatible(fork_agnos)
 
             async with operation_lock:
-                op_inputs = {"fork": fork_name}
+                op_inputs = {"fork": fork_name, "agnos_mode": agnos_mode}
                 op_id = start_operation_record("switch", fork_name, op_inputs)
                 update_operation_record(op_id, {"preflight": preflight})
                 set_operation("switch", fork_name, operation_id=op_id, inputs=op_inputs)
                 try:
                     set_operation_progress("prep", 2, "Starting switch")
+                    use_agnos_cache = agnos_mode == "cache"
 
                     def report(stage: str, percent: Optional[int], label: Optional[str]) -> None:
                         set_operation_progress(stage, percent, stage_label=label)
@@ -3307,7 +3320,7 @@ if USE_AIOHTTP:
                     # Save current state for potential rollback
                     old_fork = get_current_fork()
                     old_slot = None
-                    if _flash_agnos_module and get_current_slot:
+                    if use_agnos_cache and _flash_agnos_module and get_current_slot:
                         try:
                             old_slot = get_current_slot()
                             logger.info(f"Current boot slot: {old_slot}")
@@ -3315,31 +3328,35 @@ if USE_AIOHTTP:
                             logger.warning(f"Could not determine current boot slot: {e}")
 
                     # AGNOS Pre-Flash: Check and flash AGNOS before fork switch
-                    agnos_success, agnos_msg, target_slot = await asyncio.to_thread(
-                        prepare_agnos_for_switch,
-                        fork_name,
-                        report
-                    )
-                    if not agnos_success:
-                        logger.error(f"AGNOS preparation failed: {agnos_msg}")
-                        set_operation_progress("error", None, agnos_msg)
-                        log_lines = read_log_tail(FORKSWAP_LOG_PATH, max_lines=30)
-                        error_code = "agnos_prepare_failed"
-                        hint = "Repair or re-download the AGNOS cache, then retry."
-                        finalize_operation_record(op_id, False, message=agnos_msg, error_code=error_code, hint=hint, log_tail=log_lines)
-                        activity_log.add("error", "switch", f"Switch failed: {agnos_msg}", meta={"error_code": error_code, "hint": hint})
-                        return json_response(
-                            {
-                                "success": False,
-                                "message": agnos_msg,
-                                "agnos_required": True,
-                                "error_code": error_code,
-                                "hint": hint,
-                                "log_tail": log_lines,
-                                "operation_id": op_id
-                            },
-                            status=400
+                    target_slot = None
+                    if use_agnos_cache:
+                        agnos_success, agnos_msg, target_slot = await asyncio.to_thread(
+                            prepare_agnos_for_switch,
+                            fork_name,
+                            report
                         )
+                        if not agnos_success:
+                            logger.error(f"AGNOS preparation failed: {agnos_msg}")
+                            set_operation_progress("error", None, agnos_msg)
+                            log_lines = read_log_tail(FORKSWAP_LOG_PATH, max_lines=30)
+                            error_code = "agnos_prepare_failed"
+                            hint = "Repair or re-download the AGNOS cache, then retry."
+                            finalize_operation_record(op_id, False, message=agnos_msg, error_code=error_code, hint=hint, log_tail=log_lines)
+                            activity_log.add("error", "switch", f"Switch failed: {agnos_msg}", meta={"error_code": error_code, "hint": hint})
+                            return json_response(
+                                {
+                                    "success": False,
+                                    "message": agnos_msg,
+                                    "agnos_required": True,
+                                    "error_code": error_code,
+                                    "hint": hint,
+                                    "log_tail": log_lines,
+                                    "operation_id": op_id
+                                },
+                                status=400
+                            )
+                    else:
+                        set_operation_progress("prep", 10, "Skipping AGNOS pre-flash")
 
                     # CRITICAL: Swap boot slot BEFORE symlink switch
                     # This ensures we boot into the correct AGNOS even if symlink switch fails
@@ -3380,6 +3397,8 @@ if USE_AIOHTTP:
                         msg = f"Switched to {fork_name}."
                         if target_slot is not None:
                             msg += f" AGNOS updated to new version."
+                        elif agnos_mode == "device" and agnos_device_update:
+                            msg += " Device will update AGNOS on reboot."
                         msg += " Rebooting in 3 seconds..."
 
                         finalize_operation_record(op_id, True, message="Switch succeeded")
@@ -3388,6 +3407,8 @@ if USE_AIOHTTP:
                             "message": msg,
                             "rebooting": True,
                             "agnos_updated": target_slot is not None,
+                            "agnos_mode": agnos_mode,
+                            "agnos_device_update": agnos_device_update,
                             "operation_id": op_id
                         })
                     else:
@@ -4374,12 +4395,20 @@ if not USE_AIOHTTP:
 
         def _handle_switch(self, data: dict):
             fork_name = data.get("fork", "")
+            agnos_mode = data.get("agnos_mode", "cache")
+            if agnos_mode not in ("cache", "device"):
+                agnos_mode = "cache"
             if not fork_name or not validate_fork_name(fork_name):
                 self.send_json({"success": False, "message": "Invalid fork name"}, 400)
                 return
             # Validate fork exists - check both directory name and display name
             fork_list = get_fork_list()
             valid_names = [f.get("directory", f["name"]) for f in fork_list] + [f["name"] for f in fork_list]
+            fork_info = None
+            for fork in fork_list:
+                if fork.get("directory") == fork_name or fork.get("name") == fork_name:
+                    fork_info = fork
+                    break
             if fork_name not in valid_names:
                 self.send_json({"success": False, "message": f"Fork '{fork_name}' not found"}, 404)
                 return
@@ -4394,13 +4423,18 @@ if not USE_AIOHTTP:
             if not preflight["can_proceed"]:
                 self.send_json({"success": False, "message": "Preflight checks failed", "preflight": preflight}, 409)
                 return
+            agnos_device_update = False
+            if agnos_mode == "device" and fork_info:
+                fork_agnos = fork_info.get("agnos_version", "unknown")
+                agnos_device_update = not is_agnos_compatible(fork_agnos)
             with operation_lock:
-                op_inputs = {"fork": fork_name}
+                op_inputs = {"fork": fork_name, "agnos_mode": agnos_mode}
                 op_id = start_operation_record("switch", fork_name, op_inputs)
                 update_operation_record(op_id, {"preflight": preflight})
                 set_operation("switch", fork_name, operation_id=op_id, inputs=op_inputs)
                 try:
                     set_operation_progress("prep", 2, "Starting switch")
+                    use_agnos_cache = agnos_mode == "cache"
 
                     def report(stage: str, percent: Optional[int], label: Optional[str]) -> None:
                         set_operation_progress(stage, percent, stage_label=label)
@@ -4408,7 +4442,7 @@ if not USE_AIOHTTP:
                     # Save current state for potential rollback
                     old_fork = get_current_fork()
                     old_slot = None
-                    if _flash_agnos_module and get_current_slot:
+                    if use_agnos_cache and _flash_agnos_module and get_current_slot:
                         try:
                             old_slot = get_current_slot()
                             logger.info(f"Current boot slot: {old_slot}")
@@ -4416,25 +4450,29 @@ if not USE_AIOHTTP:
                             logger.warning(f"Could not determine current boot slot: {e}")
 
                     # AGNOS Pre-Flash: Check and flash AGNOS before fork switch
-                    agnos_success, agnos_msg, target_slot = prepare_agnos_for_switch(fork_name, report)
-                    if not agnos_success:
-                        logger.error(f"AGNOS preparation failed: {agnos_msg}")
-                        set_operation_progress("error", None, agnos_msg)
-                        log_lines = read_log_tail(FORKSWAP_LOG_PATH, max_lines=30)
-                        error_code = "agnos_prepare_failed"
-                        hint = "Repair or re-download the AGNOS cache, then retry."
-                        finalize_operation_record(op_id, False, message=agnos_msg, error_code=error_code, hint=hint, log_tail=log_lines)
-                        activity_log.add("error", "switch", f"Switch failed: {agnos_msg}", meta={"error_code": error_code, "hint": hint})
-                        self.send_json({
-                            "success": False,
-                            "message": agnos_msg,
-                            "agnos_required": True,
-                            "error_code": error_code,
-                            "hint": hint,
-                            "log_tail": log_lines,
-                            "operation_id": op_id
-                        }, 400)
-                        return
+                    target_slot = None
+                    if use_agnos_cache:
+                        agnos_success, agnos_msg, target_slot = prepare_agnos_for_switch(fork_name, report)
+                        if not agnos_success:
+                            logger.error(f"AGNOS preparation failed: {agnos_msg}")
+                            set_operation_progress("error", None, agnos_msg)
+                            log_lines = read_log_tail(FORKSWAP_LOG_PATH, max_lines=30)
+                            error_code = "agnos_prepare_failed"
+                            hint = "Repair or re-download the AGNOS cache, then retry."
+                            finalize_operation_record(op_id, False, message=agnos_msg, error_code=error_code, hint=hint, log_tail=log_lines)
+                            activity_log.add("error", "switch", f"Switch failed: {agnos_msg}", meta={"error_code": error_code, "hint": hint})
+                            self.send_json({
+                                "success": False,
+                                "message": agnos_msg,
+                                "agnos_required": True,
+                                "error_code": error_code,
+                                "hint": hint,
+                                "log_tail": log_lines,
+                                "operation_id": op_id
+                            }, 400)
+                            return
+                    else:
+                        set_operation_progress("prep", 10, "Skipping AGNOS pre-flash")
 
                     # CRITICAL: Swap boot slot BEFORE symlink switch
                     if target_slot is not None:
@@ -4467,6 +4505,8 @@ if not USE_AIOHTTP:
                         msg = f"Switched to {fork_name}."
                         if target_slot is not None:
                             msg += " AGNOS updated."
+                        elif agnos_mode == "device" and agnos_device_update:
+                            msg += " Device will update AGNOS on reboot."
                         msg += " Rebooting..."
 
                         set_operation_progress("reboot", 100, "Rebooting")
@@ -4477,6 +4517,8 @@ if not USE_AIOHTTP:
                             "message": msg,
                             "rebooting": True,
                             "agnos_updated": target_slot is not None,
+                            "agnos_mode": agnos_mode,
+                            "agnos_device_update": agnos_device_update,
                             "operation_id": op_id
                         })
                     else:
