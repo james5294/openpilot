@@ -195,6 +195,8 @@ readonly FORKSWAP_DIR="/data/forkswap"
 readonly CURRENT_FORK_FILE="/data/forkswap/current_fork.txt"
 readonly OPERATIONS_DIR="/data/forkswap/operations"
 readonly PENDING_SWITCH_FILE="/data/forkswap/pending_switch.json"
+readonly LAUNCH_GUARD_PATH="/data/forkswap/launch_guard.sh"
+readonly LAUNCH_GUARD_MARKER="FORKSWAP_GUARD_WRAPPER"
 readonly PARAMS_PATH="/data/params"
 readonly LOG_FILE="/data/forkswap/fork_swap.log"
 readonly CONFIG_FILE="/data/forkswap/config.json"
@@ -2716,6 +2718,10 @@ ensure_directories() {
         }
     fi
 
+    if ! ensure_launch_guard_script; then
+        log_warn "Failed to ensure launch guard script"
+    fi
+
     return 0
 }
 
@@ -3173,6 +3179,343 @@ touch_fork_info() {
     timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
     update_fork_info "$fork_name" "updated_at" "$timestamp"
+}
+
+#--- Launch Guard (Device-Update Safety) ---
+
+ensure_launch_guard_script() {
+    local guard_path="$LAUNCH_GUARD_PATH"
+
+    if [[ -f "$guard_path" ]] && grep -q "FORKSWAP_GUARD_VERSION=1" "$guard_path" 2>/dev/null; then
+        return 0
+    fi
+
+    cat > "$guard_path" <<'GUARD_EOF'
+#!/usr/bin/env bash
+
+FORKSWAP_GUARD_VERSION=1
+
+FORKSWAP_DIR="${FORKSWAP_DIR:-/data/forkswap}"
+PENDING_FILE="${FORKSWAP_PENDING_FILE:-/data/forkswap/pending_switch.json}"
+CURRENT_FORK_FILE="${CURRENT_FORK_FILE:-/data/forkswap/current_fork.txt}"
+OPERATIONS_DIR="${OPERATIONS_DIR:-/data/forkswap/operations}"
+LOG_FILE="${FORKSWAP_LOG_FILE:-/data/forkswap/fork_swap.log}"
+FORKSWAP_SCRIPT="${FORKSWAP_SCRIPT:-/data/forkswap/fork_swap.sh}"
+
+guard_log() {
+  local level="$1"
+  shift
+  local msg="$*"
+  local ts
+  ts=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "unknown")
+  echo "${ts} | ${level} | guard | ${msg}" >> "$LOG_FILE"
+}
+
+guard_read_pending() {
+  if [[ ! -f "$PENDING_FILE" ]]; then
+    return 1
+  fi
+  if ! command -v python3 &>/dev/null; then
+    return 1
+  fi
+  python3 - "$PENDING_FILE" <<'PY'
+import json, sys
+path = sys.argv[1]
+try:
+  data = json.load(open(path))
+except Exception:
+  sys.exit(1)
+keys = ["operation_id", "old_fork", "new_fork", "agnos_mode", "target_agnos", "device_agnos"]
+for key in keys:
+  value = data.get(key, "") or ""
+  print(f"{key}\t{value}")
+PY
+}
+
+guard_update_pending() {
+  local status="$1"
+  local reason="${2:-}"
+  local file="$PENDING_FILE"
+  if [[ ! -f "$file" ]] || ! command -v python3 &>/dev/null; then
+    return 1
+  fi
+  python3 - "$file" "$status" "$reason" <<'PY'
+import json, sys
+path = sys.argv[1]
+status = sys.argv[2]
+reason = sys.argv[3] if len(sys.argv) > 3 else ""
+try:
+  data = json.load(open(path))
+except Exception:
+  sys.exit(1)
+data["status"] = status
+data["updated_at"] = __import__("datetime").datetime.utcnow().isoformat() + "Z"
+if reason:
+  data["rollback_reason"] = reason
+tmp = path + ".tmp"
+with open(tmp, "w") as f:
+  json.dump(data, f, indent=2)
+__import__("os").replace(tmp, path)
+PY
+}
+
+guard_update_operation() {
+  local op_id="$1"
+  local status="$2"
+  local reason="${3:-}"
+  local op_file="${OPERATIONS_DIR}/${op_id}.json"
+  if [[ -z "$op_id" || ! -f "$op_file" ]] || ! command -v python3 &>/dev/null; then
+    return 0
+  fi
+  python3 - "$op_file" "$status" "$reason" <<'PY'
+import json, sys
+path = sys.argv[1]
+status = sys.argv[2]
+reason = sys.argv[3] if len(sys.argv) > 3 else ""
+try:
+  data = json.load(open(path))
+except Exception:
+  sys.exit(0)
+data["boot_status"] = status
+data["boot_checked_at"] = __import__("datetime").datetime.utcnow().isoformat() + "Z"
+if reason:
+  data["rollback_reason"] = reason
+tmp = path + ".tmp"
+with open(tmp, "w") as f:
+  json.dump(data, f, indent=2)
+__import__("os").replace(tmp, path)
+PY
+}
+
+guard_archive_pending() {
+  local op_id="$1"
+  if [[ -z "$op_id" || ! -f "$PENDING_FILE" ]]; then
+    return 0
+  fi
+  local dest_dir="${OPERATIONS_DIR}/${op_id}"
+  mkdir -p "$dest_dir" 2>/dev/null || true
+  mv -f "$PENDING_FILE" "${dest_dir}/result.json" 2>/dev/null || true
+}
+
+guard_run_updater() {
+  local updater="$1"
+  local agnos_py="$2"
+  local manifest="$3"
+  local timeout="${4:-900}"
+  if command -v python3 &>/dev/null; then
+    python3 - "$updater" "$agnos_py" "$manifest" "$timeout" <<'PY'
+import subprocess, sys
+updater, agnos_py, manifest, timeout = sys.argv[1:5]
+timeout = int(timeout)
+try:
+  proc = subprocess.Popen([updater, agnos_py, manifest])
+  try:
+    proc.wait(timeout=timeout)
+  except subprocess.TimeoutExpired:
+    proc.kill()
+    sys.exit(124)
+  sys.exit(proc.returncode or 0)
+except Exception:
+  sys.exit(1)
+PY
+    return $?
+  fi
+  "$updater" "$agnos_py" "$manifest"
+}
+
+guard_reboot() {
+  guard_log "INFO" "Rebooting device"
+  sync 2>/dev/null || true
+  if command -v reboot &>/dev/null; then
+    sudo reboot 2>/dev/null || reboot 2>/dev/null || true
+  fi
+  sleep 5
+  exit 0
+}
+
+guard_manual_rollback() {
+  local old_fork="$1"
+  local target="/data/forks/${old_fork}"
+  if [[ -d "${target}/openpilot" ]]; then
+    target="${target}/openpilot"
+  fi
+  if [[ ! -d "$target" ]]; then
+    guard_log "ERROR" "Rollback target not found: $target"
+    return 1
+  fi
+  ln -sfn "$target" /data/openpilot || return 1
+  echo "$old_fork" > /data/forkswap/current_fork.txt 2>/dev/null || true
+  return 0
+}
+
+guard_rollback() {
+  local old_fork="$1"
+  local op_id="$2"
+  local reason="$3"
+  guard_log "ERROR" "Rollback requested: ${reason}"
+  guard_update_pending "rollback_started" "$reason" || true
+  guard_update_operation "$op_id" "rollback_started" "$reason"
+  local rc=1
+  if [[ -x "$FORKSWAP_SCRIPT" ]]; then
+    RUN_INTERACTIVE=false FORCE_MODE=true "$FORKSWAP_SCRIPT" switch "$old_fork" >/data/forkswap/guard_rollback.log 2>&1
+    rc=$?
+  else
+    guard_manual_rollback "$old_fork"
+    rc=$?
+  fi
+  if [[ $rc -eq 0 ]]; then
+    guard_update_pending "rollback_complete" "$reason" || true
+    guard_update_operation "$op_id" "rolled_back" "$reason"
+    guard_archive_pending "$op_id"
+    guard_log "INFO" "Rollback complete"
+  else
+    guard_update_pending "rollback_failed" "$reason" || true
+    guard_update_operation "$op_id" "rollback_failed" "$reason"
+    guard_log "ERROR" "Rollback failed"
+  fi
+}
+
+forkswap_launch_guard() {
+  local op_dir="$1"
+  local real_script="$2"
+
+  if [[ ! -f "$PENDING_FILE" ]]; then
+    return 0
+  fi
+
+  local op_id="" old_fork="" new_fork="" agnos_mode="" target_agnos="" device_agnos=""
+  while IFS=$'\t' read -r key value; do
+    case "$key" in
+      operation_id) op_id="$value" ;;
+      old_fork) old_fork="$value" ;;
+      new_fork) new_fork="$value" ;;
+      agnos_mode) agnos_mode="$value" ;;
+      target_agnos) target_agnos="$value" ;;
+      device_agnos) device_agnos="$value" ;;
+    esac
+  done < <(guard_read_pending || true)
+
+  if [[ -z "$old_fork" || -z "$new_fork" ]]; then
+    return 0
+  fi
+
+  local current_fork=""
+  if [[ -f "$CURRENT_FORK_FILE" ]]; then
+    current_fork=$(tr -d '[:space:]' < "$CURRENT_FORK_FILE" 2>/dev/null)
+  fi
+  if [[ -n "$current_fork" && "$current_fork" != "$new_fork" ]]; then
+    return 0
+  fi
+
+  if [[ "$agnos_mode" != "device" ]]; then
+    return 0
+  fi
+
+  if [[ -z "$target_agnos" || "$target_agnos" == "unknown" ]]; then
+    return 0
+  fi
+
+  local active_agnos="unknown"
+  if [[ -f /VERSION ]]; then
+    active_agnos=$(cat /VERSION 2>/dev/null || echo "unknown")
+  fi
+
+  if [[ "$active_agnos" == "$target_agnos" ]]; then
+    guard_update_pending "success" "" || true
+    guard_update_operation "$op_id" "success" ""
+    guard_archive_pending "$op_id"
+    return 0
+  fi
+
+  local agnos_py="${op_dir}/system/hardware/tici/agnos.py"
+  local manifest="${op_dir}/system/hardware/tici/agnos.json"
+  local updater="${op_dir}/system/hardware/tici/updater"
+  if [[ ! -x "$updater" || ! -f "$agnos_py" || ! -f "$manifest" ]]; then
+    guard_log "ERROR" "Missing AGNOS updater assets"
+    guard_rollback "$old_fork" "$op_id" "agnos_assets_missing"
+    guard_reboot
+  fi
+
+  guard_log "WARN" "AGNOS mismatch detected; attempting device update"
+  guard_update_pending "guard_update_started" "" || true
+  guard_update_operation "$op_id" "guard_update_started" ""
+
+  if "$agnos_py" --verify "$manifest" >/dev/null 2>&1; then
+    guard_log "INFO" "AGNOS verify succeeded; rebooting"
+    guard_reboot
+  fi
+
+  guard_log "INFO" "Running updater with timeout"
+  guard_run_updater "$updater" "$agnos_py" "$manifest" 1200
+  local rc=$?
+  if [[ $rc -eq 0 ]]; then
+    guard_update_pending "guard_update_complete" "" || true
+    guard_update_operation "$op_id" "guard_update_complete" ""
+    guard_log "INFO" "Updater finished; rebooting"
+    guard_reboot
+  fi
+
+  guard_log "ERROR" "Updater failed (rc=${rc}); rolling back"
+  guard_rollback "$old_fork" "$op_id" "agnos_update_failed"
+  guard_reboot
+}
+GUARD_EOF
+
+    chmod +x "$guard_path" 2>/dev/null || true
+    return 0
+}
+
+install_launch_guard_wrapper() {
+    local fork_op_path="$1"
+    local target_script=""
+    local launch_chffr="${fork_op_path}/launch_chffrplus.sh"
+    local launch_open="${fork_op_path}/launch_openpilot.sh"
+
+    if [[ -f "$launch_chffr" ]]; then
+        target_script="$launch_chffr"
+    elif [[ -f "$launch_open" ]]; then
+        target_script="$launch_open"
+    else
+        log_warn "No launch script found for guard install in $fork_op_path"
+        return 1
+    fi
+
+    if grep -q "$LAUNCH_GUARD_MARKER" "$target_script" 2>/dev/null; then
+        log_debug "Launch guard already installed: $target_script"
+        return 0
+    fi
+
+    local base_name
+    base_name=$(basename "$target_script")
+    local real_script="${target_script}.forkswap.real"
+
+    if [[ -f "$real_script" ]]; then
+        log_warn "Launch guard real script already exists: $real_script"
+        return 0
+    fi
+
+    if ! mv "$target_script" "$real_script"; then
+        log_error "Failed to preserve original launch script: $target_script"
+        return 1
+    fi
+
+    cat > "$target_script" <<EOF
+#!/usr/bin/env bash
+# ${LAUNCH_GUARD_MARKER} v1
+SCRIPT_DIR="\$( cd "\$( dirname "\${BASH_SOURCE[0]}" )" >/dev/null && pwd )"
+REAL_SCRIPT="\${SCRIPT_DIR}/${base_name}.forkswap.real"
+GUARD_SCRIPT="${LAUNCH_GUARD_PATH}"
+if [[ -f "\$GUARD_SCRIPT" ]]; then
+  # shellcheck source=/data/forkswap/launch_guard.sh
+  source "\$GUARD_SCRIPT"
+  forkswap_launch_guard "\$SCRIPT_DIR" "\$REAL_SCRIPT" || true
+fi
+exec "\$REAL_SCRIPT" "\$@"
+EOF
+
+    chmod +x "$target_script" 2>/dev/null || true
+    log_info "Installed launch guard wrapper: $target_script"
+    return 0
 }
 
 #--- Pending Switch Safety ---
@@ -6684,6 +7027,10 @@ clone_fork() {
     # Apply git hardening (safe.directory, gc settings)
     harden_git_config "$clone_target"
 
+    if ! install_launch_guard_wrapper "$clone_target"; then
+        log_warn "Failed to install launch guard wrapper for new fork"
+    fi
+
     # Create fork info metadata
     if ! create_fork_info "$fork_name" "$git_url" "$branch"; then
         log_warn "Failed to create fork info (continuing anyway)"
@@ -6755,6 +7102,11 @@ switch_fork() {
     local launch_script="$fork_op_path/launch_openpilot.sh"
     if [[ ! -f "$launch_script" ]]; then
         log_warn "launch_openpilot.sh not found in fork; startup may fail"
+    fi
+
+    if ! install_launch_guard_wrapper "$fork_op_path"; then
+        log_error "Failed to install launch guard wrapper"
+        return 1
     fi
 
     # Get current fork for params backup
@@ -7252,6 +7604,10 @@ update_fork() {
     if ! pull_updates "$fork_op_path"; then
         log_error "Failed to update fork"
         return 1
+    fi
+
+    if ! install_launch_guard_wrapper "$fork_op_path"; then
+        log_warn "Failed to reinstall launch guard wrapper after update"
     fi
 
     # Update fork info timestamp
