@@ -1498,6 +1498,7 @@ try:
         FlashProgress,
         FlashError,
         get_current_slot,
+        find_cached_file,
     )
     _flash_agnos_module = True
     logger.info("Local AGNOS flasher module loaded")
@@ -1506,6 +1507,7 @@ except ImportError:
     _flash_agnos_module = False
     verify_agnos_from_cache = None
     get_current_slot = None
+    find_cached_file = None
 
 
 def get_fork_dir_by_name(fork_name: str) -> Optional[Path]:
@@ -1833,6 +1835,53 @@ def get_agnos_verification(version: str) -> Optional[dict]:
 # Global to track download progress
 _agnos_download_progress = {}
 
+
+def repair_agnos_cache_manifest(fork_dir: Path, version: str) -> dict:
+    """
+    Rebuild the AGNOS cache manifest when files exist but marker is missing.
+    """
+    cache_dir = AGNOS_CACHE_DIR / version
+    if not cache_dir.exists():
+        return {"success": False, "error": "Cache directory missing"}
+
+    manifest = get_agnos_manifest(fork_dir)
+    if not manifest:
+        return {"success": False, "error": "AGNOS manifest not found in fork"}
+
+    files = []
+    total_size = 0
+    for f in cache_dir.iterdir():
+        if f.is_file() and not f.name.startswith("."):
+            files.append(f.name)
+            total_size += f.stat().st_size
+
+    complete = False
+    missing = []
+    if find_cached_file:
+        for partition in manifest:
+            cache_file = find_cached_file(cache_dir, partition)
+            if not cache_file:
+                missing.append(partition.get("name", "unknown"))
+        complete = not missing
+
+    marker_file = cache_dir / ".manifest.json"
+    marker_data = {
+        "version": version,
+        "complete": complete,
+        "files": files,
+        "total_size": total_size,
+        "downloaded_at": datetime.now().isoformat(),
+        "partitions": manifest,
+    }
+    try:
+        with open(marker_file, "w") as f:
+            json.dump(marker_data, f, indent=2)
+        logger.info(f"Rebuilt AGNOS cache manifest for {version} (complete={complete})")
+        return {"success": True, "complete": complete, "missing": missing}
+    except Exception as e:
+        logger.warning(f"Failed to rebuild AGNOS cache manifest: {e}")
+        return {"success": False, "error": str(e)}
+
 def download_agnos_images(fork_dir: Path, version: str) -> dict:
     """
     Download AGNOS images for a specific version to cache.
@@ -1861,6 +1910,22 @@ def download_agnos_images(fork_dir: Path, version: str) -> dict:
     # Calculate total size
     total_size = sum(p.get("size", 0) for p in manifest)
     _agnos_download_progress[version]["bytes_total"] = total_size
+
+    marker_file = cache_dir / ".manifest.json"
+    marker_data = {
+        "version": version,
+        "complete": False,
+        "files": [],
+        "total_size": 0,
+        "downloaded_at": None,
+        "partitions": manifest,
+    }
+    try:
+        with open(marker_file, "w") as f:
+            json.dump(marker_data, f, indent=2)
+        logger.info(f"Initialized AGNOS cache marker for {version}")
+    except Exception as e:
+        logger.warning(f"Failed to initialize AGNOS cache marker: {e}")
 
     downloaded_files = []
     bytes_done = 0
@@ -1941,6 +2006,19 @@ def download_agnos_images(fork_dir: Path, version: str) -> dict:
         logger.error(f"Failed to download AGNOS images: {e}")
         _agnos_download_progress[version]["status"] = "error"
         _agnos_download_progress[version]["error"] = str(e)
+        try:
+            marker_data = {
+                "version": version,
+                "complete": False,
+                "files": downloaded_files,
+                "total_size": bytes_done,
+                "downloaded_at": datetime.now().isoformat(),
+                "partitions": manifest,
+            }
+            with open(marker_file, "w") as f:
+                json.dump(marker_data, f, indent=2)
+        except Exception as marker_error:
+            logger.warning(f"Failed to write partial AGNOS marker: {marker_error}")
         return {"success": False, "error": str(e)}
 
 def get_agnos_download_progress(version: str) -> dict:
@@ -4083,6 +4161,12 @@ if USE_AIOHTTP:
             # Check if already cached
             cache_status = get_agnos_cache_status(fork_agnos)
             verify = get_agnos_verification(fork_agnos)
+            marker_file = AGNOS_CACHE_DIR / fork_agnos / ".manifest.json"
+            if cache_status.get("cached") and cache_status.get("files") and not marker_file.exists():
+                repair = repair_agnos_cache_manifest(fork_dir, fork_agnos)
+                if repair.get("success"):
+                    cache_status = get_agnos_cache_status(fork_agnos)
+                    verify = get_agnos_verification(fork_agnos)
             if cache_status.get("cached") and cache_status.get("files") and (verify is None or verify.get("valid")):
                 return json_response({
                     "success": True,
@@ -4227,6 +4311,21 @@ if USE_AIOHTTP:
                 "success": False,
                 "error": f"No installed fork requires AGNOS {version}"
             }, status=404)
+
+        marker_file = AGNOS_CACHE_DIR / version / ".manifest.json"
+        if cache_status.get("cached") and cache_status.get("files") and not marker_file.exists():
+            repair = repair_agnos_cache_manifest(fork_dir, version)
+            if repair.get("success"):
+                cache_status = get_agnos_cache_status(version)
+                verify = get_agnos_verification(version)
+                if cache_status.get("cached") and (verify is None or verify.get("valid")):
+                    return json_response({
+                        "success": True,
+                        "message": f"AGNOS {version} already cached",
+                        "version": version,
+                        "cached": True,
+                        "files": cache_status.get("files", 0)
+                    })
 
         # Start background download
         def bg_download():
@@ -5061,7 +5160,14 @@ if not USE_AIOHTTP:
 
             # Check if already cached
             cache_status = get_agnos_cache_status(version)
-            if cache_status.get("complete"):
+            verify = get_agnos_verification(version)
+            marker_file = AGNOS_CACHE_DIR / version / ".manifest.json"
+            if cache_status.get("cached") and cache_status.get("files") and not marker_file.exists():
+                repair = repair_agnos_cache_manifest(fork_dir, version)
+                if repair.get("success"):
+                    cache_status = get_agnos_cache_status(version)
+                    verify = get_agnos_verification(version)
+            if cache_status.get("cached") and cache_status.get("files") and (verify is None or verify.get("valid")):
                 self.send_json({
                     "success": True,
                     "message": f"AGNOS {version} already cached",
