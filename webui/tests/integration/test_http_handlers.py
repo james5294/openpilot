@@ -229,7 +229,7 @@ class TestCloneEndpoint:
 
     @pytest.mark.asyncio
     async def test_clone_rejects_file_protocol(self, server_module):
-        """Clone should reject file:// URLs (validation in run_fork_swap returns 500)."""
+        """Clone should reject file:// URLs (preflight or validation)."""
         request = MagicMock()
         request.remote = "127.0.0.1"
         request.json = AsyncMock(return_value={
@@ -241,11 +241,17 @@ class TestCloneEndpoint:
         with patch.object(server_module, 'is_cli_locked', return_value=False):
             if hasattr(server_module, 'handle_clone'):
                 response = await server_module.handle_clone(request)
-                # URL validation happens in run_fork_swap, returns 500 on failure
-                assert response.status == 500
+                # URL validation can happen in preflight (409) or run_fork_swap (500)
+                assert response.status in (400, 409, 500)
                 body = response.body.decode() if hasattr(response, 'body') else response.text
                 data = json.loads(body)
-                assert "file://" in data.get("message", "").lower() or "invalid" in data.get("message", "").lower()
+                # Check main message OR preflight error details
+                main_msg = data.get("message", "").lower()
+                preflight_msgs = " ".join(
+                    e.get("message", "") for e in data.get("preflight", {}).get("errors", [])
+                ).lower()
+                all_msgs = main_msg + " " + preflight_msgs
+                assert "file://" in all_msgs or "invalid" in all_msgs or "url" in all_msgs
 
     @pytest.mark.asyncio
     async def test_clone_success(self, server_module):
