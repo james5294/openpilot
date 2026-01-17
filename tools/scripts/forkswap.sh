@@ -3171,7 +3171,7 @@ mark_boot_success() {
 
     if [[ -z "$fork_name" ]]; then
         log_debug "No current fork to mark as boot success"
-        return 1
+        return 0
     fi
 
     local info_file
@@ -3179,7 +3179,7 @@ mark_boot_success() {
 
     if [[ ! -f "$info_file" ]]; then
         log_debug "Fork info not found for boot tracking: $fork_name"
-        return 1
+        return 0
     fi
 
     local timestamp
@@ -3188,7 +3188,10 @@ mark_boot_success() {
     # Check if last_boot_success key exists
     if grep -q '"last_boot_success"' "$info_file" 2>/dev/null; then
         # Update existing key
-        update_fork_info "$fork_name" "last_boot_success" "$timestamp"
+        if ! update_fork_info "$fork_name" "last_boot_success" "$timestamp"; then
+            log_debug "Failed to update boot success timestamp"
+            return 0
+        fi
     else
         # Add new key before the closing brace
         local temp_file="${info_file}.tmp"
@@ -3198,7 +3201,7 @@ mark_boot_success() {
         if [[ $? -ne 0 ]]; then
             rm -f "$temp_file" 2>/dev/null
             log_debug "Failed to add boot success timestamp"
-            return 1
+            return 0
         fi
     fi
 
@@ -3208,7 +3211,7 @@ mark_boot_success() {
     boot_count=$((boot_count + 1))
 
     if grep -q '"boot_count"' "$info_file" 2>/dev/null; then
-        update_fork_info "$fork_name" "boot_count" "$boot_count"
+        update_fork_info "$fork_name" "boot_count" "$boot_count" || true
     else
         local temp_file="${info_file}.tmp"
         sed 's/}$/,\n    "boot_count": "'"$boot_count"'"\n}/' "$info_file" > "$temp_file" && \
