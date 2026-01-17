@@ -34,7 +34,7 @@ import time
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 # Try aiohttp first, fall back to http.server
 try:
@@ -93,8 +93,9 @@ FORK_NAME_PATTERN = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$')
 ALLOWED_COMMANDS = {"switch", "update", "list", "status", "clone", "delete"}
 
 # Timeouts per command (seconds)
+# Note: AGNOS flash happens separately; these are just for fork_swap.sh commands
 COMMAND_TIMEOUTS = {
-    "switch": 60,
+    "switch": 120,  # Increased from 60s for safety margin on slow storage
     "update": 300,  # Updates can take several minutes
     "clone": 600,   # Cloning can take up to 10 minutes
     "delete": 30,
@@ -453,21 +454,50 @@ else:
     operation_lock = threading.Lock()
 
 # Track current operation for status reporting
-current_operation: dict = {"active": False, "type": None, "started": None, "target": None}
+current_operation: dict = {"active": False, "type": None, "started": None, "target": None, "progress": None}
+operation_state_lock = threading.Lock()
 
 def set_operation(op_type: str, target: str | None = None):
     """Mark an operation as in progress."""
-    current_operation["active"] = True
-    current_operation["type"] = op_type
-    current_operation["started"] = time.time()
-    current_operation["target"] = target
+    with operation_state_lock:
+        current_operation["active"] = True
+        current_operation["type"] = op_type
+        current_operation["started"] = time.time()
+        current_operation["target"] = target
+        current_operation["progress"] = None
 
 def clear_operation():
     """Mark operation as complete."""
-    current_operation["active"] = False
-    current_operation["type"] = None
-    current_operation["started"] = None
-    current_operation["target"] = None
+    with operation_state_lock:
+        current_operation["active"] = False
+        current_operation["type"] = None
+        current_operation["started"] = None
+        current_operation["target"] = None
+        current_operation["progress"] = None
+
+
+def set_operation_progress(
+    stage: str,
+    percent: int | None,
+    message: str | None = None,
+    stage_label: str | None = None
+) -> None:
+    with operation_state_lock:
+        if not current_operation.get("active"):
+            return
+        label = stage_label or message or stage
+        current_operation["progress"] = {
+            "stage": stage,
+            "percent": percent,
+            "message": message or "",
+            "stage_label": label,
+            "updated_at": datetime.now().isoformat(),
+        }
+
+
+def get_operation_progress() -> Optional[dict]:
+    with operation_state_lock:
+        return current_operation.get("progress")
 
 
 def _read_progress_file(path: Path) -> Optional[dict]:
@@ -968,7 +998,8 @@ try:
         verify_agnos_from_cache,
         swap_boot_slot,
         FlashProgress,
-        FlashError
+        FlashError,
+        get_current_slot,
     )
     _flash_agnos_module = True
     logger.info("Local AGNOS flasher module loaded")
@@ -976,6 +1007,7 @@ except ImportError:
     logger.warning("Local AGNOS flasher not available - AGNOS pre-flash disabled")
     _flash_agnos_module = False
     verify_agnos_from_cache = None
+    get_current_slot = None
 
 
 def get_fork_dir_by_name(fork_name: str) -> Optional[Path]:
@@ -998,7 +1030,10 @@ def get_fork_dir_by_name(fork_name: str) -> Optional[Path]:
     return None
 
 
-def prepare_agnos_for_switch(fork_name: str) -> Tuple[bool, str, Optional[int]]:
+def prepare_agnos_for_switch(
+    fork_name: str,
+    progress_callback: Optional[Callable[[str, Optional[int], Optional[str]], None]] = None
+) -> Tuple[bool, str, Optional[int]]:
     """
     Prepare AGNOS for a fork switch.
 
@@ -1014,60 +1049,103 @@ def prepare_agnos_for_switch(fork_name: str) -> Tuple[bool, str, Optional[int]]:
         - message: Description of what happened
         - target_slot: Slot number if AGNOS was flashed, None otherwise
     """
+    def report(stage: str, percent: Optional[int], label: Optional[str]) -> None:
+        if progress_callback:
+            progress_callback(stage, percent, label)
+
+    report("prep", 5, "Checking AGNOS compatibility")
+
     if not _flash_agnos_module:
         # Module not available, skip AGNOS handling (legacy behavior)
         logger.info("AGNOS flash module not available, skipping pre-flash")
+        report("prep", 10, "AGNOS pre-flash unavailable")
         return (True, "AGNOS pre-flash not available", None)
 
     # Get device AGNOS version
     device_agnos = get_device_agnos_version()
     if device_agnos == "unknown":
         logger.warning("Could not determine device AGNOS version")
+        report("prep", 12, "Device AGNOS version unknown")
         return (True, "Could not determine device AGNOS version, proceeding", None)
 
     # Get target fork's AGNOS version
     fork_dir = get_fork_dir_by_name(fork_name)
     if not fork_dir:
+        report("error", None, "Fork directory not found")
         return (False, f"Fork directory not found: {fork_name}", None)
 
     target_agnos = get_fork_agnos_version(fork_dir)
     if target_agnos == "unknown":
         logger.warning(f"Could not determine AGNOS version for {fork_name}")
+        report("prep", 15, "Target AGNOS version unknown")
         return (True, "Could not determine target AGNOS version, proceeding", None)
 
     # Check if versions match
     if device_agnos == target_agnos:
         logger.info(f"AGNOS versions match ({device_agnos}), no flash needed")
+        report("prep", 20, f"AGNOS {device_agnos} compatible")
         return (True, f"AGNOS {device_agnos} compatible", None)
 
     # Different versions - need to flash
     logger.info(f"AGNOS mismatch: device={device_agnos}, target={target_agnos}")
+
+    report("prep", 25, f"Checking AGNOS {target_agnos} cache")
 
     # Check if target AGNOS is cached
     cache_status = get_agnos_cache_status(target_agnos)
     if not cache_status.get("complete"):
         msg = f"AGNOS {target_agnos} not cached. Download it first before switching."
         logger.error(msg)
+        report("error", None, msg)
         return (False, msg, None)
 
     # Verify cache is valid
+    report("prep", 30, f"Validating AGNOS {target_agnos} cache")
     verify_result = verify_agnos_from_cache(target_agnos)
     if not verify_result.get("valid"):
         msg = f"AGNOS {target_agnos} cache invalid: {verify_result.get('error', 'unknown error')}"
         logger.error(msg)
+        report("error", None, msg)
         return (False, msg, None)
 
     # Flash AGNOS from cache
     logger.info(f"Flashing AGNOS {target_agnos} from cache...")
     activity_log.add("info", "agnos", f"Starting AGNOS {target_agnos} flash for {fork_name}")
 
+    flash_state = {"total": 0, "index": 0, "name": ""}
+
     def log_progress(p: FlashProgress):
+        if p.total_partitions:
+            flash_state["total"] = p.total_partitions
+            flash_state["index"] = p.partition_index
+        if p.partition_name:
+            flash_state["name"] = p.partition_name
+
+        total = flash_state["total"] or 1
+        index = flash_state["index"]
+        name = flash_state["name"] or "partition"
+
         if p.status == "flashing":
             logger.info(f"Flashing {p.partition_name}: {p.percent}%")
+            part_ratio = (p.percent or 0) / 100.0
+            overall_ratio = (index + part_ratio) / total
+            percent = 25 + int(overall_ratio * 60)
+            label = f"Flashing {name}"
+            if p.percent:
+                label = f"{label} ({p.percent}%)"
+            report("flash", min(85, percent), label)
         elif p.status == "verifying":
             logger.info(f"Verifying {p.partition_name}")
+            verify_ratio = (index + 1) / total
+            percent = 85 + int(verify_ratio * 10)
+            report("verify", min(95, percent), f"Verifying {name}")
+        elif p.status == "starting":
+            report("flash", 25, "Starting AGNOS flash")
+        elif p.status == "complete":
+            report("verify", 95, "AGNOS flash complete")
         elif p.status == "error":
             logger.error(f"Flash error: {p.error}")
+            report("error", None, f"AGNOS flash error: {p.error}")
 
     flash_result = flash_agnos_from_cache(target_agnos, log_progress)
 
@@ -2343,8 +2421,8 @@ if USE_AIOHTTP:
             op_timeout = COMMAND_TIMEOUTS.get(current_operation["type"], 60)
             op_remaining = max(0, op_timeout - op_elapsed)
 
-        progress = None
-        if current_operation["type"] == "clone":
+        progress = get_operation_progress()
+        if progress is None and current_operation["type"] == "clone":
             progress = get_clone_progress(current_operation["target"])
 
         data = {
@@ -2438,28 +2516,56 @@ if USE_AIOHTTP:
             async with operation_lock:
                 set_operation("switch", fork_name)
                 try:
+                    set_operation_progress("prep", 2, "Starting switch")
+
+                    def report(stage: str, percent: Optional[int], label: Optional[str]) -> None:
+                        set_operation_progress(stage, percent, stage_label=label)
+
+                    # Save current state for potential rollback
+                    old_fork = get_current_fork()
+                    old_slot = None
+                    if _flash_agnos_module and get_current_slot:
+                        try:
+                            old_slot = get_current_slot()
+                            logger.info(f"Current boot slot: {old_slot}")
+                        except Exception as e:
+                            logger.warning(f"Could not determine current boot slot: {e}")
+
                     # AGNOS Pre-Flash: Check and flash AGNOS before fork switch
-                    agnos_success, agnos_msg, target_slot = prepare_agnos_for_switch(fork_name)
+                    agnos_success, agnos_msg, target_slot = await asyncio.to_thread(
+                        prepare_agnos_for_switch,
+                        fork_name,
+                        report
+                    )
                     if not agnos_success:
                         logger.error(f"AGNOS preparation failed: {agnos_msg}")
+                        set_operation_progress("error", None, agnos_msg)
                         return json_response(
                             {"success": False, "message": agnos_msg, "agnos_required": True},
                             status=400
                         )
 
-                    logger.info(f"Switching to fork: {fork_name}")
+                    # CRITICAL: Swap boot slot BEFORE symlink switch
+                    # This ensures we boot into the correct AGNOS even if symlink switch fails
+                    if target_slot is not None:
+                        logger.info(f"Swapping boot slot to {target_slot} BEFORE symlink switch")
+                        if not finalize_agnos_switch(target_slot):
+                            logger.error("Boot slot swap failed - aborting switch (no changes made)")
+                            set_operation_progress("error", None, "Boot slot swap failed")
+                            return json_response(
+                                {"success": False, "message": "AGNOS flashed but boot slot swap failed. Switch aborted - device is still on original fork."},
+                                status=500
+                            )
+                        logger.info(f"Boot slot swapped to {target_slot} successfully")
+
+                    # Now switch the symlink
+                    switch_percent = 95 if target_slot is not None else 60
+                    set_operation_progress("switch", switch_percent, "Switching fork")
+                    logger.info(f"Switching symlink to fork: {fork_name}")
                     success, output = await asyncio.to_thread(run_fork_swap, "switch", fork_name)
 
                     if success:
-                        # If AGNOS was flashed, swap boot slot
-                        if target_slot is not None:
-                            if not finalize_agnos_switch(target_slot):
-                                logger.error("Boot slot swap failed")
-                                return json_response(
-                                    {"success": False, "message": "AGNOS flashed but boot slot swap failed"},
-                                    status=500
-                                )
-
+                        set_operation_progress("reboot", 100, "Rebooting")
                         logger.info(f"Switch successful, scheduling reboot")
                         asyncio.create_task(delayed_reboot(3))
 
@@ -2475,7 +2581,25 @@ if USE_AIOHTTP:
                             "agnos_updated": target_slot is not None
                         })
                     else:
-                        logger.error(f"Switch failed")
+                        # Symlink switch failed - attempt rollback if AGNOS was swapped
+                        logger.error(f"Symlink switch failed")
+                        set_operation_progress("error", None, "Symlink switch failed")
+                        if target_slot is not None and old_slot:
+                            logger.warning(f"Attempting to rollback boot slot from {target_slot} to {old_slot}")
+                            # Convert old_slot suffix (_a/_b) to number (0/1)
+                            rollback_slot = 0 if old_slot == "_a" else 1
+                            if swap_boot_slot(rollback_slot):
+                                logger.info(f"Boot slot rolled back to {rollback_slot}")
+                                return json_response(
+                                    {"success": False, "message": "Symlink switch failed. Boot slot rolled back. Device unchanged."},
+                                    status=500
+                                )
+                            else:
+                                logger.error(f"CRITICAL: Boot slot rollback failed! Device may be in inconsistent state.")
+                                return json_response(
+                                    {"success": False, "message": "CRITICAL: Symlink switch failed AND boot slot rollback failed. Manual recovery may be needed."},
+                                    status=500
+                                )
                         return json_response(
                             {"success": False, "message": "Switch failed. Check logs for details."},
                             status=500
@@ -3130,8 +3254,8 @@ if not USE_AIOHTTP:
                     op_timeout = COMMAND_TIMEOUTS.get(current_operation["type"], 60)
                     op_remaining = max(0, op_timeout - op_elapsed)
 
-                progress = None
-                if current_operation["type"] == "clone":
+                progress = get_operation_progress()
+                if progress is None and current_operation["type"] == "clone":
                     progress = get_clone_progress(current_operation["target"])
 
                 data = {
@@ -3263,28 +3387,51 @@ if not USE_AIOHTTP:
             with operation_lock:
                 set_operation("switch", fork_name)
                 try:
+                    set_operation_progress("prep", 2, "Starting switch")
+
+                    def report(stage: str, percent: Optional[int], label: Optional[str]) -> None:
+                        set_operation_progress(stage, percent, stage_label=label)
+
+                    # Save current state for potential rollback
+                    old_fork = get_current_fork()
+                    old_slot = None
+                    if _flash_agnos_module and get_current_slot:
+                        try:
+                            old_slot = get_current_slot()
+                            logger.info(f"Current boot slot: {old_slot}")
+                        except Exception as e:
+                            logger.warning(f"Could not determine current boot slot: {e}")
+
                     # AGNOS Pre-Flash: Check and flash AGNOS before fork switch
-                    agnos_success, agnos_msg, target_slot = prepare_agnos_for_switch(fork_name)
+                    agnos_success, agnos_msg, target_slot = prepare_agnos_for_switch(fork_name, report)
                     if not agnos_success:
                         logger.error(f"AGNOS preparation failed: {agnos_msg}")
+                        set_operation_progress("error", None, agnos_msg)
                         self.send_json({"success": False, "message": agnos_msg, "agnos_required": True}, 400)
                         return
 
-                    logger.info(f"Switching to fork: {fork_name}")
+                    # CRITICAL: Swap boot slot BEFORE symlink switch
+                    if target_slot is not None:
+                        logger.info(f"Swapping boot slot to {target_slot} BEFORE symlink switch")
+                        if not finalize_agnos_switch(target_slot):
+                            logger.error("Boot slot swap failed - aborting switch")
+                            set_operation_progress("error", None, "Boot slot swap failed")
+                            self.send_json({"success": False, "message": "AGNOS flashed but boot slot swap failed. Switch aborted."}, 500)
+                            return
+                        logger.info(f"Boot slot swapped to {target_slot} successfully")
+
+                    # Now switch the symlink
+                    switch_percent = 95 if target_slot is not None else 60
+                    set_operation_progress("switch", switch_percent, "Switching fork")
+                    logger.info(f"Switching symlink to fork: {fork_name}")
                     success, output = run_fork_swap("switch", fork_name)
                     if success:
-                        # If AGNOS was flashed, swap boot slot
-                        if target_slot is not None:
-                            if not finalize_agnos_switch(target_slot):
-                                logger.error("Boot slot swap failed")
-                                self.send_json({"success": False, "message": "AGNOS flashed but boot slot swap failed"}, 500)
-                                return
-
                         msg = f"Switched to {fork_name}."
                         if target_slot is not None:
                             msg += " AGNOS updated."
                         msg += " Rebooting..."
 
+                        set_operation_progress("reboot", 100, "Rebooting")
                         threading.Thread(target=delayed_reboot_sync, args=(3,), daemon=True).start()
                         self.send_json({
                             "success": True,
@@ -3293,8 +3440,20 @@ if not USE_AIOHTTP:
                             "agnos_updated": target_slot is not None
                         })
                     else:
-                        logger.error("Switch failed")
-                        self.send_json({"success": False, "message": "Switch failed. Check logs for details."}, 500)
+                        # Symlink switch failed - attempt rollback if AGNOS was swapped
+                        logger.error("Symlink switch failed")
+                        set_operation_progress("error", None, "Symlink switch failed")
+                        if target_slot is not None and old_slot:
+                            logger.warning(f"Attempting to rollback boot slot from {target_slot} to {old_slot}")
+                            rollback_slot = 0 if old_slot == "_a" else 1
+                            if swap_boot_slot(rollback_slot):
+                                logger.info(f"Boot slot rolled back to {rollback_slot}")
+                                self.send_json({"success": False, "message": "Symlink switch failed. Boot slot rolled back."}, 500)
+                            else:
+                                logger.error("CRITICAL: Boot slot rollback failed!")
+                                self.send_json({"success": False, "message": "CRITICAL: Symlink switch failed AND rollback failed."}, 500)
+                        else:
+                            self.send_json({"success": False, "message": "Switch failed. Check logs for details."}, 500)
                 finally:
                     clear_operation()
 

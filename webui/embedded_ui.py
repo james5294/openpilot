@@ -941,6 +941,11 @@ EMBEDDED_JS = '''
         if (progressRatio < 0.85) return { key: "download", label: "Downloading repository" };
         return { key: "finalize", label: "Finalizing setup" };
     }
+    function getSwitchStage(progressRatio) {
+        if (progressRatio < 0.2) return { key: "prep", label: "Preparing switch" };
+        if (progressRatio < 0.85) return { key: "flash", label: "Flashing OS" };
+        return { key: "reboot", label: "Rebooting" };
+    }
     operationProgress = {
         progressEl: null,
         fillEl: null,
@@ -963,6 +968,13 @@ EMBEDDED_JS = '''
             this.etaEl = document.getElementById("operation-progress-eta");
             this.steps = document.querySelectorAll(".operation-step");
         },
+        setStepLabels: function(type) {
+            if (!this.steps || !this.steps.length) return;
+            var labels = type === "switch" ? ["Prepare", "Flash OS", "Reboot"] : ["Prepare", "Download", "Finalize"];
+            for (var i = 0; i < this.steps.length && i < labels.length; i++) {
+                this.steps[i].textContent = labels[i];
+            }
+        },
         reset: function() {
             this.stop();
             if (this.progressEl) this.progressEl.classList.remove("active");
@@ -984,6 +996,7 @@ EMBEDDED_JS = '''
             this.startTime = Date.now();
             this.timeoutSeconds = timeoutSeconds || 0;
             this.remainingSeconds = null;
+            this.setStepLabels(type);
             if (this.progressEl) this.progressEl.classList.add("active");
             this.update();
             var self = this;
@@ -1017,7 +1030,7 @@ EMBEDDED_JS = '''
             }).catch(function() {});
         },
         update: function() {
-            if (!this.progressEl || this.type !== "clone") return;
+            if (!this.progressEl || !this.type) return;
             var elapsedSeconds = Math.floor((Date.now() - this.startTime) / 1000);
             var totalSeconds = this.timeoutSeconds || 0;
             var remaining = this.remainingSeconds;
@@ -1029,7 +1042,7 @@ EMBEDDED_JS = '''
             var percent = this.latestPercent !== null ? this.latestPercent : computedPercent;
             percent = Math.max(0, Math.min(100, percent));
             if (this.fillEl) this.fillEl.style.width = percent + "%";
-            var stage = getCloneStage(ratio);
+            var stage = this.type === "clone" ? getCloneStage(ratio) : getSwitchStage(ratio);
             var stageKey = this.latestStage || stage.key;
             var stageLabel = this.latestStageLabel || stage.label;
             if (this.stageEl) this.stageEl.textContent = stageLabel + " (" + percent + "%)";
@@ -1043,10 +1056,15 @@ EMBEDDED_JS = '''
             }
             if (this.steps) {
                 var order = ["prep", "download", "finalize"];
-                if (stageKey === "counting") stageKey = "prep";
-                if (stageKey === "compressing" || stageKey === "receiving") stageKey = "download";
-                if (stageKey === "resolving" || stageKey === "checking" || stageKey === "finalize" || stageKey === "complete") {
-                    stageKey = "finalize";
+                if (this.type === "clone") {
+                    if (stageKey === "counting") stageKey = "prep";
+                    if (stageKey === "compressing" || stageKey === "receiving") stageKey = "download";
+                    if (stageKey === "resolving" || stageKey === "checking" || stageKey === "finalize" || stageKey === "complete") {
+                        stageKey = "finalize";
+                    }
+                } else if (this.type === "switch") {
+                    if (stageKey === "flash" || stageKey === "verify") stageKey = "download";
+                    if (stageKey === "switch" || stageKey === "reboot" || stageKey === "complete") stageKey = "finalize";
                 }
                 for (var i = 0; i < this.steps.length; i++) {
                     var step = this.steps[i];
@@ -1067,9 +1085,13 @@ EMBEDDED_JS = '''
             }
         },
         complete: function(success) {
-            if (!this.progressEl || this.type !== "clone") return;
+            if (!this.progressEl || !this.type) return;
             if (this.fillEl) this.fillEl.style.width = "100%";
-            if (this.stageEl) this.stageEl.textContent = success ? "Clone complete" : "Clone failed";
+            if (this.stageEl) {
+                var okLabel = this.type === "switch" ? "Switch complete" : "Clone complete";
+                var failLabel = this.type === "switch" ? "Switch failed" : "Clone failed";
+                this.stageEl.textContent = success ? okLabel : failLabel;
+            }
             if (this.steps) {
                 for (var i = 0; i < this.steps.length; i++) {
                     this.steps[i].classList.remove("active");
@@ -1094,6 +1116,7 @@ EMBEDDED_JS = '''
             checkCount++;
             var elapsed = Date.now() - startTime;
             if (elapsed > maxWaitMs) {
+                operationProgress.complete(false);
                 operation.hide();
                 toast.error("Device did not respond within " + formatElapsed(maxWaitMs) + ". Please check manually.");
                 return;
@@ -1110,6 +1133,7 @@ EMBEDDED_JS = '''
                 }
                 operation.updateMessage("Successfully switched to " + activeFork);
                 toast.success("Device restarted! Now running: " + activeFork);
+                operationProgress.complete(true);
                 fetchStatus();
                 setTimeout(function() { operation.hide(); }, 2500);
             }).catch(function() {
@@ -1365,14 +1389,20 @@ EMBEDDED_JS = '''
             var title = isAgnosUpdate ? "Switching Fork + AGNOS Update" : "Switching Fork";
             var msg = isAgnosUpdate ? "Starting AGNOS update for " + forkName + "..." : "Switching to " + forkName + ". Device will reboot...";
             operation.show(title, msg);
+            operationProgress.start("switch", isAgnosUpdate ? 1800 : 300);
             api.switchFork(forkName).then(function(result) {
                 if (result.success) {
                     waitForDeviceReboot(forkName, isAgnosUpdate);
                 } else {
+                    operationProgress.complete(false);
                     operation.hide();
                     toast.error(result.message);
                 }
-            }).catch(function(err) { operation.hide(); toast.error("Failed to switch fork"); });
+            }).catch(function(err) {
+                operationProgress.complete(false);
+                operation.hide();
+                toast.error("Failed to switch fork");
+            });
         },
         updateCurrentFork: function() {
             var activeFork = null;

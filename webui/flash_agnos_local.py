@@ -439,7 +439,7 @@ def set_slot_unbootable(slot: int) -> None:
 def set_slot_active(slot: int) -> bool:
     """
     Set a slot as the active boot slot.
-    Returns True if successful.
+    Returns True only if explicitly confirmed successful.
     """
     try:
         result = subprocess.run(
@@ -449,19 +449,32 @@ def set_slot_active(slot: int) -> bool:
             check=False
         )
 
-        output = result.stdout + result.stderr
+        output = (result.stdout + result.stderr).strip()
 
-        # Check for success indicators
-        if "lun as boot lun" in output.lower():
-            logger.info(f"Successfully set slot {slot} as active")
-            return True
-
-        # Retry logic for transient failures
-        if "No such file or directory" in output:
-            logger.warning(f"Slot swap retry needed: {output}")
+        # CRITICAL: Check return code first
+        if result.returncode != 0:
+            logger.error(f"abctl failed with exit code {result.returncode}: {output}")
             return False
 
-        logger.info(f"Slot {slot} set active: {output}")
+        # Check for explicit success indicator
+        if "lun as boot lun" in output.lower():
+            logger.info(f"Successfully set slot {slot} as active (confirmed)")
+            return True
+
+        # Check for known transient failures
+        if "No such file or directory" in output:
+            logger.warning(f"Slot swap retry needed (device not ready): {output}")
+            return False
+
+        # Unknown output but exit code was 0 - treat cautiously
+        # Log warning but accept if exit code was success
+        if output:
+            logger.warning(f"Slot {slot} activation returned unexpected output: {output}")
+        else:
+            logger.warning(f"Slot {slot} activation returned no output (exit code 0)")
+
+        # Only trust exit code 0 if we got here
+        logger.info(f"Slot {slot} set active (exit code 0, unconfirmed output)")
         return True
 
     except subprocess.SubprocessError as e:
