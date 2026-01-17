@@ -3531,6 +3531,29 @@ if USE_AIOHTTP:
             if agnos_mode == "device" and fork_info:
                 agnos_device_update = not is_agnos_compatible(target_agnos)
 
+            # CRITICAL SAFETY CHECK: Block device-mode switches when AGNOS mismatches
+            # The device's native AGNOS updater is unreliable and causes logo-hang bricking.
+            # Only allow device-mode if AGNOS is already compatible (no update needed).
+            if agnos_mode == "device" and agnos_device_update:
+                logger.warning(
+                    f"BLOCKED device-mode switch: AGNOS mismatch "
+                    f"(device={device_agnos}, target={target_agnos})"
+                )
+                return json_response(
+                    {
+                        "success": False,
+                        "message": (
+                            f"Device update mode blocked: AGNOS {target_agnos} required but device has {device_agnos}. "
+                            f"Use 'Flash from Cache' or 'Prepare OS' first to safely update AGNOS."
+                        ),
+                        "error_code": "agnos_mismatch_device_mode_blocked",
+                        "agnos_required": True,
+                        "device_agnos": device_agnos,
+                        "target_agnos": target_agnos,
+                    },
+                    status=400
+                )
+
             async with operation_lock:
                 op_inputs = {"fork": fork_name, "agnos_mode": agnos_mode}
                 op_id = start_operation_record("switch", fork_name, op_inputs)
@@ -4670,6 +4693,24 @@ if not USE_AIOHTTP:
                 target_agnos = fork_info.get("agnos_version", "unknown")
             if agnos_mode == "device" and fork_info:
                 agnos_device_update = not is_agnos_compatible(target_agnos)
+            # CRITICAL SAFETY CHECK: Block device-mode switches when AGNOS mismatches
+            if agnos_mode == "device" and agnos_device_update:
+                logger.warning(
+                    f"BLOCKED device-mode switch: AGNOS mismatch "
+                    f"(device={device_agnos}, target={target_agnos})"
+                )
+                self.send_json({
+                    "success": False,
+                    "message": (
+                        f"Device update mode blocked: AGNOS {target_agnos} required but device has {device_agnos}. "
+                        f"Use 'Flash from Cache' or 'Prepare OS' first to safely update AGNOS."
+                    ),
+                    "error_code": "agnos_mismatch_device_mode_blocked",
+                    "agnos_required": True,
+                    "device_agnos": device_agnos,
+                    "target_agnos": target_agnos,
+                }, 400)
+                return
             with operation_lock:
                 op_inputs = {"fork": fork_name, "agnos_mode": agnos_mode}
                 op_id = start_operation_record("switch", fork_name, op_inputs)
