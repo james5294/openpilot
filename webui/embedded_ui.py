@@ -1646,9 +1646,10 @@ EMBEDDED_JS = '''
         var logMeta = "Forkswap " + forkswapKbValue;
         if (opsKb) logMeta += " | Ops " + opsKb;
         var service = health.system ? health.system.webui_service || {} : {};
-        var serviceValue = service.installed ? (service.enabled ? "Enabled" : "Installed") : "Not installed";
-        var serviceMeta = service.error ? service.error : "WebUI service status";
-        var serviceClass = service.installed ? (service.enabled ? "ok" : "warn") : "warn";
+        var serviceLabel = "Autostart";
+        var serviceValue = service.installed ? (service.enabled ? "On" : "Available") : "Off (optional)";
+        var serviceMeta = service.error ? service.error : (service.installed ? "Systemd autostart available" : "WebUI runs while openpilot is running");
+        var serviceClass = service.installed ? (service.enabled ? "ok" : "warn") : "ok";
         var versionValue = health.system && health.system.forkswap_version ? health.system.forkswap_version : "--";
         var uiMode = health.system && health.system.ui_mode ? health.system.ui_mode : "unknown";
         var uiModeValue = uiMode === "embedded" ? "Embedded" : (uiMode === "static" ? "Static" : "Unknown");
@@ -1662,7 +1663,7 @@ EMBEDDED_JS = '''
             { label: "Operation", value: opValue, meta: opMeta, badge: true, cls: opClass },
             { label: "AGNOS Cache", value: agnosValue, meta: agnosMeta, badge: true, cls: agnosClass },
             { label: "Logs", value: webuiKb, meta: logMeta, badge: false, cls: "ok" },
-            { label: "Service", value: serviceValue, meta: serviceMeta, badge: true, cls: serviceClass },
+            { label: serviceLabel, value: serviceValue, meta: serviceMeta, badge: true, cls: serviceClass },
             { label: "UI Mode", value: uiModeValue, meta: uiModeMeta, badge: true, cls: uiModeClass },
             { label: "Version", value: versionValue, meta: "Fork Swap build", badge: false, cls: "ok" }
         ];
