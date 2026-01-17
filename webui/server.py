@@ -1210,6 +1210,11 @@ def run_fork_swap(command: str, *args) -> tuple[bool, str]:
             if arg and not validate_fork_name(arg):
                 return False, f"Invalid argument: '{arg}'"
 
+    try:
+        ensure_fork_swap_script()
+    except Exception as e:
+        logger.warning(f"Failed to sync fork_swap.sh: {e}")
+
     timeout = COMMAND_TIMEOUTS.get(command, 30)
 
     try:
@@ -2825,25 +2830,41 @@ def ensure_fork_info_exists(fork_dir: Path) -> bool:
 
 
 def ensure_fork_swap_script() -> bool:
-    """Ensure fork_swap.sh exists at persistent location and is not a symlink."""
+    """Ensure fork_swap.sh exists at persistent location and matches source version."""
     script_path = Path("/data/forkswap/fork_swap.sh")
     source_path = Path("/data/openpilot/tools/scripts/forkswap.sh")
 
-    # Check if it's a symlink (bad) or doesn't exist
-    if script_path.is_symlink() or not script_path.exists():
-        if source_path.exists():
-            try:
-                # Remove symlink if exists
-                if script_path.is_symlink():
-                    script_path.unlink()
-                # Copy actual file
-                import shutil
-                shutil.copy2(source_path, script_path)
-                script_path.chmod(0o755)
-                logger.info(f"Installed fork_swap.sh to persistent location")
-                return True
-            except Exception as e:
-                logger.warning(f"Failed to install fork_swap.sh: {e}")
+    def read_version(path: Path) -> Optional[str]:
+        try:
+            with path.open() as handle:
+                for line in handle:
+                    if line.startswith("readonly SCRIPT_VERSION="):
+                        return line.split('"', 2)[1]
+        except Exception:
+            return None
+        return None
+
+    installed_version = read_version(script_path) if script_path.exists() else None
+    source_version = read_version(source_path) if source_path.exists() else None
+
+    needs_install = script_path.is_symlink() or not script_path.exists()
+    if not needs_install and source_version and installed_version and source_version != installed_version:
+        needs_install = True
+
+    if needs_install and source_path.exists():
+        try:
+            if script_path.is_symlink():
+                script_path.unlink()
+            import shutil
+            shutil.copy2(source_path, script_path)
+            script_path.chmod(0o755)
+            logger.info(
+                "Installed fork_swap.sh to persistent location"
+                + (f" (version {source_version})" if source_version else "")
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to install fork_swap.sh: {e}")
     return False
 
 
