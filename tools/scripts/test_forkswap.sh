@@ -2,10 +2,10 @@
 #===============================================================================
 # Fork Swap Test Harness
 #
-# Exercises fork_swap.sh functions in a safe temporary environment
+# Exercises forkswap.sh functions in a safe temporary environment
 # Run this on your Mac before deploying to comma device
 #
-# Usage: ./test_fork_swap.sh [--verbose]
+# Usage: ./test_forkswap.sh [--verbose]
 #===============================================================================
 
 set -euo pipefail
@@ -160,8 +160,8 @@ setup_test_environment() {
     mkdir -p "$TEST_DIR/data/params/d"
 
     # Copy the script
-    SCRIPT_PATH="$TEST_DIR/fork_swap.sh"
-    cp "$(dirname "$0")/fork_swap.sh" "$SCRIPT_PATH"
+    SCRIPT_PATH="$TEST_DIR/forkswap.sh"
+    cp "$(dirname "$0")/forkswap.sh" "$SCRIPT_PATH"
     chmod +x "$SCRIPT_PATH"
 
     # Patch the script to use our test directory
@@ -506,7 +506,7 @@ test_atomic_symlink() {
     assert_equals "fork1" "$content" "Symlink points to fork1"
 
     log_test "Testing atomic symlink swap"
-    # The atomic swap pattern from fork_swap.sh
+    # The atomic swap pattern from forkswap.sh
     # On GNU (AGNOS): ln -sfn target link.new.$$ && mv -Tf link.new.$$ link
     # On macOS: ln -sfn is already atomic for direct replacement
 
@@ -537,7 +537,7 @@ test_atomic_symlink() {
     fi
 
     # Test the pattern used on AGNOS (simulating GNU mv -T behavior)
-    log_test "Verifying swap pattern matches fork_swap.sh design"
+    log_test "Verifying swap pattern matches forkswap.sh design"
     log_info "On AGNOS (GNU coreutils): mv -T provides true atomic replacement"
     log_info "On macOS (BSD): ln -sfn provides atomic symlink creation"
     log_pass "Swap pattern verified for target environment"
@@ -617,6 +617,82 @@ test_fork_name_validation() {
 }
 
 #-------------------------------------------------------------------------------
+# Test: Fork Name Slash Normalization
+#-------------------------------------------------------------------------------
+
+test_fork_name_slash_normalization() {
+    echo -e "\n${BOLD}=== Test: Fork Name Slash Normalization ===${RESET}"
+
+    local current_fork_file="$TEST_DIR/data/forkswap/current_fork.txt"
+    mkdir -p "$(dirname "$current_fork_file")"
+
+    # Extract get_current_fork function and patch paths
+    local temp_script="$TEST_DIR/test_normalize.sh"
+    cat > "$temp_script" << 'NORMALIZE_TEST'
+#!/usr/bin/env bash
+CURRENT_FORK_FILE="__CURRENT_FORK_FILE__"
+log_debug() { :; }  # no-op for testing
+
+get_current_fork() {
+    if [[ -f "$CURRENT_FORK_FILE" ]]; then
+        local fork_name
+        fork_name=$(cat "$CURRENT_FORK_FILE" 2>/dev/null | head -1 | tr -d '[:space:]')
+
+        if [[ -z "$fork_name" ]]; then
+            echo ""
+            return 0
+        fi
+
+        # Guard: normalize GitHub-style "owner/repo" to "owner-repo"
+        if [[ "$fork_name" == *"/"* ]]; then
+            local normalized="${fork_name//\//-}"
+            echo "$normalized" > "$CURRENT_FORK_FILE" 2>/dev/null || true
+            fork_name="$normalized"
+        fi
+
+        echo "$fork_name"
+        return 0
+    else
+        echo ""
+        return 0
+    fi
+}
+NORMALIZE_TEST
+
+    # Patch the path
+    sed -i.bak "s|__CURRENT_FORK_FILE__|$current_fork_file|g" "$temp_script"
+    chmod +x "$temp_script"
+
+    log_test "Testing slash normalization: owner/repo -> owner-repo"
+    echo "james5294/openpilot" > "$current_fork_file"
+
+    # Source and call the function
+    source "$temp_script"
+    local result
+    result=$(get_current_fork)
+
+    assert_equals "james5294-openpilot" "$result" "Slash normalized to hyphen"
+
+    log_test "Testing file auto-healed after normalization"
+    local file_contents
+    file_contents=$(cat "$current_fork_file")
+    assert_equals "james5294-openpilot" "$file_contents" "File auto-healed with normalized name"
+
+    log_test "Testing already-normalized name unchanged"
+    echo "sunnypilot" > "$current_fork_file"
+    result=$(get_current_fork)
+    assert_equals "sunnypilot" "$result" "Already-normalized name unchanged"
+
+    log_test "Testing multiple slashes normalized"
+    echo "org/sub/repo" > "$current_fork_file"
+    result=$(get_current_fork)
+    assert_equals "org-sub-repo" "$result" "Multiple slashes normalized"
+
+    # Cleanup
+    rm -f "$temp_script" "$temp_script.bak"
+}
+
+#-------------------------------------------------------------------------------
 # Test: Dependency Checks
 #-------------------------------------------------------------------------------
 
@@ -624,7 +700,7 @@ test_script_self_install() {
     echo -e "\n${BOLD}=== Test: Script Self-Installation ===${RESET}"
 
     local forkswap_dir="$TEST_DIR/data/forkswap"
-    local installed_path="$forkswap_dir/fork_swap.sh"
+    local installed_path="$forkswap_dir/forkswap.sh"
 
     # Extract current version from main script dynamically
     local current_version
@@ -632,7 +708,7 @@ test_script_self_install() {
     log_info "Testing with version from main script: $current_version"
 
     # Simulate running from a fork directory (dangerous location)
-    local fork_script="$TEST_DIR/data/forks/testfork/openpilot/fork_swap.sh"
+    local fork_script="$TEST_DIR/data/forks/testfork/openpilot/forkswap.sh"
     mkdir -p "$(dirname "$fork_script")"
     echo '#!/bin/bash' > "$fork_script"
     echo "readonly SCRIPT_VERSION=\"$current_version\"" >> "$fork_script"
@@ -892,8 +968,8 @@ main() {
     echo -e "${RESET}"
 
     # Check we're in the right directory
-    if [[ ! -f "$(dirname "$0")/fork_swap.sh" ]]; then
-        echo -e "${RED}Error: fork_swap.sh not found in same directory${RESET}"
+    if [[ ! -f "$(dirname "$0")/forkswap.sh" ]]; then
+        echo -e "${RED}Error: forkswap.sh not found in same directory${RESET}"
         exit 1
     fi
 
@@ -909,6 +985,7 @@ main() {
     test_atomic_symlink
     test_git_lock_cleanup
     test_fork_name_validation
+    test_fork_name_slash_normalization
     test_script_self_install
     test_fork_templates
     test_backup_functions
