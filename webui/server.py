@@ -949,11 +949,12 @@ def verify_environment() -> list[str]:
     elif not os.access(FORK_SWAP_SCRIPT, os.X_OK):
         issues.append(f"fork_swap.sh is not executable")
 
-    if not STATIC_DIR.exists():
-        issues.append(f"Static directory not found at {STATIC_DIR}")
+    if not USE_EMBEDDED_UI:
+        if not STATIC_DIR.exists():
+            issues.append(f"Static directory not found at {STATIC_DIR}")
 
-    if not (STATIC_DIR / "index.html").exists():
-        issues.append("index.html not found")
+        if not (STATIC_DIR / "index.html").exists():
+            issues.append("index.html not found")
 
     return issues
 
@@ -3123,6 +3124,7 @@ if USE_AIOHTTP:
             "agnos": get_agnos_health(),
             "webui_service": get_webui_service_status(),
             "forkswap_version": VERSION,
+            "ui_mode": "embedded" if USE_EMBEDDED_UI else "static",
         }
 
         data = {
@@ -4249,6 +4251,7 @@ if not USE_AIOHTTP:
                         "agnos": get_agnos_health(),
                         "webui_service": get_webui_service_status(),
                         "forkswap_version": VERSION,
+                        "ui_mode": "embedded" if USE_EMBEDDED_UI else "static",
                     },
                     "issues": issues,
                 }

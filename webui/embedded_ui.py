@@ -1650,6 +1650,10 @@ EMBEDDED_JS = '''
         var serviceMeta = service.error ? service.error : "WebUI service status";
         var serviceClass = service.installed ? (service.enabled ? "ok" : "warn") : "warn";
         var versionValue = health.system && health.system.forkswap_version ? health.system.forkswap_version : "--";
+        var uiMode = health.system && health.system.ui_mode ? health.system.ui_mode : "unknown";
+        var uiModeValue = uiMode === "embedded" ? "Embedded" : (uiMode === "static" ? "Static" : "Unknown");
+        var uiModeMeta = uiMode === "embedded" ? "Embedded UI active" : (uiMode === "static" ? "Static assets active" : "UI mode not reported");
+        var uiModeClass = (uiMode === "embedded" || uiMode === "static") ? "ok" : "warn";
         var cards = [
             { label: "Status", value: statusLabel, meta: issues.length + " issue(s)", badge: true, cls: statusClass },
             { label: "Disk", value: diskValue, meta: "Storage on device", badge: false, cls: diskClass },
@@ -1659,6 +1663,7 @@ EMBEDDED_JS = '''
             { label: "AGNOS Cache", value: agnosValue, meta: agnosMeta, badge: true, cls: agnosClass },
             { label: "Logs", value: webuiKb, meta: logMeta, badge: false, cls: "ok" },
             { label: "Service", value: serviceValue, meta: serviceMeta, badge: true, cls: serviceClass },
+            { label: "UI Mode", value: uiModeValue, meta: uiModeMeta, badge: true, cls: uiModeClass },
             { label: "Version", value: versionValue, meta: "Fork Swap build", badge: false, cls: "ok" }
         ];
         var html = "";
