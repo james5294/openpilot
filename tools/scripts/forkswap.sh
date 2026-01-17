@@ -2919,6 +2919,13 @@ get_current_fork() {
             return 0
         fi
 
+        if [[ "$fork_name" == *"/"* ]]; then
+            local normalized="${fork_name//\//-}"
+            log_debug "Normalizing fork name: $fork_name -> $normalized"
+            echo "$normalized" > "$CURRENT_FORK_FILE" 2>/dev/null || true
+            fork_name="$normalized"
+        fi
+
         echo "$fork_name"
         return 0
     else
