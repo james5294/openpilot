@@ -193,6 +193,8 @@ readonly OPENPILOT_DIR="/data/openpilot"
 readonly FORKS_DIR="/data/forks"
 readonly FORKSWAP_DIR="/data/forkswap"
 readonly CURRENT_FORK_FILE="/data/forkswap/current_fork.txt"
+readonly OPERATIONS_DIR="/data/forkswap/operations"
+readonly PENDING_SWITCH_FILE="/data/forkswap/pending_switch.json"
 readonly PARAMS_PATH="/data/params"
 readonly LOG_FILE="/data/forkswap/fork_swap.log"
 readonly CONFIG_FILE="/data/forkswap/config.json"
@@ -2705,6 +2707,15 @@ ensure_directories() {
         }
     fi
 
+    # Create operations directory
+    if [[ ! -d "$OPERATIONS_DIR" ]]; then
+        log_info "Creating operations directory: $OPERATIONS_DIR"
+        mkdir -p "$OPERATIONS_DIR" || {
+            log_error "Failed to create operations directory"
+            return 1
+        }
+    fi
+
     return 0
 }
 
@@ -3162,6 +3173,201 @@ touch_fork_info() {
     timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
     update_fork_info "$fork_name" "updated_at" "$timestamp"
+}
+
+#--- Pending Switch Safety ---
+
+pending_switch_read_kv() {
+    local file="$PENDING_SWITCH_FILE"
+    if [[ ! -f "$file" ]]; then
+        return 1
+    fi
+
+    if command -v jq &>/dev/null; then
+        jq -r '. as $d | ["operation_id","old_fork","new_fork","agnos_mode","device_agnos","target_agnos","status"][] as $k | "\($k)\t\($d[$k] // "")"' "$file" 2>/dev/null
+        return $?
+    fi
+
+    if command -v python3 &>/dev/null; then
+        python3 - "$file" <<'PY'
+import json, sys
+path = sys.argv[1]
+try:
+    data = json.load(open(path))
+except Exception:
+    sys.exit(1)
+keys = ["operation_id", "old_fork", "new_fork", "agnos_mode", "device_agnos", "target_agnos", "status"]
+for key in keys:
+    value = data.get(key, "")
+    if value is None:
+        value = ""
+    print(f"{key}\t{value}")
+PY
+        return $?
+    fi
+
+    return 1
+}
+
+pending_switch_update() {
+    local status="$1"
+    local reason="${2:-}"
+    local file="$PENDING_SWITCH_FILE"
+    if [[ ! -f "$file" ]]; then
+        return 1
+    fi
+
+    if command -v python3 &>/dev/null; then
+        python3 - "$file" "$status" "$reason" <<'PY'
+import json, sys
+path = sys.argv[1]
+status = sys.argv[2]
+reason = sys.argv[3] if len(sys.argv) > 3 else ""
+try:
+    data = json.load(open(path))
+except Exception:
+    sys.exit(1)
+data["status"] = status
+data["updated_at"] = __import__("datetime").datetime.utcnow().isoformat() + "Z"
+if reason:
+    data["rollback_reason"] = reason
+tmp = path + ".tmp"
+with open(tmp, "w") as f:
+    json.dump(data, f, indent=2)
+__import__("os").replace(tmp, path)
+PY
+        return $?
+    fi
+
+    if command -v jq &>/dev/null; then
+        local tmp="${file}.tmp"
+        if jq --arg status "$status" --arg reason "$reason" '.status = $status | .updated_at = now | if $reason != "" then .rollback_reason = $reason else . end' "$file" > "$tmp" 2>/dev/null; then
+            mv -f "$tmp" "$file"
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+pending_switch_archive() {
+    local op_id="$1"
+    local file="$PENDING_SWITCH_FILE"
+    if [[ -z "$op_id" || ! -f "$file" ]]; then
+        return 0
+    fi
+    local dest_dir="$OPERATIONS_DIR/$op_id"
+    mkdir -p "$dest_dir" 2>/dev/null || true
+    mv -f "$file" "$dest_dir/result.json" 2>/dev/null || true
+}
+
+operation_record_update() {
+    local op_id="$1"
+    local status="$2"
+    local reason="${3:-}"
+    local op_file="$OPERATIONS_DIR/${op_id}.json"
+    if [[ -z "$op_id" || ! -f "$op_file" ]]; then
+        return 0
+    fi
+
+    if command -v python3 &>/dev/null; then
+        python3 - "$op_file" "$status" "$reason" <<'PY'
+import json, sys
+path = sys.argv[1]
+status = sys.argv[2]
+reason = sys.argv[3] if len(sys.argv) > 3 else ""
+try:
+    data = json.load(open(path))
+except Exception:
+    sys.exit(0)
+data["boot_status"] = status
+data["boot_checked_at"] = __import__("datetime").datetime.utcnow().isoformat() + "Z"
+if reason:
+    data["rollback_reason"] = reason
+tmp = path + ".tmp"
+with open(tmp, "w") as f:
+    json.dump(data, f, indent=2)
+__import__("os").replace(tmp, path)
+PY
+        return $?
+    fi
+
+    if command -v jq &>/dev/null; then
+        local tmp="${op_file}.tmp"
+        if jq --arg status "$status" --arg reason "$reason" '.boot_status = $status | .boot_checked_at = now | if $reason != "" then .rollback_reason = $reason else . end' "$op_file" > "$tmp" 2>/dev/null; then
+            mv -f "$tmp" "$op_file"
+        fi
+    fi
+}
+
+check_pending_switch_rollback() {
+    if [[ ! -f "$PENDING_SWITCH_FILE" ]]; then
+        return 0
+    fi
+
+    local op_id="" old_fork="" new_fork="" agnos_mode="" target_agnos="" device_agnos=""
+    while IFS=$'\t' read -r key value; do
+        case "$key" in
+            operation_id) op_id="$value" ;;
+            old_fork) old_fork="$value" ;;
+            new_fork) new_fork="$value" ;;
+            agnos_mode) agnos_mode="$value" ;;
+            target_agnos) target_agnos="$value" ;;
+            device_agnos) device_agnos="$value" ;;
+        esac
+    done < <(pending_switch_read_kv || true)
+
+    if [[ -z "$old_fork" || -z "$new_fork" ]]; then
+        log_warn "Pending switch file missing required fields; clearing"
+        pending_switch_update "invalid" "missing_fields" || true
+        pending_switch_archive "$op_id"
+        return 0
+    fi
+
+    local current_fork
+    current_fork=$(get_current_fork)
+    if [[ -n "$current_fork" && "$current_fork" != "$new_fork" ]]; then
+        log_warn "Pending switch found but current fork is $current_fork"
+        pending_switch_update "abandoned" "current_fork_mismatch" || true
+        operation_record_update "$op_id" "abandoned" "current_fork_mismatch"
+        pending_switch_archive "$op_id"
+        return 0
+    fi
+
+    local active_agnos="unknown"
+    if [[ -f /VERSION ]]; then
+        active_agnos=$(cat /VERSION 2>/dev/null || echo "unknown")
+    fi
+
+    if [[ "$agnos_mode" == "device" && -n "$target_agnos" && "$target_agnos" != "unknown" && "$active_agnos" != "$target_agnos" ]]; then
+        log_error "AGNOS mismatch after device-mode switch (device: $active_agnos, required: $target_agnos)"
+        log_info "Auto-rolling back to $old_fork"
+
+        local prev_interactive="$RUN_INTERACTIVE"
+        local prev_force="$FORCE_MODE"
+        RUN_INTERACTIVE=false
+        FORCE_MODE=true
+
+        if switch_fork "$old_fork"; then
+            pending_switch_update "rollback_complete" "agnos_update_failed" || true
+            operation_record_update "$op_id" "rolled_back" "agnos_update_failed"
+            pending_switch_archive "$op_id"
+            log_info "Rollback complete; now on $old_fork"
+        else
+            pending_switch_update "rollback_failed" "agnos_update_failed" || true
+            operation_record_update "$op_id" "rollback_failed" "agnos_update_failed"
+            log_error "CRITICAL: rollback failed; manual intervention required"
+        fi
+
+        RUN_INTERACTIVE="$prev_interactive"
+        FORCE_MODE="$prev_force"
+        return 0
+    fi
+
+    pending_switch_update "success" "" || true
+    operation_record_update "$op_id" "success" ""
+    pending_switch_archive "$op_id"
+    log_info "Pending switch verified successfully"
 }
 
 #--- Boot Success Tracking ---
@@ -9183,6 +9389,9 @@ main() {
 
     # Create convenience symlinks for easy access
     create_convenience_symlink
+
+    # Check for pending switch and auto-rollback if needed
+    check_pending_switch_rollback
 
     # Track boot success - if we're running, the device booted successfully
     # This records "last_boot_success" and increments boot_count in fork_info.json

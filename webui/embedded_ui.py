@@ -859,6 +859,10 @@ def get_embedded_html(version: str = "0.0.0"):
                         </div>
                         <div class="operation-panel-meta">Checking current operations...</div>
                     </div>
+                    <div class="health-errors" id="switch-summary">
+                        <div class="logs-section-title">Last Switch Attempt</div>
+                        <div class="logs-empty">Loading switch status...</div>
+                    </div>
                     <div class="health-issues" id="health-issues">
                         <div class="logs-section-title">Issues & Actions</div>
                         <div class="logs-empty">Loading health checks...</div>
@@ -1648,6 +1652,44 @@ EMBEDDED_JS = '''
             if (op.elapsed_seconds) parts.push("Elapsed " + formatDuration(Math.round(op.elapsed_seconds)));
             opMeta = parts.join(" | ");
         }
+        var switchInfo = health.switch || {};
+        var pendingSwitch = switchInfo.pending || null;
+        var lastSwitch = switchInfo.last || null;
+        var switchValue = "None";
+        var switchMeta = "No switch attempts recorded";
+        var switchClass = "ok";
+        if (pendingSwitch && pendingSwitch.new_fork) {
+            switchValue = "Pending";
+            switchClass = "warn";
+            var pendingAge = pendingSwitch.age_seconds ? formatDuration(pendingSwitch.age_seconds) : "unknown";
+            switchMeta = "To " + pendingSwitch.new_fork + " | " + pendingAge + " elapsed";
+        } else if (lastSwitch && lastSwitch.target) {
+            if (lastSwitch.boot_status === "success") {
+                switchValue = "Success";
+                switchClass = "ok";
+            } else if (lastSwitch.boot_status === "rolled_back") {
+                switchValue = "Rolled Back";
+                switchClass = "warn";
+            } else if (lastSwitch.boot_status === "rollback_failed") {
+                switchValue = "Rollback Failed";
+                switchClass = "err";
+            } else if (lastSwitch.success === false || lastSwitch.status === "failed") {
+                switchValue = "Failed";
+                switchClass = "err";
+            } else if (lastSwitch.status === "running") {
+                switchValue = "Running";
+                switchClass = "warn";
+            } else {
+                switchValue = lastSwitch.status || "Unknown";
+                switchClass = "warn";
+            }
+            var switchWhen = lastSwitch.ended_at || lastSwitch.started_at || "";
+            var switchWhenLabel = switchWhen ? formatLogTimestamp(switchWhen) : "unknown time";
+            switchMeta = "Fork: " + (lastSwitch.target || "unknown") + " | " + switchWhenLabel;
+            if (lastSwitch.rollback_reason) {
+                switchMeta += " | " + lastSwitch.rollback_reason;
+            }
+        }
         var agnos = health.system ? health.system.agnos || {} : {};
         var invalidCount = agnos.invalid_count || 0;
         var agnosValue = invalidCount > 0 ? invalidCount + " invalid" : "OK";
@@ -1675,6 +1717,7 @@ EMBEDDED_JS = '''
             { label: "Network", value: networkValue, meta: networkMeta, badge: true, cls: networkClass },
             { label: "CLI Lock", value: lockValue, meta: lockMeta, badge: true, cls: lockClass },
             { label: "Operation", value: opValue, meta: opMeta, badge: true, cls: opClass },
+            { label: "Last Switch", value: switchValue, meta: switchMeta, badge: true, cls: switchClass },
             { label: "AGNOS Cache", value: agnosValue, meta: agnosMeta, badge: true, cls: agnosClass },
             { label: "Logs", value: webuiKb, meta: logMeta, badge: false, cls: "ok" },
             { label: serviceLabel, value: serviceValue, meta: serviceMeta, badge: true, cls: serviceClass },
@@ -1710,6 +1753,50 @@ EMBEDDED_JS = '''
         if (op.id) meta += "<div>Operation ID: " + escapeHtml(op.id) + "</div>";
         var logLine = op.latest_log ? op.latest_log : "Waiting for log output...";
         container.innerHTML = "<div class=\\"operation-panel-header\\"><div class=\\"operation-panel-title\\">" + escapeHtml(title) + "</div><span class=\\"status-badge warn\\">Active</span></div><div class=\\"operation-panel-meta\\">" + meta + "</div><div class=\\"operation-log-line\\">" + escapeHtml(logLine) + "</div>";
+    }
+    function renderSwitchSummary(health) {
+        var container = document.getElementById("switch-summary");
+        if (!container) return;
+        var info = health && health.switch ? health.switch : {};
+        var pending = info.pending || null;
+        var last = info.last || null;
+        var html = "<div class=\\"logs-section-title\\">Last Switch Attempt</div>";
+        if (pending && pending.new_fork) {
+            var pendingAge = pending.age_seconds ? formatDuration(pending.age_seconds) : "unknown";
+            var modeLabel = pending.agnos_mode === "cache" ? "cache flash" : "device update";
+            var meta = "Switching to " + pending.new_fork + " | " + modeLabel + " | " + pendingAge + " elapsed";
+            html += "<div class=\\"issue-item\\"><div><div class=\\"issue-title\\">Pending switch</div><div class=\\"issue-meta\\">" + escapeHtml(meta) + "</div></div><div class=\\"issue-actions\\"><span class=\\"issue-pill warning\\">PENDING</span></div></div>";
+        } else if (last && last.target) {
+            var statusLabel = "UNKNOWN";
+            var statusClass = "warning";
+            if (last.boot_status === "success") {
+                statusLabel = "SUCCESS";
+                statusClass = "info";
+            } else if (last.boot_status === "rolled_back") {
+                statusLabel = "ROLLED BACK";
+                statusClass = "warning";
+            } else if (last.boot_status === "rollback_failed") {
+                statusLabel = "ROLLBACK FAILED";
+                statusClass = "error";
+            } else if (last.success === false || last.status === "failed") {
+                statusLabel = "FAILED";
+                statusClass = "error";
+            } else if (last.status === "running") {
+                statusLabel = "RUNNING";
+                statusClass = "warning";
+            } else if (last.status) {
+                statusLabel = last.status.toUpperCase();
+                statusClass = "warning";
+            }
+            var when = last.ended_at || last.started_at || "";
+            var whenLabel = when ? formatLogTimestamp(when) : "unknown time";
+            var meta = "Fork: " + last.target + " | " + whenLabel;
+            if (last.rollback_reason) meta += " | " + last.rollback_reason;
+            html += "<div class=\\"issue-item\\"><div><div class=\\"issue-title\\">" + escapeHtml(last.target) + "</div><div class=\\"issue-meta\\">" + escapeHtml(meta) + "</div></div><div class=\\"issue-actions\\"><span class=\\"issue-pill " + statusClass + "\\">" + escapeHtml(statusLabel) + "</span></div></div>";
+        } else {
+            html += "<div class=\\"logs-empty\\">No switch attempts recorded</div>";
+        }
+        container.innerHTML = html;
     }
     function renderHealthIssues(issues) {
         var container = document.getElementById("health-issues");
@@ -1819,11 +1906,13 @@ EMBEDDED_JS = '''
             state.health = data;
             renderHealth(data);
             renderOperationPanel(data);
+            renderSwitchSummary(data);
             renderHealthIssues(data.issues || []);
         }).catch(function(err) {
             console.error("Failed to fetch health:", err);
             renderHealth(null);
             renderOperationPanel(null);
+            renderSwitchSummary(null);
             var container = document.getElementById("health-issues");
             if (container) {
                 container.innerHTML = "<div class=\\"logs-section-title\\">Issues & Actions</div><div class=\\"logs-empty\\">Failed to load health checks</div>";
@@ -2156,13 +2245,13 @@ EMBEDDED_JS = '''
             if (!isCompatible && forkAgnos !== "unknown" && state.deviceAgnosVersion !== "unknown") {
                 if (agnosCached) {
                     // AGNOS is cached - can flash locally (fast)
-                    modal.open("🔄 AGNOS Update Available", "<div style=\\"background: rgba(34,197,94,0.1); border: 1px solid rgba(34,197,94,0.3); border-radius: 8px; padding: 16px; margin-bottom: 16px;\\"><p style=\\"margin: 0; color: #22c55e;\\"><strong>✓ AGNOS " + escapeHtml(forkAgnos) + " is cached and ready</strong></p><p style=\\"margin: 8px 0 0 0; color: var(--op-text-secondary);\\">Flash from cache for a faster switch (2-5 min)</p></div><div style=\\"background: var(--op-bg-elevated); border-radius: 8px; padding: 12px; margin-bottom: 16px;\\"><p style=\\"margin: 0; font-size: 13px;\\">Current: <strong>AGNOS " + escapeHtml(state.deviceAgnosVersion) + "</strong> → New: <strong>AGNOS " + escapeHtml(forkAgnos) + "</strong></p></div><p style=\\"color: var(--op-text-muted);\\">Switch now to let the device handle the OS update on reboot, or flash from cache for speed.</p>", [{ label: "Cancel", onclick: "modal.close()" }, { label: "Flash from Cache", cls: "btn-secondary", onclick: "app.switchFork('" + escapeHtml(forkName) + "', 'cache')" }, { label: "Switch Now", cls: "btn-primary", onclick: "app.switchFork('" + escapeHtml(forkName) + "', 'device')" }]);
+                    modal.open("⚠️ AGNOS Update Required", "<div style=\\"background: var(--op-bg-elevated); border-radius: 8px; padding: 12px; margin-bottom: 16px;\\"><p style=\\"margin: 0; font-size: 13px;\\">Current: <strong>AGNOS " + escapeHtml(state.deviceAgnosVersion) + "</strong> → Required: <strong>AGNOS " + escapeHtml(forkAgnos) + "</strong></p></div><div style=\\"background: rgba(34,197,94,0.1); border: 1px solid rgba(34,197,94,0.3); border-radius: 8px; padding: 16px; margin-bottom: 16px;\\"><p style=\\"margin: 0; color: #22c55e;\\"><strong>✓ Cached and ready</strong></p><p style=\\"margin: 8px 0 0 0; color: var(--op-text-secondary);\\">Flash from cache for a faster, safer switch (2-5 min)</p></div><div style=\\"background: rgba(255,140,0,0.1); border: 1px solid rgba(255,140,0,0.3); border-radius: 8px; padding: 12px;\\"><p style=\\"margin: 0; color: var(--op-text-secondary);\\">Device update uses internet on reboot and can take 10-15+ minutes. If it fails, auto-rollback will restore the previous fork.</p></div>", [{ label: "Cancel", onclick: "modal.close()" }, { label: "Flash from Cache (Recommended)", cls: "btn-secondary", onclick: "app.switchFork('" + escapeHtml(forkName) + "', 'cache')" }, { label: "Switch Now (Device Update)", cls: "btn-primary", onclick: "app.switchFork('" + escapeHtml(forkName) + "', 'device')" }]);
                 } else if (agnosInvalid) {
                     var missingText = agnosMissing.join(", ");
-                    modal.open("⚠️ AGNOS Cache Invalid", "<div style=\\"background: rgba(255,140,0,0.1); border: 1px solid rgba(255,140,0,0.3); border-radius: 8px; padding: 16px; margin-bottom: 16px;\\"><p style=\\"margin: 0; color: #ff8c00;\\"><strong>AGNOS " + escapeHtml(forkAgnos) + " cache is incomplete</strong></p><p style=\\"margin: 8px 0 0 0; color: var(--op-text-secondary);\\">Missing files: " + escapeHtml(missingText) + "</p></div><div style=\\"background: var(--op-bg-elevated); border-radius: 8px; padding: 12px; margin-bottom: 16px;\\"><p style=\\"margin: 0; font-size: 13px;\\">Current: <strong>AGNOS " + escapeHtml(state.deviceAgnosVersion) + "</strong> → Required: <strong>AGNOS " + escapeHtml(forkAgnos) + "</strong></p></div><p style=\\"color: var(--op-text-muted);\\">You can switch now and let the device update, or repair the cache for a faster switch later.</p>", [{ label: "Cancel", onclick: "modal.close()" }, { label: "Repair Cache", cls: "btn-secondary", onclick: "modal.close(); app.prepareAgnos('" + escapeHtml(forkName) + "', '" + escapeHtml(forkAgnos) + "');" }, { label: "Switch Now", cls: "btn-primary", onclick: "app.switchFork('" + escapeHtml(forkName) + "', 'device')" }]);
+                    modal.open("⚠️ AGNOS Cache Invalid", "<div style=\\"background: var(--op-bg-elevated); border-radius: 8px; padding: 12px; margin-bottom: 16px;\\"><p style=\\"margin: 0; font-size: 13px;\\">Current: <strong>AGNOS " + escapeHtml(state.deviceAgnosVersion) + "</strong> → Required: <strong>AGNOS " + escapeHtml(forkAgnos) + "</strong></p></div><div style=\\"background: rgba(255,140,0,0.1); border: 1px solid rgba(255,140,0,0.3); border-radius: 8px; padding: 16px; margin-bottom: 16px;\\"><p style=\\"margin: 0; color: #ff8c00;\\"><strong>Cache incomplete</strong></p><p style=\\"margin: 8px 0 0 0; color: var(--op-text-secondary);\\">Missing files: " + escapeHtml(missingText) + "</p></div><div style=\\"background: rgba(255,140,0,0.1); border: 1px solid rgba(255,140,0,0.3); border-radius: 8px; padding: 12px;\\"><p style=\\"margin: 0; color: var(--op-text-secondary);\\">Device update uses internet on reboot and can take 10-15+ minutes. If it fails, auto-rollback will restore the previous fork.</p></div>", [{ label: "Cancel", onclick: "modal.close()" }, { label: "Repair Cache", cls: "btn-secondary", onclick: "modal.close(); app.prepareAgnos('" + escapeHtml(forkName) + "', '" + escapeHtml(forkAgnos) + "');" }, { label: "Switch Now (Device Update)", cls: "btn-primary", onclick: "app.switchFork('" + escapeHtml(forkName) + "', 'device')" }]);
                 } else {
                     // AGNOS not cached - need to download first
-                    modal.open("⚠️ AGNOS Not Cached", "<div style=\\"background: rgba(255,140,0,0.1); border: 1px solid rgba(255,140,0,0.3); border-radius: 8px; padding: 16px; margin-bottom: 16px;\\"><p style=\\"margin: 0; color: #ff8c00;\\"><strong>AGNOS " + escapeHtml(forkAgnos) + " is not cached</strong></p><p style=\\"margin: 8px 0 0 0; color: var(--op-text-secondary);\\">Prepare OS to speed up a future switch</p></div><div style=\\"background: var(--op-bg-elevated); border-radius: 8px; padding: 12px; margin-bottom: 16px;\\"><p style=\\"margin: 0; font-size: 13px;\\">Current: <strong>AGNOS " + escapeHtml(state.deviceAgnosVersion) + "</strong> → Required: <strong>AGNOS " + escapeHtml(forkAgnos) + "</strong></p></div><p style=\\"color: var(--op-text-muted);\\">You can switch now and let the device update on reboot, or prepare OS to pre-download the cache.</p>", [{ label: "Cancel", onclick: "modal.close()" }, { label: "Prepare OS", cls: "btn-secondary", onclick: "modal.close(); app.prepareAgnos('" + escapeHtml(forkName) + "', '" + escapeHtml(forkAgnos) + "');" }, { label: "Switch Now", cls: "btn-primary", onclick: "app.switchFork('" + escapeHtml(forkName) + "', 'device')" }]);
+                    modal.open("⚠️ AGNOS Not Cached", "<div style=\\"background: var(--op-bg-elevated); border-radius: 8px; padding: 12px; margin-bottom: 16px;\\"><p style=\\"margin: 0; font-size: 13px;\\">Current: <strong>AGNOS " + escapeHtml(state.deviceAgnosVersion) + "</strong> → Required: <strong>AGNOS " + escapeHtml(forkAgnos) + "</strong></p></div><div style=\\"background: rgba(255,140,0,0.1); border: 1px solid rgba(255,140,0,0.3); border-radius: 8px; padding: 16px; margin-bottom: 16px;\\"><p style=\\"margin: 0; color: #ff8c00;\\"><strong>Not cached</strong></p><p style=\\"margin: 8px 0 0 0; color: var(--op-text-secondary);\\">Prepare OS to speed up a future switch</p></div><div style=\\"background: rgba(255,140,0,0.1); border: 1px solid rgba(255,140,0,0.3); border-radius: 8px; padding: 12px;\\"><p style=\\"margin: 0; color: var(--op-text-secondary);\\">Device update uses internet on reboot and can take 10-15+ minutes. If it fails, auto-rollback will restore the previous fork.</p></div>", [{ label: "Cancel", onclick: "modal.close()" }, { label: "Prepare OS", cls: "btn-secondary", onclick: "modal.close(); app.prepareAgnos('" + escapeHtml(forkName) + "', '" + escapeHtml(forkAgnos) + "');" }, { label: "Switch Now (Device Update)", cls: "btn-primary", onclick: "app.switchFork('" + escapeHtml(forkName) + "', 'device')" }]);
                 }
             } else {
                 modal.open("Switch Fork", "<p>Are you sure you want to switch to <strong>" + escapeHtml(forkName) + "</strong>?</p><p style=\\"color: var(--op-text-muted); margin-top: 12px;\\">The device will reboot after switching.</p>", [{ label: "Cancel", onclick: "modal.close()" }, { label: "Switch & Reboot", cls: "btn-primary", onclick: "app.switchFork('" + escapeHtml(forkName) + "', 'device')" }]);

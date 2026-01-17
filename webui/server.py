@@ -67,6 +67,8 @@ AGNOS_CACHE_DIR = Path(os.environ.get("FORKSWAP_AGNOS_CACHE_DIR", str(FORKSWAP_D
 PROGRESS_DIR = Path(os.environ.get("FORKSWAP_PROGRESS_DIR", str(FORKSWAP_DIR / "progress")))
 FORKSWAP_LOG_PATH = Path(os.environ.get("FORKSWAP_FORK_SWAP_LOG", str(FORKSWAP_DIR / "fork_swap.log")))
 OPERATIONS_DIR = Path(os.environ.get("FORKSWAP_OPERATIONS_DIR", str(FORKSWAP_DIR / "operations")))
+PARAMS_DIR = Path(os.environ.get("FORKSWAP_PARAMS_DIR", "/data/params/d"))
+PENDING_SWITCH_PATH = Path(os.environ.get("FORKSWAP_PENDING_SWITCH", str(FORKSWAP_DIR / "pending_switch.json")))
 
 # Optional token authentication (set in config.json or env var)
 # If set, all API requests must include "Authorization: Bearer <token>" header
@@ -639,6 +641,96 @@ def finalize_operation_record(op_id: str, success: bool, **details) -> None:
     update_operation_record(op_id, updates)
 
 
+def _write_json_atomic(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = Path(str(path) + ".tmp")
+    temp_path.write_text(json.dumps(payload, indent=2))
+    temp_path.replace(path)
+
+
+def _read_param_value(name: str) -> Optional[str]:
+    path = PARAMS_DIR / name
+    if not path.exists():
+        return None
+    try:
+        return path.read_text().strip()
+    except Exception:
+        return None
+
+
+def get_updater_snapshot() -> dict:
+    keys = [
+        "UpdaterState",
+        "UpdateAvailable",
+        "UpdateFailedCount",
+        "UpdaterTargetBranch",
+        "UpdaterCurrentDescription",
+        "UpdaterNewDescription",
+    ]
+    snapshot = {}
+    for key in keys:
+        value = _read_param_value(key)
+        if value is not None:
+            snapshot[key] = value
+    return snapshot
+
+
+def get_pending_switch() -> Optional[dict]:
+    if not PENDING_SWITCH_PATH.exists():
+        return None
+    try:
+        return json.loads(PENDING_SWITCH_PATH.read_text())
+    except Exception:
+        return None
+
+
+def write_pending_switch(payload: dict) -> None:
+    _write_json_atomic(PENDING_SWITCH_PATH, payload)
+
+
+def snapshot_pre_switch_state(
+    op_id: str,
+    pending_payload: dict,
+    device_agnos: str,
+    target_agnos: str,
+    agnos_mode: str,
+) -> dict:
+    snapshot_dir = OPERATIONS_DIR / op_id
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+
+    record = get_operation_record(op_id) or {}
+    _write_json_atomic(snapshot_dir / "operation.json", record)
+
+    webui_tail = read_log_tail(LOG_FILE, max_lines=100)
+    forkswap_tail = read_log_tail(FORKSWAP_LOG_PATH, max_lines=100)
+    (snapshot_dir / "webui.log.tail").write_text("\n".join(webui_tail))
+    (snapshot_dir / "fork_swap.log.tail").write_text("\n".join(forkswap_tail))
+
+    updater_state = get_updater_snapshot()
+    _write_json_atomic(snapshot_dir / "updater_state.json", updater_state)
+
+    cache_status = get_agnos_cache_status(target_agnos) if target_agnos else {}
+    verify_status = get_agnos_verification(target_agnos) if target_agnos else None
+    agnos_status = {
+        "device_agnos": device_agnos,
+        "target_agnos": target_agnos,
+        "agnos_mode": agnos_mode,
+        "cache": cache_status,
+        "verify": verify_status,
+    }
+    _write_json_atomic(snapshot_dir / "agnos_status.json", agnos_status)
+
+    snapshot_summary = {
+        "snapshot_dir": str(snapshot_dir),
+        "snapshot_time": datetime.now().isoformat(),
+        "pending_switch": pending_payload,
+        "updater_state": updater_state,
+        "agnos_status": agnos_status,
+    }
+    update_operation_record(op_id, {"pre_switch_snapshot": snapshot_summary})
+    return snapshot_summary
+
+
 def list_operation_records(limit: int = 25) -> list[dict]:
     if not OPERATIONS_DIR.exists():
         return []
@@ -683,6 +775,43 @@ def get_operation_record(op_id: str) -> Optional[dict]:
         return json.loads(path.read_text())
     except Exception:
         return None
+
+
+def get_last_switch_record() -> Optional[dict]:
+    if not OPERATIONS_DIR.exists():
+        return None
+    latest_record = None
+    latest_ts = 0.0
+    for path in OPERATIONS_DIR.glob("switch_*.json"):
+        try:
+            record = json.loads(path.read_text())
+        except Exception:
+            continue
+        ts = record.get("started_at")
+        if ts:
+            try:
+                ts_val = datetime.fromisoformat(ts).timestamp()
+            except Exception:
+                ts_val = 0.0
+        else:
+            ts_val = 0.0
+        if ts_val > latest_ts:
+            latest_ts = ts_val
+            latest_record = record
+    if not latest_record:
+        return None
+    return {
+        "id": latest_record.get("id"),
+        "target": latest_record.get("target"),
+        "status": latest_record.get("status"),
+        "success": latest_record.get("success"),
+        "started_at": latest_record.get("started_at"),
+        "ended_at": latest_record.get("ended_at"),
+        "message": latest_record.get("message"),
+        "error_code": latest_record.get("error_code"),
+        "boot_status": latest_record.get("boot_status"),
+        "rollback_reason": latest_record.get("rollback_reason"),
+    }
 
 
 def prune_operation_records(max_days: int = 7, max_count: int = 200) -> dict:
@@ -1392,6 +1521,69 @@ def get_fork_dir_by_name(fork_name: str) -> Optional[Path]:
                 return fork_path
 
     return None
+
+
+def get_fork_openpilot_dir(fork_dir: Path) -> Path:
+    """Return the openpilot directory inside a fork (or the fork dir itself)."""
+    op_dir = fork_dir / "openpilot"
+    return op_dir if op_dir.exists() else fork_dir
+
+
+def read_fork_info_json(fork_dir: Path) -> dict:
+    info_path = fork_dir / "fork_info.json"
+    if not info_path.exists():
+        return {}
+    try:
+        return json.loads(info_path.read_text())
+    except Exception:
+        return {}
+
+
+def validate_fork_bootable(fork_name: str) -> tuple[bool, list[str], list[str]]:
+    """
+    Validate that a fork has the required launch artifacts and metadata.
+    Returns (can_switch, errors, warnings).
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    fork_dir = get_fork_dir_by_name(fork_name)
+    if not fork_dir:
+        if TEST_MODE:
+            return True, [], ["Test mode: skipping fork boot validation"]
+        return False, ["Fork directory not found"], []
+
+    op_dir = get_fork_openpilot_dir(fork_dir)
+    launch_openpilot = op_dir / "launch_openpilot.sh"
+    launch_chffrplus = op_dir / "launch_chffrplus.sh"
+    if not launch_openpilot.exists() and not launch_chffrplus.exists():
+        errors.append("No launch script found (launch_openpilot.sh or launch_chffrplus.sh)")
+
+    launch_env = op_dir / "launch_env.sh"
+    if not launch_env.exists():
+        errors.append("launch_env.sh not found - cannot determine AGNOS requirements")
+
+    fork_agnos = get_fork_agnos_version(fork_dir)
+    if fork_agnos == "unknown":
+        errors.append("AGNOS_VERSION not found in launch_env.sh")
+
+    device_agnos = get_device_agnos_version()
+    if device_agnos != "unknown" and fork_agnos != "unknown" and device_agnos != fork_agnos:
+        cache_status = get_agnos_cache_status(fork_agnos)
+        verify_status = get_agnos_verification(fork_agnos)
+        cache_ok = cache_status.get("complete") and (verify_status is None or verify_status.get("valid"))
+        if not cache_ok:
+            warnings.append(f"AGNOS {fork_agnos} required but cache is not verified")
+
+    fork_info = read_fork_info_json(fork_dir)
+    if fork_info and not fork_info.get("last_boot_success") and not fork_info.get("boot_count"):
+        warnings.append("This fork has never successfully booted on this device")
+
+    git_lock = op_dir / ".git" / "index.lock"
+    if git_lock.exists():
+        warnings.append("Git index.lock exists - previous operation may have been interrupted")
+
+    return len(errors) == 0, errors, warnings
 
 
 def prepare_agnos_for_switch(
@@ -2119,6 +2311,23 @@ def run_preflight_checks(op_type: str, fork_name: str | None = None,
             "Another operation is already running",
             "Wait for the current operation to finish."
         ))
+
+    if op_type == "switch" and fork_name:
+        can_switch, boot_errors, boot_warnings = validate_fork_bootable(fork_name)
+        for item in boot_errors:
+            errors.append(_preflight_item(
+                "error",
+                "boot_validation",
+                item,
+                "Fix the fork install before switching."
+            ))
+        for item in boot_warnings:
+            warnings.append(_preflight_item(
+                "warning",
+                "boot_warning",
+                item,
+                "Review before switching."
+            ))
 
     if op_type == "clone":
         network = check_network_status()
@@ -3112,6 +3321,16 @@ if USE_AIOHTTP:
                 latest_log_source = "webui"
                 latest_log_line = read_latest_log_line(LOG_FILE)
 
+        pending_switch = get_pending_switch()
+        if pending_switch and pending_switch.get("start_time"):
+            try:
+                started = datetime.fromisoformat(pending_switch["start_time"])
+                pending_switch["age_seconds"] = max(0, round((datetime.now() - started).total_seconds()))
+            except Exception:
+                pass
+
+        last_switch = get_last_switch_record()
+
         system = {
             "disk_free_gb": get_disk_free_gb(),
             "network": check_network_status(),
@@ -3147,6 +3366,10 @@ if USE_AIOHTTP:
             "rate_limit": get_rate_limit_status(ip),
             "system": system,
             "issues": issues,
+            "switch": {
+                "pending": pending_switch,
+                "last": last_switch,
+            },
         }
         return json_response(data, status=200 if health_status == "healthy" else 503)
 
@@ -3301,9 +3524,12 @@ if USE_AIOHTTP:
                     status=409
                 )
             agnos_device_update = False
+            device_agnos = get_device_agnos_version()
+            target_agnos = "unknown"
+            if fork_info:
+                target_agnos = fork_info.get("agnos_version", "unknown")
             if agnos_mode == "device" and fork_info:
-                fork_agnos = fork_info.get("agnos_version", "unknown")
-                agnos_device_update = not is_agnos_compatible(fork_agnos)
+                agnos_device_update = not is_agnos_compatible(target_agnos)
 
             async with operation_lock:
                 op_inputs = {"fork": fork_name, "agnos_mode": agnos_mode}
@@ -3390,6 +3616,20 @@ if USE_AIOHTTP:
                     success, output = await asyncio.to_thread(run_fork_swap, "switch", fork_name)
 
                     if success:
+                        pending_payload = {
+                            "operation_id": op_id,
+                            "old_fork": old_fork or "",
+                            "new_fork": fork_name,
+                            "agnos_mode": agnos_mode,
+                            "device_agnos": device_agnos,
+                            "target_agnos": target_agnos,
+                            "start_time": datetime.now().isoformat(),
+                            "status": "pending",
+                        }
+                        write_pending_switch(pending_payload)
+                        snapshot_pre_switch_state(op_id, pending_payload, device_agnos, target_agnos, agnos_mode)
+                        update_operation_record(op_id, {"pending_switch": pending_payload})
+
                         set_operation_progress("reboot", 100, "Rebooting")
                         logger.info(f"Switch successful, scheduling reboot")
                         asyncio.create_task(delayed_reboot(3))
@@ -4424,9 +4664,12 @@ if not USE_AIOHTTP:
                 self.send_json({"success": False, "message": "Preflight checks failed", "preflight": preflight}, 409)
                 return
             agnos_device_update = False
+            device_agnos = get_device_agnos_version()
+            target_agnos = "unknown"
+            if fork_info:
+                target_agnos = fork_info.get("agnos_version", "unknown")
             if agnos_mode == "device" and fork_info:
-                fork_agnos = fork_info.get("agnos_version", "unknown")
-                agnos_device_update = not is_agnos_compatible(fork_agnos)
+                agnos_device_update = not is_agnos_compatible(target_agnos)
             with operation_lock:
                 op_inputs = {"fork": fork_name, "agnos_mode": agnos_mode}
                 op_id = start_operation_record("switch", fork_name, op_inputs)
@@ -4502,6 +4745,20 @@ if not USE_AIOHTTP:
                     logger.info(f"Switching symlink to fork: {fork_name}")
                     success, output = run_fork_swap("switch", fork_name)
                     if success:
+                        pending_payload = {
+                            "operation_id": op_id,
+                            "old_fork": old_fork or "",
+                            "new_fork": fork_name,
+                            "agnos_mode": agnos_mode,
+                            "device_agnos": device_agnos,
+                            "target_agnos": target_agnos,
+                            "start_time": datetime.now().isoformat(),
+                            "status": "pending",
+                        }
+                        write_pending_switch(pending_payload)
+                        snapshot_pre_switch_state(op_id, pending_payload, device_agnos, target_agnos, agnos_mode)
+                        update_operation_record(op_id, {"pending_switch": pending_payload})
+
                         msg = f"Switched to {fork_name}."
                         if target_slot is not None:
                             msg += " AGNOS updated."
