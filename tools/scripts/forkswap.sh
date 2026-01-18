@@ -9200,6 +9200,9 @@ display_detailed_help() {
 parse_args() {
     # Track if we should run interactive mode
     RUN_INTERACTIVE=true
+    if [[ ! -t 0 ]]; then
+        RUN_INTERACTIVE=false
+    fi
 
     # Flags for special operations (checked after initialization)
     CMD_SELF_TEST=false
