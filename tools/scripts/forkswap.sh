@@ -7591,10 +7591,14 @@ update_fork() {
     fi
 
     # Confirm update in interactive mode
-    echo ""
-    if ! confirm_action "Apply updates now?"; then
-        log_info "Update cancelled"
-        return 0
+    if [[ "$RUN_INTERACTIVE" == "true" ]]; then
+        echo ""
+        if ! confirm_action "Apply updates now?"; then
+            log_info "Update cancelled"
+            return 0
+        fi
+    else
+        log_info "Non-interactive update: proceeding without prompt"
     fi
 
     # Run pre-update hook
