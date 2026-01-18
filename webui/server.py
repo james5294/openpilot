@@ -1938,7 +1938,7 @@ def download_agnos_images(fork_dir: Path, version: str) -> dict:
 
     def expected_hash_for_file(partition: dict, filename: str, selected_hash: str) -> Optional[str]:
         if filename.endswith(".xz"):
-            return selected_hash or partition.get("hash")
+            return None
         return partition.get("hash_raw") or selected_hash or partition.get("hash")
 
     try:
@@ -1962,36 +1962,44 @@ def download_agnos_images(fork_dir: Path, version: str) -> dict:
             filename = url.split("/")[-1]
             cache_file = cache_dir / filename
             file_expected_hash = expected_hash_for_file(partition, filename, expected_hash)
+            file_expected_size = None if filename.endswith(".xz") else size
 
             _agnos_download_progress[version]["current_file"] = name
 
             # Skip if already downloaded and hash matches
             if cache_file.exists():
-                if file_expected_hash:
-                    try:
-                        actual_hash = hash_file(cache_file)
-                        if actual_hash != file_expected_hash:
-                            logger.warning(
-                                f"AGNOS {name} cached hash mismatch; re-downloading "
-                                f"(expected {file_expected_hash}, got {actual_hash})"
-                            )
-                            cache_file.unlink()
-                        else:
-                            logger.info(f"AGNOS {name} already cached: {filename}")
-                            downloaded_files.append(filename)
-                            bytes_done += cache_file.stat().st_size
-                            _agnos_download_progress[version]["bytes_done"] = bytes_done
-                            _agnos_download_progress[version]["files_done"] = i + 1
-                            continue
-                    except Exception as e:
-                        logger.warning(f"Failed to verify cached {filename}: {e}")
+                if file_expected_size and cache_file.stat().st_size != file_expected_size:
+                    logger.warning(
+                        f"AGNOS {name} cached size mismatch; re-downloading "
+                        f"(expected {file_expected_size}, got {cache_file.stat().st_size})"
+                    )
+                    cache_file.unlink()
                 else:
-                    logger.info(f"AGNOS {name} already cached: {filename}")
-                    downloaded_files.append(filename)
-                    bytes_done += cache_file.stat().st_size
-                    _agnos_download_progress[version]["bytes_done"] = bytes_done
-                    _agnos_download_progress[version]["files_done"] = i + 1
-                    continue
+                    if file_expected_hash:
+                        try:
+                            actual_hash = hash_file(cache_file)
+                            if actual_hash != file_expected_hash:
+                                logger.warning(
+                                    f"AGNOS {name} cached hash mismatch; re-downloading "
+                                    f"(expected {file_expected_hash}, got {actual_hash})"
+                                )
+                                cache_file.unlink()
+                            else:
+                                logger.info(f"AGNOS {name} already cached: {filename}")
+                                downloaded_files.append(filename)
+                                bytes_done += cache_file.stat().st_size
+                                _agnos_download_progress[version]["bytes_done"] = bytes_done
+                                _agnos_download_progress[version]["files_done"] = i + 1
+                                continue
+                        except Exception as e:
+                            logger.warning(f"Failed to verify cached {filename}: {e}")
+                    else:
+                        logger.info(f"AGNOS {name} already cached: {filename}")
+                        downloaded_files.append(filename)
+                        bytes_done += cache_file.stat().st_size
+                        _agnos_download_progress[version]["bytes_done"] = bytes_done
+                        _agnos_download_progress[version]["files_done"] = i + 1
+                        continue
 
             for attempt in range(2):
                 logger.info(f"Downloading AGNOS {name}: {filename}")
@@ -2003,6 +2011,16 @@ def download_agnos_images(fork_dir: Path, version: str) -> dict:
                     _agnos_download_progress[version]["bytes_done"] = bytes_done + downloaded
 
                 urllib.request.urlretrieve(url, cache_file, reporthook=progress_hook)
+
+                if file_expected_size and cache_file.stat().st_size != file_expected_size:
+                    logger.warning(
+                        f"AGNOS {name} download size mismatch; retrying "
+                        f"(expected {file_expected_size}, got {cache_file.stat().st_size})"
+                    )
+                    cache_file.unlink()
+                    if attempt == 0:
+                        continue
+                    raise RuntimeError(f"Size mismatch for {name}")
 
                 if file_expected_hash:
                     try:
