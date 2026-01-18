@@ -2060,25 +2060,55 @@ EMBEDDED_JS = '''
                 if (fork.agnos_cached) requiredMap[fork.agnos_version].cached = true;
             }
         }
-        var requiredHtml = "";
-        for (var ver in requiredMap) {
-            var info = requiredMap[ver];
-            var isDownloading = state.agnosDownloads[ver] && state.agnosDownloads[ver].active;
-            var actionHtml = "";
-            if (info.cached) {
-                actionHtml = "<div class=\\"status cached\\"><svg width=\\"12\\" height=\\"12\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"3\\"><path d=\\"M20 6L9 17l-5-5\\"/></svg> Cached</div>";
-            } else if (isDownloading) {
-                var dl = state.agnosDownloads[ver];
-                var pct = dl.percent || 0;
-                var eta = dl.eta || "";
-                actionHtml = "<div class=\\"agnos-progress\\" id=\\"agnos-progress-" + escapeHtml(ver) + "\\"><div class=\\"agnos-progress-bar\\"><div class=\\"agnos-progress-bar-fill\\" style=\\"width: " + pct + "%\\"></div></div><div class=\\"agnos-progress-text\\"><span>" + pct + "% - " + (dl.files_done || 0) + "/" + (dl.files_total || 0) + " files</span><span>" + eta + "</span></div></div>";
-            } else {
-                actionHtml = "<div class=\\"actions\\"><div class=\\"status missing\\"><svg width=\\"12\\" height=\\"12\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><circle cx=\\"12\\" cy=\\"12\\" r=\\"10\\"/><path d=\\"M12 8v4M12 16h.01\\"/></svg> Not Cached</div><button class=\\"btn btn-sm btn-primary\\" onclick=\\"app.downloadAgnosVersion('" + escapeHtml(ver) + "')\\" title=\\"Download AGNOS " + escapeHtml(ver) + " (~4GB)\\">Download</button></div>";
+        function renderRequired() {
+            var requiredHtml = "";
+            for (var ver in requiredMap) {
+                var info = requiredMap[ver];
+                var isDownloading = state.agnosDownloads[ver] && state.agnosDownloads[ver].active;
+                var actionHtml = "";
+                if (info.cached) {
+                    actionHtml = "<div class=\\"status cached\\"><svg width=\\"12\\" height=\\"12\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"3\\"><path d=\\"M20 6L9 17l-5-5\\"/></svg> Cached</div>";
+                } else if (isDownloading) {
+                    var dl = state.agnosDownloads[ver];
+                    var pct = dl.percent || 0;
+                    var eta = dl.eta || "";
+                    actionHtml = "<div class=\\"agnos-progress\\" id=\\"agnos-progress-" + escapeHtml(ver) + "\\"><div class=\\"agnos-progress-bar\\"><div class=\\"agnos-progress-bar-fill\\" style=\\"width: " + pct + "%\\"></div></div><div class=\\"agnos-progress-text\\"><span>" + pct + "% - " + (dl.files_done || 0) + "/" + (dl.files_total || 0) + " files</span><span>" + eta + "</span></div></div>";
+                } else {
+                    actionHtml = "<div class=\\"actions\\"><div class=\\"status missing\\"><svg width=\\"12\\" height=\\"12\\" viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><circle cx=\\"12\\" cy=\\"12\\" r=\\"10\\"/><path d=\\"M12 8v4M12 16h.01\\"/></svg> Not Cached</div><button class=\\"btn btn-sm btn-primary\\" onclick=\\"app.downloadAgnosVersion('" + escapeHtml(ver) + "')\\" title=\\"Download AGNOS " + escapeHtml(ver) + " (~4GB)\\">Download</button></div>";
+                }
+                requiredHtml += "<div class=\\"agnos-required-item\\" id=\\"agnos-required-" + escapeHtml(ver) + "\\"><div><div class=\\"version\\">AGNOS " + escapeHtml(ver) + "</div><div class=\\"forks\\">Used by: " + escapeHtml(info.forks.join(", ")) + "</div></div>" + actionHtml + "</div>";
             }
-            requiredHtml += "<div class=\\"agnos-required-item\\" id=\\"agnos-required-" + escapeHtml(ver) + "\\"><div><div class=\\"version\\">AGNOS " + escapeHtml(ver) + "</div><div class=\\"forks\\">Used by: " + escapeHtml(info.forks.join(", ")) + "</div></div>" + actionHtml + "</div>";
+            if (requiredHtml === "") requiredHtml = "<div class=\\"agnos-empty\\">No forks with AGNOS version info found</div>";
+            requiredList.innerHTML = requiredHtml;
         }
-        if (requiredHtml === "") requiredHtml = "<div class=\\"agnos-empty\\">No forks with AGNOS version info found</div>";
-        requiredList.innerHTML = requiredHtml;
+
+        function syncAgnosDownloads() {
+            var versions = Object.keys(requiredMap);
+            var checks = [];
+            for (var i = 0; i < versions.length; i++) {
+                var ver = versions[i];
+                if (state.agnosDownloads[ver] && state.agnosDownloads[ver].active) continue;
+                checks.push(api.getAgnosProgress(ver).then(function(response) {
+                    var p = response.progress || {};
+                    if (p.status === "downloading") {
+                        var version = response.version;
+                        if (!version) return;
+                        state.agnosDownloads[version] = {
+                            active: true,
+                            percent: 0,
+                            files_done: 0,
+                            files_total: 0,
+                            eta: "Calculating...",
+                            startTime: Date.now()
+                        };
+                        app.pollAgnosDownload(version);
+                    }
+                }).catch(function() {}));
+            }
+            return Promise.all(checks);
+        }
+
+        syncAgnosDownloads().finally(renderRequired);
     }
     function formatBytes(bytes) {
         if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(1) + " GB";
@@ -2183,9 +2213,12 @@ EMBEDDED_JS = '''
             api.prepareAgnos(forkName).then(function(result) {
                 if (result.cached) {
                     toast.success("AGNOS " + result.version + " already cached!");
-                } else if (result.downloading) {
-                    toast.success("Started downloading AGNOS " + result.version);
-                    app.pollAgnosProgress(result.version);
+                } else if (result.success) {
+                    var version = result.version || agnosVersion;
+                    toast.success("Started downloading AGNOS " + version);
+                    state.agnosDownloads[version] = { active: true, percent: 0, files_done: 0, files_total: 0, eta: "Calculating...", startTime: Date.now() };
+                    fetchAgnosCache();
+                    app.pollAgnosDownload(version);
                 } else {
                     toast.error(result.error || "Failed to prepare AGNOS");
                 }

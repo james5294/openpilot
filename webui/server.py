@@ -4260,7 +4260,8 @@ if USE_AIOHTTP:
                 "success": True,
                 "message": f"Started downloading AGNOS {fork_agnos}",
                 "version": fork_agnos,
-                "cached": False
+                "cached": False,
+                "downloading": True
             })
 
         except json.JSONDecodeError:
