@@ -24,9 +24,12 @@
   {0x1A0, e_can, 32, .check_relay = (longitudinal)},  /* SCC_CONTROL */
 
 // ccNC (connected car Navigation Cockpit) cluster communication for 2024+ vehicles
+// Based on sunnypilot ccnc-port: includes 0x7C4 and 0xEA (MDPS) for proper cluster/steering comm
 #define HYUNDAI_CANFD_CCNC_TX_MSGS(e_can) \
-  {0x161, e_can, 32, .check_relay = false},  /* CCNC_0x161 */ \
-  {0x162, e_can, 32, .check_relay = false},  /* CCNC_0x162 */ \
+  {0x161, e_can, 32, .check_relay = true},  /* CCNC_0x161 */ \
+  {0x162, e_can, 32, .check_relay = true},  /* CCNC_0x162 */ \
+  {0x7C4, 2, 8, .check_relay = true},       /* 0x7C4 cluster */ \
+  {0xEA, 2, 24, .check_relay = true},       /* MDPS steering */ \
 
 // *** Addresses checked in rx hook ***
 // EV, ICE, HYBRID: ACCELERATOR (0x35), ACCELERATOR_BRAKE_ALT (0x100), ACCELERATOR_ALT (0x105)
