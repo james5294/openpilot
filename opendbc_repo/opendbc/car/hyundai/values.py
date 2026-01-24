@@ -344,7 +344,7 @@ class CAR(Platforms):
   HYUNDAI_SONATA_HEV_2024 = HyundaiCanFDPlatformConfig(
     [HyundaiCarDocs("Hyundai Sonata Hybrid (without HDA II) 2024-25", car_parts=CarParts.common([CarHarness.hyundai_a]))],
     CarSpecs(mass=1616, wheelbase=2.84, steerRatio=13.27),
-    flags=HyundaiFlags.CCNC,
+    flags=HyundaiFlags.CCNC | HyundaiFlags.HYBRID,
   )
   HYUNDAI_IONIQ_5 = HyundaiCanFDPlatformConfig(
     [
